@@ -380,7 +380,7 @@ function NotifCard({ n, onRead, onClose }: { n: Notification; onRead: () => void
           {/* CTA */}
           {cta && (
             cta.href ? (
-              <Link href={cta.href} onClick={(e) => { e.stopPropagation(); onClose(); }}>
+              <Link href={cta.href} onClick={(e) => { e.stopPropagation(); onRead(); onClose(); }}>
                 <button className={cn("mt-2 flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg font-medium transition-colors", styles.btn)}>
                   {cta.label}
                   <ArrowUpRight className="h-3 w-3" />
@@ -388,7 +388,7 @@ function NotifCard({ n, onRead, onClose }: { n: Notification; onRead: () => void
               </Link>
             ) : (
               <button
-                onClick={(e) => e.stopPropagation()}
+                onClick={(e) => { e.stopPropagation(); onRead(); }}
                 className={cn("mt-2 flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg font-medium transition-colors", styles.btn)}
               >
                 {cta.label}
