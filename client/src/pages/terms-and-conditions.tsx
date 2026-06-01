@@ -43,23 +43,18 @@ export default function TermsAndConditionsPage() {
       <div className="bg-background min-h-screen py-12 md:py-16">
         <div className="container mx-auto px-4 max-w-6xl space-y-12">
           
-          {/* Header Section */}
           <div className="text-center space-y-4">
             <h1 className="text-3xl md:text-5xl font-black text-foreground font-heading">
-              Company Policies & Legal Agreements
+              Terms and Conditions
             </h1>
             <p className="text-sm md:text-base text-muted-foreground max-w-2xl mx-auto">
               Last updated: May 2026. Please read our terms, conditions, and service refund policies carefully.
             </p>
           </div>
 
-          {/* Title & Description */}
-          <div className="space-y-3">
-            <h2 className="text-2xl md:text-3xl font-bold text-foreground">Terms and Conditions</h2>
-            <p className="text-sm text-muted-foreground leading-relaxed">
-              These Terms govern your access to and use of the services, software, websites, and digital platforms provided by CÕRA LABS ("we", "our", "us"). Please read them carefully.
-            </p>
-          </div>
+          <p className="text-sm text-muted-foreground leading-relaxed">
+            These Terms govern your access to and use of the services, software, websites, and digital platforms provided by CÕRA LABS ("we", "our", "us"). Please read them carefully.
+          </p>
 
           {/* Accordions Wrapper */}
           <div className="bg-primary/5 md:bg-primary/10 rounded-[2rem] p-4 md:p-8">

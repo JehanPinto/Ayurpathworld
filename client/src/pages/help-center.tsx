@@ -165,21 +165,23 @@ export default function HelpCenterPage() {
             </p>
             
             <div className="flex flex-col sm:flex-row items-center justify-center gap-4 mb-6">
-              <Button 
-                size="lg" 
-                className="bg-[#1a1a1a] hover:bg-black text-white border-0 w-full sm:w-auto h-12 rounded-lg px-8"
+              <Button
+                size="lg"
+                className="bg-[#1a1a1a] text-white border-0 w-full sm:w-auto h-12 rounded-lg px-8 transition-all duration-200 hover:bg-[#333333] hover:scale-105 hover:shadow-xl active:scale-95"
               >
                 Call Us Now
                 <Phone className="h-4 w-4 ml-2 fill-current opacity-80" />
               </Button>
-              <Button 
-                size="lg" 
-                variant="outline" 
-                className="bg-transparent border-white/40 text-white hover:bg-white/10 hover:text-white hover:border-white w-full sm:w-auto h-12 rounded-lg px-8"
-              >
-                Email Support
-                <Mail className="h-4 w-4 ml-2 opacity-80" />
-              </Button>
+              <a href="mailto:hr.coralabs@gmail.com?subject=Support%20Request&body=Hi%20AyurPath%20Support%20Team%2C%0A%0A" className="w-full sm:w-auto">
+                <Button
+                  size="lg"
+                  variant="outline"
+                  className="bg-transparent border-2 border-white/60 text-white w-full h-12 rounded-lg px-8 transition-all duration-200 hover:bg-white hover:text-[#2a9d5c] hover:border-white hover:scale-105 hover:shadow-xl active:scale-95"
+                >
+                  Email Support
+                  <Mail className="h-4 w-4 ml-2 opacity-80" />
+                </Button>
+              </a>
             </div>
           </div>
         </section>

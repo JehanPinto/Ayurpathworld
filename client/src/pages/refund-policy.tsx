@@ -44,19 +44,16 @@ export default function RefundPolicyPage() {
           
           <div className="text-center space-y-4">
             <h1 className="text-3xl md:text-5xl font-black text-foreground font-heading">
-              Company Policies & Legal Agreements
+              Refund Policy
             </h1>
             <p className="text-sm md:text-base text-muted-foreground max-w-2xl mx-auto">
               Last updated: May 2026. Please read our terms, conditions, and service refund policies carefully.
             </p>
           </div>
 
-          <div className="space-y-3">
-            <h2 className="text-2xl md:text-3xl font-bold text-foreground">Refund Policy</h2>
-            <p className="text-sm text-muted-foreground leading-relaxed">
-              At CÕRA LABS, we are committed to delivering high-quality software systems, digital services, and custom development work. This policy outlines the conditions under which refunds may be requested and processed across our products, platforms, and client engagements.
-            </p>
-          </div>
+          <p className="text-sm text-muted-foreground leading-relaxed">
+            At CÕRA LABS, we are committed to delivering high-quality software systems, digital services, and custom development work. This policy outlines the conditions under which refunds may be requested and processed across our products, platforms, and client engagements.
+          </p>
 
           <div className="bg-primary/5 md:bg-primary/10 rounded-[2rem] p-4 md:p-8">
             
@@ -98,7 +95,7 @@ export default function RefundPolicyPage() {
                 <div>
                   <h4 className="font-bold text-foreground mb-1">3.2 No-Shows and Late Cancellations</h4>
                   <ul className="list-disc pl-5 space-y-2">
-                    <li>Patient no-shows or cancellations made outside the permitted cancellation window are treated as completed appointments and are non-refundable.</li>
+                    <li>Patient no-shows made outside the permitted cancellation window are treated as completed appointments and are non-refundable.</li>
                     <li>Doctor no-shows are treated under Section 3.1 and entitle the patient to a full refund.</li>
                   </ul>
                 </div>

@@ -298,7 +298,13 @@ export default function HelpDetailsPage() {
 
           {/* Steps Grid */}
           <div className="relative mt-8">
-            <div className="hidden lg:block absolute top-[16px] left-[10%] right-[10%] h-[2px] bg-foreground z-0" />
+            <div
+              className={`hidden lg:block absolute top-[16px] h-[2px] bg-foreground z-0 ${
+                data.steps.length === 3
+                  ? "left-[18%] right-[18%]"
+                  : "left-[10%] right-[10%]"
+              }`}
+            />
             <div
               className={`grid grid-cols-1 md:grid-cols-2 ${
                 data.steps.length === 3 ? "lg:grid-cols-3" : "lg:grid-cols-4"

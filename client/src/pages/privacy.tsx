@@ -137,15 +137,6 @@ function CookiesContent() {
           <><strong>Preference Cookies:</strong> Store your language, region, and accessibility settings.</>,
         ]}
       />
-      <p>
-        You can review and update your cookie choices at any time:{" "}
-        <span
-          className="text-primary font-medium cursor-pointer hover:underline"
-          onClick={(e) => e.preventDefault()}
-        >
-          Manage Cookie Preferences
-        </span>
-      </p>
     </div>
   );
 }
@@ -197,10 +188,10 @@ function YourRightsContent() {
       <p>
         To exercise any of these rights, email us at{" "}
         <a
-          href="mailto:support@ayurvedicdoctor.lk"
+          href="mailto:hr.coralabs@gmail.com"
           className="text-primary font-medium hover:underline"
         >
-          support@ayurvedicdoctor.lk
+          hr.coralabs@gmail.com
         </a>{" "}
         or use the Privacy Dashboard in your account settings. We respond to all requests within 24 hours.
       </p>
