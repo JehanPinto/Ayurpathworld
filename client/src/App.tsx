@@ -113,7 +113,7 @@ function Router() {
       <Route path="/doctors" component={DoctorsPage} />
       <Route path="/doctors/:id" component={DoctorProfilePage} />
       <Route path="/email-verification" component={EmailVerificationPage} />
-      <Route path="/details" component={HelpDetailsPage} />
+      <Route path="/help/:category" component={HelpDetailsPage} />
       <Route path="/help" component={HelpCenterPage} />
       <Route path="/careers" component={CareerPage} />
       <Route path="/privacy" component={PrivacyPolicyPage} />
