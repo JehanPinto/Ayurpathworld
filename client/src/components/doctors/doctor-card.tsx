@@ -135,7 +135,7 @@ export function DoctorCard({ doctor }: DoctorCardProps) {
         </div>
 
         <div className="px-6 pb-6">
-          <Link href={`/doctors/${doctor.id}`}>
+          <Link href={`/doctor-details/${doctor.id}`}>
             <Button variant="outline" className="w-full group-hover:bg-primary group-hover:text-primary-foreground transition-colors" data-testid={`button-book-doctor-${doctor.id}`}>
               View Profile & Book
             </Button>

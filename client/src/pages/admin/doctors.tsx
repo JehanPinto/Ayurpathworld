@@ -25,13 +25,6 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -92,6 +85,7 @@ export default function AdminDoctorsPage() {
   
   // Search & Filter States
   const [searchQuery, setSearchQuery] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   
   // Client-side Pagination States
@@ -103,47 +97,23 @@ export default function AdminDoctorsPage() {
   const [showRejectDialog, setShowRejectDialog] = useState(false);
   const [rejectReason, setRejectReason] = useState("");
 
-  // React Query: Fetch all doctors at once (Client-side style)
-  const { data: doctors = [], isLoading, isFetching, isError } = useQuery<DoctorWithDetails[]>({
-    queryKey: ["/api/admin/doctors"],
-    staleTime: 0,
-    refetchOnMount: "always",
-    refetchOnWindowFocus: "always",
-  });
-
-  const getStatusCounts = () => {
-    return {
-      all: doctors.length,
-      pending: doctors.filter(d => d.status === DoctorStatus.PENDING).length,
-      verified: doctors.filter(d => d.status === DoctorStatus.VERIFIED).length,
-      rejected: doctors.filter(d => d.status === DoctorStatus.REJECTED).length,
-      suspended: doctors.filter(d => d.status === DoctorStatus.SUSPENDED).length,
-    };
-  };
-
-  const statusCounts = getStatusCounts();
-
-  const filteredDoctors = doctors.filter(doctor => {
-    const matchesSearch = 
-      doctor.user?.fullName?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      doctor.registrationNumber?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      doctor.user?.email?.toLowerCase().includes(searchQuery.toLowerCase());
-    
-    const matchesStatus = statusFilter === "all" || doctor.status === statusFilter;
-    
-    return matchesSearch && matchesStatus;
-  });
-
-  const totalPages = Math.max(1, Math.ceil(filteredDoctors.length / itemsPerPage));
-  const startIndex = (currentPage - 1) * itemsPerPage;
-  const currentDoctors = filteredDoctors.slice(startIndex, startIndex + itemsPerPage);
-
-  // Auto-reset page if bounds are exceeded during search/filter
   useEffect(() => {
-    if (currentPage > totalPages) {
-      setCurrentPage(1);
+    const timer = setTimeout(() => {
+      setDebouncedSearch(searchQuery);
+      setCurrentPage(1); // Reset to page 1 on new search
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
+  const { data: response, isLoading, isError, isFetching } = useQuery({
+    queryKey: ["/api/admin/doctors/paginated", currentPage, statusFilter, debouncedSearch],
+    queryFn: async () => {
+      const url = `/api/admin/doctors/paginated?page=${currentPage}&limit=10&status=${statusFilter}&search=${encodeURIComponent(debouncedSearch)}`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error("Failed to load");
+      return res.json();
     }
-  }, [filteredDoctors.length, currentPage, totalPages, setCurrentPage]);
+  });
 
   const verifyMutation = useMutation({
     mutationFn: (doctorId: string) => 
@@ -235,6 +205,10 @@ export default function AdminDoctorsPage() {
     );
   }
 
+  const doctors = response?.data || [];
+  const totalPages = response?.totalPages || 1;
+  const statusCounts = response?.stats || { all: 0, pending: 0, verified: 0, rejected: 0, suspended: 0 };
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
@@ -319,8 +293,8 @@ export default function AdminDoctorsPage() {
             <DoctorCardSkeleton />
             <DoctorCardSkeleton />
           </>
-        ) : currentDoctors.length > 0 ? (
-          currentDoctors.map((doctor) => (
+        ) : doctors.length > 0 ? (
+          doctors.map((doctor: any) => (
             <Card 
               key={doctor.id} 
               className="hover-elevate"
@@ -368,7 +342,7 @@ export default function AdminDoctorsPage() {
                     </div>
 
                     <div className="flex flex-wrap gap-1.5 mb-3">
-                      {doctor.specializations?.map((spec) => (
+                      {doctor.specializations?.map((spec: any) => (
                         <Badge key={spec.id} variant="secondary" className="text-xs">
                           {spec.name}
                         </Badge>

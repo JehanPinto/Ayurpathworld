@@ -39,6 +39,7 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { Payment, AppointmentWithDetails } from "@shared/schema";
 import { PaymentStatus, PaymentMethod } from "@shared/schema";
+import { Pagination } from "@/components/ui/pagination";
 
 interface PaymentWithAppointment extends Payment {
   appointment?: AppointmentWithDetails;
@@ -54,10 +55,22 @@ export default function AdminPaymentsPage() {
   const [showRefundDialog, setShowRefundDialog] = useState(false);
   const [refundAmount, setRefundAmount] = useState("");
   const [refundReason, setRefundReason] = useState("");
+  const [currentPage, setCurrentPage] = useState(1);
 
-  const { data: payments = [], isLoading, isError } = useQuery<PaymentWithAppointment[]>({
-    queryKey: ["/api/admin/payments"],
+  const { data: response, isLoading, isError } = useQuery({
+    queryKey: ["/api/admin/payments", currentPage],
+    queryFn: async () => {
+      const res = await fetch(`/api/admin/payments?page=${currentPage}&limit=10`);
+      if (!res.ok) throw new Error("Failed to load");
+      return res.json();
+    }
   });
+
+  const payments = response?.data || [];
+  const totalPages = response?.totalPages || 1;
+
+  console.log("Fetched payments:", payments);
+  console.log("Current page:", currentPage, "Total pages:", totalPages);
 
   const refundMutation = useMutation({
     mutationFn: ({ id, refundAmount, refundReason }: { id: string; refundAmount: number; refundReason: string }) => 
@@ -91,29 +104,16 @@ export default function AdminPaymentsPage() {
     }).format(fee);
   };
 
-  const filteredPayments = payments.filter(payment => {
-    const matchesSearch = 
-      payment.id?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      payment.transactionId?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      payment.appointment?.patient?.fullName?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      payment.appointment?.doctor?.user?.fullName?.toLowerCase().includes(searchQuery.toLowerCase());
-    
-    const matchesStatus = statusFilter === "all" || payment.status === statusFilter;
-    const matchesMethod = methodFilter === "all" || payment.method === methodFilter;
-    
-    return matchesSearch && matchesStatus && matchesMethod;
-  });
-
   const getStats = () => {
-    const completed = payments.filter(p => p.status === PaymentStatus.COMPLETED);
-    const pending = payments.filter(p => p.status === PaymentStatus.PENDING);
-    const refunded = payments.filter(p => p.status === PaymentStatus.REFUNDED);
+    const completed = payments.filter((p: any) => p.status === PaymentStatus.COMPLETED);
+    const pending = payments.filter((p: any) => p.status === PaymentStatus.PENDING);
+    const refunded = payments.filter((p: any) => p.status === PaymentStatus.REFUNDED);
     
     return {
-      totalRevenue: completed.reduce((sum, p) => sum + p.totalAmount, 0),
-      platformEarnings: completed.reduce((sum, p) => sum + (p.platformCommission || 0), 0),
-      pendingAmount: pending.reduce((sum, p) => sum + p.totalAmount, 0),
-      refundedAmount: refunded.reduce((sum, p) => sum + (p.refundAmount || 0), 0),
+      totalRevenue: completed.reduce((sum: number, p: any) => sum + p.totalAmount, 0),
+      platformEarnings: completed.reduce((sum: number, p: any) => sum + (p.platformCommission || 0), 0),
+      pendingAmount: pending.reduce((sum: number, p: any) => sum + p.totalAmount, 0),
+      refundedAmount: refunded.reduce((sum: number, p: any) => sum + (p.refundAmount || 0), 0),
     };
   };
 
@@ -132,6 +132,19 @@ export default function AdminPaymentsPage() {
       </div>
     );
   }
+
+  const filteredPayments = payments.filter((payment: any) => {
+    const matchesSearch = 
+      payment.id?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      payment.transactionId?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      payment.appointment?.patient?.fullName?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      payment.appointment?.doctor?.user?.fullName?.toLowerCase().includes(searchQuery.toLowerCase());
+    
+    const matchesStatus = statusFilter === "all" || payment.status === statusFilter;
+    const matchesMethod = methodFilter === "all" || payment.method === methodFilter;
+    
+    return matchesSearch && matchesStatus && matchesMethod;
+  });
 
   return (
     <div className="space-y-6">
@@ -234,7 +247,7 @@ export default function AdminPaymentsPage() {
 
       <div className="space-y-4">
         {filteredPayments.length > 0 ? (
-          filteredPayments.map((payment) => (
+          filteredPayments.map((payment: any) => (
             <Card 
               key={payment.id} 
               className="hover-elevate"
@@ -321,6 +334,12 @@ export default function AdminPaymentsPage() {
               </p>
             </CardContent>
           </Card>
+        )}
+      </div>
+
+      <div className="flex items-center justify-center pt-4">
+        {totalPages > 1 && (
+          <Pagination currentPage={currentPage} totalPages={totalPages} onPageChange={setCurrentPage} />
         )}
       </div>
 

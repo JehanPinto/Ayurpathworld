@@ -209,9 +209,6 @@ export interface IStorage {
   getAdminDashboardStats(): Promise<AdminDashboardStats>;
 
   getAllAppointments(): Promise<AppointmentWithDetails[]>;
-  getAllPayments(): Promise<
-    (Payment & { appointment?: AppointmentWithDetails })[]
-  >;
 
   getDoctorPatients(doctorId: string): Promise<
     {
@@ -300,8 +297,9 @@ export interface IStorage {
   ): Promise<DoctorProfile | undefined>;
   getPatientPayments(patientId: string): Promise<Payment[]>;
   createRefundRequest(data: InsertRefund): Promise<Refund>;
-  getRefundRequests(): Promise<any[]>;
   processRefund(refundId: string, status: string): Promise<any>;
+  getPaginatedPayments(page: number, limit: number): Promise<any>;
+  getPaginatedRefundRequests(page: number, limit: number): Promise<any>;
 }
 
 export class MemStorage implements IStorage {

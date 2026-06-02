@@ -1,2 +1,2 @@
 export * from "./sendApplicationEmail";
-export * from "./sendOtpEmail";
+export * from "./email";

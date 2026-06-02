@@ -68,7 +68,7 @@ import {
   type Refund,
   InsertRefund,
 } from "@shared/schema";
-import { and, desc, eq, gte, ilike, inArray, lte } from "drizzle-orm";
+import { and, desc, eq, gte, ilike, inArray, lte, sql, or } from "drizzle-orm";
 import { db, pool } from "./db";
 
 import type { IStorage } from "./storage";
@@ -144,6 +144,7 @@ function mapDoctorProfile(row: any): DoctorProfile {
     currentQueueNumber: row.currentQueueNumber || 0,
     createdAt: toISOString(row.createdAt),
     updatedAt: toISOString(row.updatedAt),
+    qrCode: row.qrCode || undefined,
   };
 }
 
@@ -1737,31 +1738,71 @@ export class DbStorage implements IStorage {
     return this.buildAppointmentsWithDetails(rows);
   }
 
-  async getAllPayments(): Promise<
-    (Payment & { appointment?: AppointmentWithDetails })[]
-  > {
-    const result = await db
-      .select()
-      .from(payments)
-      .orderBy(desc(payments.createdAt));
+  async getPaginatedPayments(page: number, limit: number): Promise<any> {
+    const offset = (page - 1) * limit;
 
-    const paymentsWithDetails: (Payment & {
-      appointment?: AppointmentWithDetails;
-    })[] = [];
-    for (const p of result) {
-      const payment = {
-        ...p,
-        createdAt: toISOString(p.createdAt),
-        updatedAt: toISOString(p.updatedAt),
-      } as Payment;
+    try {
+      // 1. තත්පරයකින් සියලු දත්ත Join කරලා ගන්නවා
+      const rawData = await db
+        .select({
+          payment: payments,
+          appointment: appointments,
+          patient: {
+            id: users.id,
+            fullName: users.fullName,
+            profileImage: users.profileImage,
+          },
+          doctorProfile: {
+            id: doctorProfiles.id,
+            userId: doctorProfiles.userId,
+          },
+        })
+        .from(payments)
+        .leftJoin(appointments, eq(payments.appointmentId, appointments.id))
+        .leftJoin(users, eq(payments.patientId, users.id))
+        .leftJoin(doctorProfiles, eq(payments.doctorId, doctorProfiles.id))
+        .orderBy(desc(payments.createdAt))
+        .limit(limit)
+        .offset(offset);
 
-      const appointment = await this.getAppointmentWithDetails(p.appointmentId);
-      paymentsWithDetails.push({
-        ...payment,
-        appointment: appointment || undefined,
+      // 2. Doctor ගේ නම ගන්නවා
+      const doctorUserIds = [...new Set(rawData.map(r => r.doctorProfile?.userId).filter(Boolean))];
+      const doctorUsers = doctorUserIds.length > 0 
+        ? await db.select({ id: users.id, fullName: users.fullName }).from(users).where(inArray(users.id, doctorUserIds as string[]))
+        : [];
+      const doctorUserMap = new Map(doctorUsers.map(u => [u.id, u.fullName]));
+
+      // 3. Frontend එකට ඕනේ විදිහට හදනවා
+      const formattedData = rawData.map(row => {
+        const docFullName = row.doctorProfile ? doctorUserMap.get(row.doctorProfile.userId) : "Unknown Doctor";
+        return {
+          ...row.payment,
+          createdAt: toISOString(row.payment.createdAt as any),
+          updatedAt: toISOString(row.payment.updatedAt as any),
+          appointment: row.appointment ? {
+            ...row.appointment,
+            patient: row.patient,
+            doctor: {
+              user: { fullName: docFullName }
+            }
+          } : undefined
+        };
       });
+
+      // 4. මුළු ගණන (Total Count)
+      const allRecords = await db.select({ id: payments.id }).from(payments);
+      const count = allRecords.length;
+
+      return {
+        data: formattedData,
+        totalCount: count,
+        totalPages: Math.ceil(count / limit) || 1,
+        currentPage: page
+      };
+    } catch (error) {
+      console.error("[DB] Error in getPaginatedPayments:", error);
+      throw error;
     }
-    return paymentsWithDetails;
   }
 
   async getDoctorPatients(doctorId: string): Promise<
@@ -2337,23 +2378,97 @@ export class DbStorage implements IStorage {
     return true;
   }
 
-  async getDoctorsWithDetailsByIds(ids: string[]) {
-    if (ids.length === 0) return [];
+  async getPaginatedDoctors(page: number, limit: number, search?: string, status?: string): Promise<any> {
+    const offset = (page - 1) * limit;
 
-    const query = `
-      SELECT
-        dp.*,
-        json_build_object(
-          'fullName', u.full_name,
-          'profileImage', u.profile_image
-        ) as user
-      FROM doctor_profiles dp
-      JOIN users u ON dp.user_id = u.id
-      WHERE dp.id = ANY($1)
-    `;
+    try {
+      const conditions = [];
+      if (status && status !== "all") {
+        conditions.push(eq(doctorProfiles.status, status));
+      }
+      if (search) {
+        conditions.push(
+          or(
+            ilike(users.fullName, `%${search}%`),
+            ilike(users.email, `%${search}%`),
+            ilike(doctorProfiles.registrationNumber, `%${search}%`)
+          )
+        );
+      }
 
-    const result = await pool.query(query, [ids]);
-    return result.rows;
+      let query = db
+        .select({
+          profile: doctorProfiles,
+          user: {
+            id: users.id,
+            fullName: users.fullName,
+            email: users.email,
+            phone: users.phone,
+            city: users.city,
+            profileImage: users.profileImage,
+          }
+        })
+        .from(doctorProfiles)
+        .leftJoin(users, eq(doctorProfiles.userId, users.id));
+
+      if (conditions.length > 0) {
+        query = query.where(and(...conditions)) as any;
+      }
+
+      const rawData = await query
+        .orderBy(desc(doctorProfiles.createdAt))
+        .limit(limit)
+        .offset(offset);
+
+      const allSpecs = await this.getAllSpecializations();
+      const allHospitals = await this.getAllHospitals();
+
+      const formattedData = rawData.map(row => {
+        const specList = allSpecs.filter(s => row.profile.specializationIds?.includes(s.id));
+        const hospList = allHospitals.filter(h => row.profile.hospitalIds?.includes(h.id));
+
+        return {
+          ...row.profile,
+          createdAt: toISOString(row.profile.createdAt as any),
+          updatedAt: toISOString(row.profile.updatedAt as any),
+          user: row.user,
+          specializations: specList,
+          hospitals: hospList
+        };
+      });
+
+      let countQuery = db.select({ count: sql`count(*)`.mapWith(Number) })
+                         .from(doctorProfiles)
+                         .leftJoin(users, eq(doctorProfiles.userId, users.id));
+      if (conditions.length > 0) {
+        countQuery = countQuery.where(and(...conditions)) as any;
+      }
+      const [{ count }] = await countQuery;
+
+      const statsRaw = await db.select({
+        status: doctorProfiles.status,
+        count: sql`count(*)`.mapWith(Number)
+      }).from(doctorProfiles).groupBy(doctorProfiles.status);
+
+      const stats = { all: 0, pending: 0, verified: 0, rejected: 0, suspended: 0 };
+      statsRaw.forEach(s => {
+        if (s.status in stats) {
+          (stats as any)[s.status] = s.count;
+        }
+        stats.all += s.count;
+      });
+
+      return {
+        data: formattedData,
+        totalCount: count,
+        totalPages: Math.ceil(count / limit) || 1,
+        currentPage: page,
+        stats
+      };
+    } catch (error) {
+      console.error("[DB] Error in getPaginatedDoctors:", error);
+      throw error;
+    }
   }
 
   async createDoctorCancellationCharge(data: {
@@ -2404,68 +2519,48 @@ export class DbStorage implements IStorage {
     return result[0] as Refund;
   }
 
-  // This method fetches all refund requests, including backfilling "virtual" pending refunds for legacy cancellations that don't have a record in the refunds table yet.
-  async getRefundRequests(): Promise<any[]> {
+  async getPaginatedRefundRequests(page: number, limit: number): Promise<any> {
+    const offset = (page - 1) * limit;
 
-    // 1. Get all cancelled appointments
-    const cancelledApts = await db
-      .select()
-      .from(appointments)
-      .where(eq(appointments.status, AppointmentStatus.CANCELLED));
+    // single query to get refunds with payment, appointment, and patient details
+    const rawData = await db
+      .select({
+        refund: refunds,
+        payment: payments,
+        appointment: appointments,
+        patient: {
+          id: users.id,
+          fullName: users.fullName,
+        },
+      })
+      .from(refunds)
+      .leftJoin(payments, eq(refunds.paymentId, payments.id))
+      .leftJoin(appointments, eq(refunds.appointmentId, appointments.id))
+      .leftJoin(users, eq(refunds.patientId, users.id))
+      .orderBy(sql`CASE WHEN ${refunds.status} = 'pending' THEN 0 ELSE 1 END`, desc(refunds.createdAt))
+      .limit(limit)
+      .offset(offset);
 
-    if (cancelledApts.length === 0) return [];
+    const formattedData = rawData.map(row => ({
+      refund: row.refund,
+      payment: {
+        ...row.payment,
+        createdAt: row.payment?.createdAt ? toISOString(row.payment.createdAt) : null,
+      },
+      appointment: row.appointment ? {
+        ...row.appointment,
+        patient: row.patient
+      } : null
+    }));
 
-    const aptIds = cancelledApts.map((a) => a.id);
+    const [{ count }] = await db.select({ count: sql`count(*)`.mapWith(Number) }).from(refunds);
 
-    // 2. Get existing refund records
-    const allRefunds = await db.select().from(refunds).where(inArray(refunds.appointmentId, aptIds));
-    const allPayments = await db.select().from(payments).where(inArray(payments.appointmentId, aptIds));
-
-    const results = [];
-
-    for (const app of cancelledApts) {
-      const payment = allPayments.find(p => p.appointmentId === app.id);
-      if (!payment) continue;
-
-      // Check if a refund record already exists
-      const existingRefund = allRefunds.find(r => r.appointmentId === app.id);
-
-      if (existingRefund) {
-        // Use existing record
-        const appDetails = await this.getAppointmentWithDetails(app.id);
-        if (appDetails) {
-            results.push({ refund: existingRefund, payment, appointment: appDetails });
-        }
-      } else {
-        // No refund record exists - this is a legacy cancellation. Create a "virtual" refund object with pending status to show in the UI until it's processed.
-        const amountToRefund = payment.totalAmount - (payment.bookingCharges || 0) - (payment.tax || 0);
-        if (amountToRefund > 0) {
-            const virtualRefund = {
-                id: `virtual-${app.id}`,
-                paymentId: payment.id,
-                appointmentId: app.id,
-                patientId: app.patientId,
-                amount: amountToRefund,
-                reason: app.cancelReason || "Legacy cancellation (pending process)",
-                status: "pending",
-                processedAt: null,
-                createdAt: new Date(),
-                updatedAt: new Date()
-            };
-            
-            const appDetails = await this.getAppointmentWithDetails(app.id);
-            if (appDetails) {
-                results.push({ refund: virtualRefund, payment, appointment: appDetails });
-            }
-        }
-      }
-    }
-
-    return results.sort((a, b) => {
-      if (a.refund.status === 'pending' && b.refund.status !== 'pending') return -1;
-      if (a.refund.status !== 'pending' && b.refund.status === 'pending') return 1;
-      return new Date(b.refund.createdAt).getTime() - new Date(a.refund.createdAt).getTime();
-    });
+    return {
+      data: formattedData,
+      totalCount: count,
+      totalPages: Math.ceil(count / limit),
+      currentPage: page
+    };
   }
 
   async processRefund(refundId: string, status: string): Promise<any> {
