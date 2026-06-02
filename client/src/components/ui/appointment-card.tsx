@@ -132,9 +132,11 @@ export function AppointmentCard({ appointment, onFeedbackClick, onDetailsClick }
                 : "bg-primary text-primary-foreground hover:bg-primary/90"
             }`}
             onClick={(e) => {
-              e.stopPropagation(); // Prevent opening modal when clicking button
-              if (!isCancelled) {
-                // Handle Map or Browser click logic here
+              e.stopPropagation();
+              if (!isCancelled && isOnline && appointment.slot?.meetLink) {
+                window.open(appointment.slot.meetLink, "_blank", "noopener,noreferrer");
+              } else if (!isCancelled && !isOnline) {
+                console.log("View on Map clicked");
               }
             }}
           >

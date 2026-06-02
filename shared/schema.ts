@@ -11,6 +11,7 @@ import {
   varchar,
   date,
   time,
+  index,
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -185,6 +186,7 @@ export const doctorProfiles = pgTable("doctor_profiles", {
   totalReviews: integer("total_reviews").default(0),
   totalAppointments: integer("total_appointments").default(0),
   currentQueueNumber: integer("current_queue_number").default(0),
+  qrCode: text("qr_code"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -220,6 +222,7 @@ export const appointmentSlots = pgTable("appointment_slots", {
   isBooked: boolean("is_booked").default(false),
   isBlocked: boolean("is_blocked").default(false),
   isActive: boolean("is_active").default(true),
+  meetLink: varchar("meet_link", { length: 255 }),
 });
 
 export const appointments = pgTable("appointments", {
@@ -254,7 +257,12 @@ export const appointments = pgTable("appointments", {
   cancelledBy: varchar("cancelled_by", { length: 20 }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
-});
+}, (table) => ({
+  patientIdx: index("appointment_patient_idx").on(table.patientId),
+  doctorIdx: index("appointment_doctor_idx").on(table.doctorId),
+  statusIdx: index("appointment_status_idx").on(table.status),
+  dateIdx: index("appointment_date_idx").on(table.appointmentDate),
+}));
 
 export const payments = pgTable("payments", {
   id: varchar("id", { length: 50 })
@@ -283,7 +291,12 @@ export const payments = pgTable("payments", {
   refundDate: varchar("refund_date", { length: 10 }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
-});
+}, (table) => ({
+  aptIdx: index("payment_apt_idx").on(table.appointmentId),
+  patientIdx: index("payment_patient_idx").on(table.patientId),
+  doctorIdx: index("payment_doctor_idx").on(table.doctorId),
+  statusIdx: index("payment_status_idx").on(table.status),
+}));
 
 export const prescriptions = pgTable("prescriptions", {
   id: varchar("id", { length: 50 })
@@ -646,6 +659,7 @@ export const insertDoctorProfileSchema = z.object({
   minBookingNoticeHours: z.number().default(2),
   slotDurationMinutes: z.number().default(30),
   bufferTimeMinutes: z.number().default(10),
+  qrCode: z.string().optional(),
 });
 
 export type InsertDoctorProfile = z.infer<typeof insertDoctorProfileSchema>;
@@ -710,6 +724,7 @@ export const insertAppointmentSlotSchema = z.object({
   isBooked: z.boolean().default(false),
   isBlocked: z.boolean().default(false),
   isActive: z.boolean().default(true),
+  meetLink: z.string().optional(),
 });
 
 export type InsertAppointmentSlot = z.infer<typeof insertAppointmentSlotSchema>;
@@ -1196,7 +1211,10 @@ export const refunds = pgTable("refunds", {
   processedAt: timestamp("processed_at"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
-});
+}, (table) => ({
+  paymentIdx: index("refund_payment_idx").on(table.paymentId),
+  statusIdx: index("refund_status_idx").on(table.status),
+}));
 
 export const insertRefundSchemaDb = createInsertSchema(refunds).omit({ id: true, createdAt: true, updatedAt: true, processedAt: true });
 export type Refund = typeof refunds.$inferSelect;

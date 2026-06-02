@@ -4,6 +4,7 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { useQuery, useMutation } from "@tanstack/react-query";
+import { QRCodeCanvas } from "qrcode.react";
 import {
   User,
   MapPin,
@@ -19,7 +20,22 @@ import {
   CalendarIcon,
   Trash2,
   X,
-  ArrowLeft
+  ArrowLeft,
+  QrCode,
+  MessageCircle,
+  Facebook,
+  MessageSquare,
+  Twitter,
+  Linkedin,
+  Navigation,
+  Phone,
+  Mail,
+  Smartphone,
+  Copy,
+  Download,
+  Share2,
+  Loader2,
+  MoreHorizontal,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -106,6 +122,7 @@ export default function DoctorSettings() {
   const [newSpecName, setNewSpecName] = useState("");
   const [newSpecDescription, setNewSpecDescription] = useState("");
   const [isSavingSpec, setIsSavingSpec] = useState(false);
+  const [isShareOpen, setIsShareOpen] = useState(false);
 
   // Fetch doctor profile with details
   const { data: doctorProfile, isLoading: isLoadingProfile } = useQuery<DoctorWithDetails>({
@@ -194,6 +211,55 @@ export default function DoctorSettings() {
     }
   }, [user, profileForm]);
 
+  const qrLink = typeof window !== 'undefined' ? `${window.location.origin}/doctor-details/${doctorProfile?.id}` : "";
+
+  const generateQrMutation = useMutation({
+    mutationFn: async () => {
+      const result = await apiRequest("PUT", "/api/doctor/profile", { qrCode: qrLink });
+      return result as DoctorWithDetails;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/doctor/profile"] });
+      toast({ title: "QR Code Generated successfully!" });
+    },
+    onError: () => {
+      toast({ title: "Failed to generate QR Code", variant: "destructive" });
+    }
+  });
+
+  const copyToClipboard = () => {
+    navigator.clipboard.writeText(qrLink);
+    toast({ title: "Copied!", description: "Profile link copied to clipboard." });
+  };
+
+  const downloadQR = () => {
+    const canvas = document.getElementById("doctor-qr-code") as HTMLCanvasElement;
+    if (canvas) {
+      const pngUrl = canvas.toDataURL("image/png").replace("image/png", "image/octet-stream");
+      const downloadLink = document.createElement("a");
+      downloadLink.href = pngUrl;
+      downloadLink.download = `Doctor_QR_${doctorProfile?.user?.fullName}.png`;
+      document.body.appendChild(downloadLink);
+      downloadLink.click();
+      document.body.removeChild(downloadLink);
+    }
+  };
+
+  const shareNative = async () => {
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: "Book an appointment with me",
+          text: `Check out my profile on AyurPath and book an appointment!`,
+          url: qrLink,
+        });
+      } catch (error) {
+        toast({ title: "Failed to share", description: "Please try again.", variant: "destructive" });
+      }
+    } else {
+      toast({ title: "Sharing not supported", description: "Your browser doesn't support native sharing." });
+    }
+  };
   const updateProfileMutation = useMutation({
     mutationFn: async (data: ProfileFormData) => {
       const result = await apiRequest("PUT", "/api/users/profile", data);
@@ -208,6 +274,19 @@ export default function DoctorSettings() {
       toast({ title: "Failed to update profile", variant: "destructive" });
     },
   });
+
+  const shareApps = [
+    { name: "WhatsApp", icon: MessageCircle, color: "text-[#25D366]", bg: "bg-[#25D366]/10", onClick: () => window.open(`https://wa.me/?text=${encodeURIComponent(qrLink)}`, "_blank") },
+    { name: "Facebook", icon: Facebook, color: "text-[#1877F2]", bg: "bg-[#1877F2]/10", onClick: () => window.open(`https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(qrLink)}`, "_blank") },
+    { name: "Messenger", icon: MessageSquare, color: "text-[#0084FF]", bg: "bg-[#0084FF]/10", onClick: () => window.open(`fb-messenger://share/?link=${encodeURIComponent(qrLink)}`, "_blank") },
+    { name: "X (Twitter)", icon: Twitter, color: "text-neutral-800 dark:text-neutral-200", bg: "bg-neutral-200 dark:bg-neutral-800", onClick: () => window.open(`https://twitter.com/intent/tweet?url=${encodeURIComponent(qrLink)}`, "_blank") },
+    { name: "LinkedIn", icon: Linkedin, color: "text-[#0A66C2]", bg: "bg-[#0A66C2]/10", onClick: () => window.open(`https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(qrLink)}`, "_blank") },
+    { name: "Telegram", icon: Navigation, color: "text-[#0088cc]", bg: "bg-[#0088cc]/10", onClick: () => window.open(`https://t.me/share/url?url=${encodeURIComponent(qrLink)}`, "_blank") },
+    { name: "Viber", icon: Phone, color: "text-[#7360f2]", bg: "bg-[#7360f2]/10", onClick: () => window.open(`viber://forward?text=${encodeURIComponent(qrLink)}`, "_blank") },
+    { name: "Reddit", icon: MessageCircle, color: "text-[#FF4500]", bg: "bg-[#FF4500]/10", onClick: () => window.open(`https://reddit.com/submit?url=${encodeURIComponent(qrLink)}`, "_blank") },
+    { name: "Email", icon: Mail, color: "text-red-500", bg: "bg-red-100", onClick: () => window.open(`mailto:?subject=Book an appointment with me&body=${encodeURIComponent(qrLink)}`, "_blank") },
+    { name: "SMS", icon: Smartphone, color: "text-green-600", bg: "bg-green-100", onClick: () => window.open(`sms:?&body=${encodeURIComponent("Book an appointment with me: " + qrLink)}`, "_self") },
+  ];
 
   const updateDoctorProfileMutation = useMutation({
     mutationFn: async (data: DoctorProfileFormData) => {
@@ -426,6 +505,13 @@ export default function DoctorSettings() {
           >
             <Lock className="h-4 w-4 mr-2" />
             Security
+          </TabsTrigger>
+          <TabsTrigger
+            value="qr-code"
+            className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none pb-2 px-0 font-medium"
+          >
+            <QrCode className="h-4 w-4 mr-2" />
+            QR code
           </TabsTrigger>
         </TabsList>
 
@@ -1269,7 +1355,103 @@ export default function DoctorSettings() {
             </CardContent>
           </Card>
         </TabsContent>
+
+        <TabsContent value="qr-code">
+          <div className="bg-[#eef6f1] dark:bg-muted/20 border border-primary/20 rounded-3xl p-6 md:p-10 space-y-6">
+            <div className="text-center md:text-left mb-6">
+               <h2 className="text-xl font-bold text-foreground">QR Profile</h2>
+               <p className="text-sm text-muted-foreground mt-1">Share your professional profile instantly. Patients can scan to view your details.</p>
+            </div>
+
+            <div className="flex flex-col md:flex-row items-center justify-center gap-10 bg-white dark:bg-background rounded-2xl p-8 shadow-sm border border-border">
+              {doctorProfile?.qrCode ? (
+                <>
+                  <div className="shrink-0 bg-white p-4 rounded-xl shadow-sm border border-border">
+                    <QRCodeCanvas 
+                      id="doctor-qr-code" 
+                      value={qrLink} 
+                      size={200} 
+                      level="H" 
+                      includeMargin={true} 
+                    />
+                  </div>
+                  <div className="w-full max-w-sm space-y-4">
+                    <div className="flex items-center gap-2">
+                      <Input value={qrLink} readOnly className="font-mono text-center tracking-tight bg-muted/50 truncate" />
+                      <Button variant="outline" size="icon" onClick={copyToClipboard} className="shrink-0">
+                        <Copy className="h-4 w-4 text-muted-foreground" />
+                      </Button>
+                    </div>
+                    
+                    <Button onClick={downloadQR} className="w-full bg-[#10b981] hover:bg-[#10b981]/90 text-white font-bold gap-2 py-6 rounded-xl transition-transform hover:-translate-y-0.5">
+                      <Download className="h-5 w-5" /> Download QR
+                    </Button>
+                    
+                    <Button variant="outline" onClick={() => setIsShareOpen(true)} className="w-full border-[#10b981] text-[#10b981] hover:bg-[#10b981]/5 font-bold gap-2 py-6 rounded-xl transition-transform hover:-translate-y-0.5">
+                      <Share2 className="h-5 w-5" /> Share QR
+                    </Button>
+                  </div>
+                </>
+              ) : (
+                <div className="text-center py-10 w-full space-y-4">
+                  <div className="w-24 h-24 bg-primary/10 rounded-full flex items-center justify-center mx-auto mb-4">
+                    <QrCode className="h-10 w-10 text-primary" />
+                  </div>
+                  <h3 className="text-lg font-bold">No QR Code Generated</h3>
+                  <p className="text-muted-foreground text-sm max-w-sm mx-auto">Generate a unique QR code for your profile so patients can scan and book appointments easily.</p>
+                  <Button 
+                     onClick={() => generateQrMutation.mutate()}
+                     disabled={generateQrMutation.isPending}
+                     className="bg-primary text-white px-8 rounded-full font-bold mt-4"
+                  >
+                     {generateQrMutation.isPending ? <Loader2 className="animate-spin h-5 w-5 mr-2"/> : <QrCode className="h-5 w-5 mr-2"/>}
+                     Generate QR Code
+                  </Button>
+                </div>
+              )}
+            </div>
+          </div>
+        </TabsContent>
       </Tabs>
+
+      {isShareOpen && (
+        <div className="fixed inset-0 z-[100] flex items-end justify-center sm:items-center">
+          <div className="absolute inset-0 bg-black/60 transition-opacity animate-in fade-in duration-300" onClick={() => setIsShareOpen(false)} />
+          <div className="relative bg-background w-full sm:max-w-lg rounded-t-3xl sm:rounded-3xl p-6 sm:p-8 shadow-2xl animate-in slide-in-from-bottom-full sm:zoom-in-95 duration-300">
+            <div className="w-12 h-1.5 bg-muted rounded-full mx-auto mb-6 sm:hidden" />
+            <h3 className="text-xl font-bold text-center mb-6">Share Profile</h3>
+            
+            <div className="grid grid-cols-4 sm:grid-cols-5 gap-y-6 gap-x-2">
+              {shareApps.map((app, i) => (
+                <button key={i} onClick={app.onClick} className="flex flex-col items-center gap-2 group">
+                  <div className={`w-14 h-14 rounded-full flex items-center justify-center ${app.bg} ${app.color} transition-transform group-hover:scale-110`}>
+                    <app.icon className="w-7 h-7" />
+                  </div>
+                  <span className="text-xs font-medium text-foreground">{app.name}</span>
+                </button>
+              ))}
+              
+              <button onClick={shareNative} className="flex flex-col items-center gap-2 group">
+                <div className="w-14 h-14 rounded-full flex items-center justify-center bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 transition-transform group-hover:scale-110">
+                  <MoreHorizontal className="w-7 h-7" />
+                </div>
+                <span className="text-xs font-medium text-foreground">More...</span>
+              </button>
+            </div>
+
+            <div className="mt-8 pt-6 border-t border-border flex items-center gap-2">
+              <Input value={qrLink} readOnly className="bg-muted text-sm h-12 rounded-xl truncate" />
+              <Button size="icon" onClick={copyToClipboard} className="h-12 w-12 shrink-0 rounded-xl bg-primary hover:bg-primary/90">
+                <Copy className="h-5 w-5 text-white" />
+              </Button>
+            </div>
+            
+            <button onClick={() => setIsShareOpen(false)} className="absolute top-4 right-4 p-2 text-muted-foreground hover:text-foreground bg-muted/50 rounded-full">
+              <X className="h-5 w-5" />
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

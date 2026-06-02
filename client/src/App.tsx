@@ -59,6 +59,7 @@ import RefundPolicyPage from "@/pages/refund-policy";
 import ContactPrivacyPage from "@/pages/contact-privacy";
 import AdminRefundsPage from "./pages/admin/refunds";
 import FindDoctors from "./pages/patient/find-doctors";
+import DoctorDetailsPage from "./pages/doctor-details";
 
 function ProtectedRoute({ 
   children, 
@@ -120,6 +121,7 @@ function Router() {
       <Route path="/terms" component={TermsAndConditionsPage} />
       <Route path="/refund-policy" component={RefundPolicyPage} />
       <Route path="/contact-privacy" component={ContactPrivacyPage} />
+      <Route path="/doctor-details/:id" component={DoctorDetailsPage} />
 
       <Route path="/book/:doctorId">
         <ProtectedRoute allowedRoles={[UserRole.PATIENT]}>
@@ -195,6 +197,7 @@ function Router() {
               <Route path="/admin/appointments" component={AdminAppointmentsPage} />
               <Route path="/admin/specializations" component={AdminSpecializationsPage} />
               <Route path="/admin/payments" component={AdminPaymentsPage} />
+              <Route path="/admin/payouts" component={AdminPayoutsPage} />
               <Route path="/admin/refunds" component={AdminRefundsPage} />
               <Route path="/admin/careers" component={AdminCareersPage} />
               <Route path="/admin/blogs" component={AdminBlogsPage} />

@@ -38,10 +38,10 @@ const footerLinks = {
 };
 
 const socialLinks = [
-  { icon: Facebook, href: "#", label: "Facebook" },
-  { icon: Twitter, href: "#", label: "Twitter" },
-  { icon: Instagram, href: "#", label: "Instagram" },
-  { icon: Youtube, href: "#", label: "YouTube" },
+  { icon: Facebook, href: "https://www.facebook.com/share/1BAaT6ibZ8/", label: "Facebook", active: true },
+  { icon: Twitter, href: null, label: "Twitter", active: false },
+  { icon: Instagram, href: null, label: "Instagram", active: false },
+  { icon: Youtube, href: null, label: "YouTube", active: false },
 ];
 
 const PHONE = "+94 11 234 5678";
@@ -202,18 +202,31 @@ export function Footer() {
           <p className="text-sm text-muted-foreground text-center sm:text-left">
             &copy; {new Date().getFullYear()} AyurvedicDoctor. All rights reserved.
           </p>
-          <div className="flex items-center gap-4">
-            {socialLinks.map((social) => (
-              <a
-                key={social.label}
-                href={social.href}
-                className="text-muted-foreground hover:text-foreground transition-colors"
-                aria-label={social.label}
-                data-testid={`link-social-${social.label.toLowerCase()}`}
-              >
-                <social.icon className="h-5 w-5" />
-              </a>
-            ))}
+          <div className="flex items-center gap-4 mr-14">
+            {socialLinks.map((social) =>
+              social.active ? (
+                <a
+                  key={social.label}
+                  href={social.href!}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-muted-foreground hover:text-foreground transition-colors"
+                  aria-label={social.label}
+                  data-testid={`link-social-${social.label.toLowerCase()}`}
+                >
+                  <social.icon className="h-5 w-5" />
+                </a>
+              ) : (
+                <span
+                  key={social.label}
+                  title="Coming Soon"
+                  className="text-muted-foreground/30 cursor-not-allowed"
+                  aria-label={`${social.label} — Coming Soon`}
+                >
+                  <social.icon className="h-5 w-5" />
+                </span>
+              )
+            )}
           </div>
         </div>
       </div>

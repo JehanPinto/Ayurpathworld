@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useParams, Link, useLocation } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
@@ -15,6 +15,8 @@ import {
   Loader2,
   CheckCircle,
   BookOpen,
+  AlertCircle,
+  ChevronRight,
 } from "lucide-react";
 import { format } from "date-fns";
 import { PublicLayout } from "@/components/layout/public-layout";
@@ -50,10 +52,21 @@ import {
 } from "@shared/schema";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 
+// ─── Add PayHere Script dynamically ───────────────────────────────────────────
+const loadPayHereScript = () => {
+  if (!document.getElementById("payhere-js")) {
+    const script = document.createElement("script");
+    script.id = "payhere-js";
+    script.src = "https://www.payhere.lk/lib/payhere.js";
+    script.async = true;
+    document.body.appendChild(script);
+  }
+};
+
 // ─── Schema ───────────────────────────────────────────────────────────────────
 const bookingSchema = z.object({
   symptoms: z.string().min(10, "Please describe your symptoms in detail (at least 10 characters)"),
-  paymentMethod: z.literal(PaymentMethod.ONLINE).default(PaymentMethod.ONLINE),
+  paymentMethod: z.nativeEnum(PaymentMethod).default(PaymentMethod.ONLINE),
   isForDependent: z.boolean().default(false),
   dependentName: z.string().optional(),
   dependentAge: z.string().optional(),
@@ -86,7 +99,7 @@ interface BookingSettings {
   stampDutyEnabled: boolean;
 }
 
-// ─── Shared progress bar (same component as doctor-profile) ───────────────────
+// ─── Shared progress bar ──────────────────────────────────────────────────────
 const STEP_ICONS = [
   <svg key="s" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M4 4l7 18 3-7 7-3L4 4z"/></svg>,
   <svg key="p" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>,
@@ -138,13 +151,10 @@ export default function BookAppointmentPage() {
   const [step, setStep] = useState<"details" | "payment" | "confirmation">("details");
   const [bookingComplete, setBookingComplete] = useState(false);
 
-  // Payment form state (managed separately to avoid polluting booking schema)
-  const [cardType, setCardType] = useState<"visa" | "mastercard" | "">("");
-  const [cardNumber, setCardNumber] = useState("");
-  const [expirationMonth, setExpirationMonth] = useState("");
-  const [expirationYear, setExpirationYear] = useState("");
-  const [cvn, setCvn] = useState("");
-  const [payErr, setPayErr] = useState<Record<string, string>>({});
+  // Load PayHere script on mount
+  useEffect(() => {
+    loadPayHereScript();
+  }, []);
 
   const { data: bookingSettings } = useQuery<BookingSettings>({
     queryKey: ["/api/booking-settings"],
@@ -190,6 +200,23 @@ export default function BookAppointmentPage() {
 
   const isForDependent = form.watch("isForDependent");
 
+  // Calculations
+  const consultationFee = slot?.consultationType === "online" && doctor?.onlineConsultationFee
+    ? doctor.onlineConsultationFee
+    : doctor?.consultationFee || 0;
+
+  const bookingCharges = bookingSettings?.bookingCharges ?? 100;
+  const taxRate = bookingSettings?.taxRate ?? 4;
+  const stampDutyEnabled = bookingSettings?.stampDutyEnabled ?? false;
+  const stampDutyAmount = stampDutyEnabled ? Math.round(consultationFee * 0.01) : 0;
+  const tax = Math.round(consultationFee * (taxRate / 100));
+  const customTaxAmounts = customTaxes.map((t) => ({
+    ...t,
+    amount: Math.round(consultationFee * (t.rate / 100)),
+  }));
+  const customTaxTotal = customTaxAmounts.reduce((sum, t) => sum + t.amount, 0);
+  const totalAmount = consultationFee + bookingCharges + tax + stampDutyAmount + customTaxTotal;
+
   const bookingMutation = useMutation({
     mutationFn: async (data: BookingInput) => {
       if (!doctor || !slot || !doctorId) throw new Error("Missing booking information");
@@ -207,90 +234,122 @@ export default function BookAppointmentPage() {
         dependentContact: data.dependentContact,
       });
     },
-    onSuccess: () => {
-      setBookingComplete(true);
-      setStep("confirmation");
-      toast({ title: "Booking Confirmed!", description: "Your appointment has been successfully booked." });
-      queryClient.invalidateQueries({ queryKey: ["/api/appointments"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/patient/dashboard"] });
-      // Invalidate the doctor's slot cache so the profile page shows the booked slot as gray
-      queryClient.invalidateQueries({ queryKey: ["/api/doctors", doctorId, "slots"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/doctors", doctorId, "all-slots"] });
-    },
     onError: (error: Error) => {
       toast({ title: "Booking Failed", description: error.message || "Unable to complete booking.", variant: "destructive" });
     },
   });
+
+  const onSubmit = async (data: BookingInput) => {
+    if (step === "details") {
+      setStep("payment");
+    } else if (step === "payment") {
+      
+      // 1. First, create the appointment & payment record in our DB
+      bookingMutation.mutate(data, {
+        onSuccess: async (appointmentData: any) => {
+          
+          if (data.paymentMethod === PaymentMethod.AT_CLINIC) {
+             setBookingComplete(true);
+             setStep("confirmation");
+             return;
+          }
+
+          try {
+          const hashData = (await apiRequest("POST", "/api/payhere/hash", {
+            order_id: `booking-${appointmentData.id}`,
+            amount: totalAmount, // Pass the raw number, backend will format it
+            currency: "LKR",
+          })) as { merchant_id: string; hash: string; formattedAmount: string };
+
+          console.log("Hash Data received:", hashData);
+
+          // 3. Configure PayHere Object
+          const paymentObj = {
+            sandbox: true,
+            merchant_id: hashData.merchant_id,
+            return_url: window.location.href,
+            cancel_url: window.location.href,
+            notify_url: "https://localhost:5000/api/payhere/notify",
+            order_id: `booking-${appointmentData.id}`,
+            items: "AyurPath Consultation",
+            amount: hashData.formattedAmount,
+            currency: "LKR",
+            hash: hashData.hash,
+            first_name: user?.fullName?.split(" ")[0] || "Patient",
+            last_name: user?.fullName?.split(" ")[1] || "",
+            email: user?.email || "",
+            phone: user?.phone || "",
+            address: user?.address || "Sri Lanka",
+            city: user?.city || "Colombo",
+            country: "Sri Lanka",
+          };
+
+            // 4. Define PayHere Callbacks (Moved OUTSIDE of onSubmit is better, but this works for now)
+            (window as any).payhere.onCompleted = function onCompleted(orderId: string) {
+              console.log("Payment completed. OrderID:" + orderId);
+              setBookingComplete(true);
+              setStep("confirmation");
+              queryClient.invalidateQueries({ queryKey: ["/api/appointments"] });
+              queryClient.invalidateQueries({ queryKey: ["/api/patient/dashboard"] });
+              toast({ title: "Booking Confirmed!", description: "Payment was successful." });
+            };
+
+            (window as any).payhere.onDismissed = async function onDismissed() {
+              try {
+                await apiRequest("PATCH", `/api/appointments/${appointmentData.id}/payment-failed`, {});
+              } catch(e) {
+                console.error("Failed to release slot", e);
+              }
+              
+              toast({
+                title: "Payment Cancelled",
+                description: "You closed the payment window. Your reserved slot has been released.",
+                variant: "destructive",
+              });
+              
+              setStep("details");
+              queryClient.invalidateQueries({ queryKey: ["/api/slots", slotId] });
+            };
+
+            (window as any).payhere.onError = async function onError(error: any) {
+              console.error("PayHere Error:", error);
+              try {
+                await apiRequest("PATCH", `/api/appointments/${appointmentData.id}/payment-failed`, {});
+              } catch(e) {
+                console.error("Failed to release slot", e);
+              }
+
+              toast({ 
+                title: "Payment Failed", 
+                description: "Your payment was declined. The slot has been released.", 
+                variant: "destructive" 
+              });
+              
+              setStep("details");
+              queryClient.invalidateQueries({ queryKey: ["/api/slots", slotId] });
+            };
+
+            // 5. Trigger the popup!
+            (window as any).payhere.startPayment(paymentObj);
+
+          } catch (error) {
+            console.error("Failed to initiate PayHere:", error);
+            toast({
+              title: "Gateway Error",
+              description: "Failed to connect to payment gateway.",
+              variant: "destructive",
+            });
+          }
+        },
+      });
+    }
+  };
 
   const formatFee = (fee: number) =>
     new Intl.NumberFormat("en-LK", { style: "currency", currency: "LKR", minimumFractionDigits: 0 }).format(fee);
 
   const getInitials = (name: string) =>
     name.split(" ").map((n) => n[0]).join("").toUpperCase().slice(0, 2);
-
-  // Card number formatter: digits only, groups of 4 separated by spaces
-  const formatCardNumber = (val: string) => {
-    const digits = val.replace(/\D/g, "").slice(0, 16);
-    return digits.replace(/(.{4})/g, "$1 ").trim();
-  };
-
-  const validatePayment = () => {
-    const errors: Record<string, string> = {};
-    const now = new Date();
-    const currentYear = now.getFullYear();
-    const currentMonth = now.getMonth() + 1;
-    const rawDigits = cardNumber.replace(/\s/g, "");
-
-    if (!cardType) errors.cardType = "Please select a card type";
-    if (!rawDigits) {
-      errors.cardNumber = "Card number is required";
-    } else if (rawDigits.length < 15 || rawDigits.length > 16) {
-      errors.cardNumber = "Card number must be 15–16 digits";
-    }
-    if (!expirationMonth) {
-      errors.expirationMonth = "Select a month";
-    }
-    if (!expirationYear) {
-      errors.expirationYear = "Select a year";
-    } else if (expirationMonth) {
-      const yr = parseInt(expirationYear, 10);
-      const mo = parseInt(expirationMonth, 10);
-      if (yr < currentYear || (yr === currentYear && mo < currentMonth)) {
-        errors.expirationYear = "Card has expired";
-      }
-    }
-    if (!cvn) {
-      errors.cvn = "CVN is required";
-    } else if (!/^\d{3}$/.test(cvn)) {
-      errors.cvn = "CVN must be exactly 3 digits";
-    }
-    setPayErr(errors);
-    return Object.keys(errors).length === 0;
-  };
-
-  const onSubmit = (data: BookingInput) => {
-    if (step === "details") setStep("payment");
-    else if (step === "payment") {
-      if (!validatePayment()) return;
-      bookingMutation.mutate(data);
-    }
-  };
-
-  const consultationFee = slot?.consultationType === "online" && doctor?.onlineConsultationFee
-    ? doctor.onlineConsultationFee
-    : doctor?.consultationFee || 0;
-
-  const bookingCharges = bookingSettings?.bookingCharges ?? 100;
-  const taxRate = bookingSettings?.taxRate ?? 4;
-  const stampDutyEnabled = bookingSettings?.stampDutyEnabled ?? false;
-  const stampDutyAmount = stampDutyEnabled ? Math.round(consultationFee * 0.01) : 0;
-  const tax = Math.round(consultationFee * (taxRate / 100));
-  const customTaxAmounts = customTaxes.map((t) => ({
-    ...t,
-    amount: Math.round(consultationFee * (t.rate / 100)),
-  }));
-  const customTaxTotal = customTaxAmounts.reduce((sum, t) => sum + t.amount, 0);
-  const totalAmount = consultationFee + bookingCharges + tax + stampDutyAmount + customTaxTotal;
 
   const stepIndex = step === "details" ? 1 : step === "payment" ? 2 : 3;
 
@@ -307,7 +366,7 @@ export default function BookAppointmentPage() {
       <PublicLayout showHeader={false}>
         <div className="container mx-auto px-4 py-16 text-center">
           <h1 className="text-2xl font-bold mb-4">Booking not found</h1>
-          <Link href="/patient/doctors"><Button>Find Doctors</Button></Link>
+          <Link href="/patient/find-doctors"><Button>Find Doctors</Button></Link>
         </div>
       </PublicLayout>
     );
@@ -343,7 +402,7 @@ export default function BookAppointmentPage() {
               <div className="w-full max-w-xl bg-primary/5 border border-primary/20 rounded-2xl p-8 text-center">
 
                 {/* Big checkmark */}
-                <div className="w-24 h-24 rounded-full border-4 border-primary flex items-center justify-center mx-auto mb-6">
+                <div className="w-24 h-24 rounded-full border-4 border-primary flex items-center justify-center mx-auto mb-6 bg-primary/10">
                   <CheckCircle className="h-12 w-12 text-primary" />
                 </div>
 
@@ -354,7 +413,7 @@ export default function BookAppointmentPage() {
                 </p>
 
                 {/* Appointment details card */}
-                <div className="bg-background rounded-xl border border-border p-5 mb-6 text-left">
+                <div className="bg-background rounded-xl border border-border p-5 mb-6 text-left shadow-sm">
                   {/* Doctor row */}
                   <div className="flex items-center gap-3 mb-4">
                     <Avatar className="h-10 w-10 shrink-0">
@@ -382,16 +441,16 @@ export default function BookAppointmentPage() {
                   <div className="border-t border-border pt-4 space-y-2">
                     <div className="flex items-center gap-2 text-sm">
                       <Calendar className="h-4 w-4 text-muted-foreground shrink-0" />
-                      <span>{format(new Date(slot.date), "EEEE, MMMM d, yyyy")}</span>
+                      <span className="font-medium text-foreground">{format(new Date(slot.date), "EEEE, MMMM d, yyyy")}</span>
                     </div>
                     <div className="flex items-center gap-2 text-sm">
                       <Clock className="h-4 w-4 text-muted-foreground shrink-0" />
-                      <span>{slot.startTime} - {slot.endTime}</span>
+                      <span className="font-medium text-foreground">{slot.startTime} - {slot.endTime}</span>
                     </div>
                     <div className="flex items-center gap-2 text-sm">
                       {slot.consultationType === "online"
-                        ? <><Video className="h-4 w-4 text-muted-foreground shrink-0" /><span>Online Consultation</span></>
-                        : <><Building2 className="h-4 w-4 text-muted-foreground shrink-0" /><span>In-Person Consultation</span></>}
+                        ? <><Video className="h-4 w-4 text-muted-foreground shrink-0" /><span className="font-medium text-foreground">Online Consultation</span></>
+                        : <><Building2 className="h-4 w-4 text-muted-foreground shrink-0" /><span className="font-medium text-foreground">In-Person Consultation</span></>}
                     </div>
                   </div>
                 </div>
@@ -399,12 +458,12 @@ export default function BookAppointmentPage() {
                 {/* Action buttons */}
                 <div className="flex flex-col gap-3">
                   <Link href="/patient/appointments">
-                    <button className="w-full flex items-center justify-center gap-2 bg-primary hover:bg-primary/90 text-primary-foreground font-semibold py-3 rounded-xl transition-colors">
+                    <button className="w-full flex items-center justify-center gap-2 bg-primary hover:bg-primary/90 text-primary-foreground font-semibold py-3 rounded-xl transition-colors shadow-sm">
                       View My Appointments
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M7 17L17 7M17 7H7M17 7v10"/></svg>
                     </button>
                   </Link>
-                  <Link href="/patient/doctors">
+                  <Link href="/patient/find-doctors">
                     <button className="w-full flex items-center justify-center gap-2 border border-border bg-background text-foreground font-semibold py-3 rounded-xl hover:bg-muted transition-colors">
                       Find More Doctors
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M7 17L17 7M17 7H7M17 7v10"/></svg>
@@ -422,7 +481,7 @@ export default function BookAppointmentPage() {
 
   // ── Booking summary sidebar (shared between steps) ───────────────────────
   const BookingSummary = () => (
-    <div className="bg-primary/5 border border-primary/20 rounded-2xl p-5 h-fit">
+    <div className="bg-primary/5 border border-primary/20 rounded-2xl p-5 h-fit shadow-sm">
       {/* Header */}
       <div className="flex items-center gap-2 mb-4">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-foreground">
@@ -472,18 +531,18 @@ export default function BookAppointmentPage() {
 
       {/* Date / Time / Type */}
       <div className="space-y-2 py-4 border-t border-primary/20 border-b">
-        <div className="flex items-center gap-2 text-sm">
-          <Calendar className="h-4 w-4 text-muted-foreground shrink-0" />
+        <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+          <Calendar className="h-4 w-4 text-primary shrink-0" />
           <span>{format(new Date(slot.date), "EEEE, MMMM d, yyyy")}</span>
         </div>
-        <div className="flex items-center gap-2 text-sm">
-          <Clock className="h-4 w-4 text-muted-foreground shrink-0" />
+        <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+          <Clock className="h-4 w-4 text-primary shrink-0" />
           <span>{slot.startTime} - {slot.endTime}</span>
         </div>
-        <div className="flex items-center gap-2 text-sm">
+        <div className="flex items-center gap-2 text-sm font-medium text-foreground">
           {slot.consultationType === "online"
-            ? <><Video className="h-4 w-4 text-muted-foreground shrink-0" /><span>Online Consultation</span></>
-            : <><Building2 className="h-4 w-4 text-muted-foreground shrink-0" /><span>In-Person Consultation</span></>}
+            ? <><Video className="h-4 w-4 text-primary shrink-0" /><span>Online Consultation</span></>
+            : <><Building2 className="h-4 w-4 text-primary shrink-0" /><span>In-Person Consultation</span></>}
         </div>
       </div>
 
@@ -491,34 +550,34 @@ export default function BookAppointmentPage() {
       <div className="space-y-2 py-4 border-b border-primary/20">
         <div className="flex justify-between text-sm">
           <span className="text-muted-foreground">Consultation Fee</span>
-          <span>{formatFee(consultationFee)}</span>
+          <span className="font-medium text-foreground">{formatFee(consultationFee)}</span>
         </div>
         <div className="flex justify-between text-sm">
           <span className="text-muted-foreground">Booking Charges</span>
-          <span>{formatFee(bookingCharges)}</span>
+          <span className="font-medium text-foreground">{formatFee(bookingCharges)}</span>
         </div>
         <div className="flex justify-between text-sm">
           <span className="text-muted-foreground">Tax ({taxRate}%)</span>
-          <span>{formatFee(tax)}</span>
+          <span className="font-medium text-foreground">{formatFee(tax)}</span>
         </div>
         {stampDutyEnabled && (
           <div className="flex justify-between text-sm">
             <span className="text-muted-foreground">Stamp Duty (1%)</span>
-            <span>{formatFee(stampDutyAmount)}</span>
+            <span className="font-medium text-foreground">{formatFee(stampDutyAmount)}</span>
           </div>
         )}
         {customTaxAmounts.map((t) => (
           <div key={t.id} className="flex justify-between text-sm">
             <span className="text-muted-foreground">{t.title} ({t.rate}%)</span>
-            <span>{formatFee(t.amount)}</span>
+            <span className="font-medium text-foreground">{formatFee(t.amount)}</span>
           </div>
         ))}
       </div>
 
       {/* Total */}
       <div className="flex justify-between items-center pt-4">
-        <span className="font-bold text-lg text-foreground">Total</span>
-        <span className="font-bold text-lg text-primary">{formatFee(totalAmount)}</span>
+        <span className="font-black text-lg text-foreground">Total</span>
+        <span className="font-black text-2xl text-primary">{formatFee(totalAmount)}</span>
       </div>
     </div>
   );
@@ -531,7 +590,7 @@ export default function BookAppointmentPage() {
           {/* ── Top bar ── */}
           <div className="flex items-center justify-between mb-8">
             <Link href={`/doctors/${doctorId}`}>
-              <button className="flex items-center gap-1.5 text-sm font-medium border border-border bg-background text-foreground rounded-lg px-3 py-1.5 hover:bg-muted transition-colors">
+              <button className="flex items-center gap-1.5 text-sm font-medium border border-border bg-background text-foreground rounded-lg px-3 py-1.5 hover:bg-muted transition-colors shadow-sm">
                 <ChevronLeft className="h-4 w-4" />
                 Back to Doctors
               </button>
@@ -541,7 +600,7 @@ export default function BookAppointmentPage() {
           </div>
 
           {/* ── Progress bar ── */}
-          <div className="bg-card border border-border rounded-2xl px-8 py-5 mb-6">
+          <div className="bg-card border border-border rounded-2xl px-8 py-5 mb-6 shadow-sm">
             <ProgressBar current={stepIndex} />
           </div>
 
@@ -550,21 +609,26 @@ export default function BookAppointmentPage() {
             <form onSubmit={form.handleSubmit(onSubmit)}>
 
               {step === "details" && (
-                <div className="grid md:grid-cols-2 gap-5">
+                <div className="grid md:grid-cols-[1fr_400px] gap-6">
 
                   {/* LEFT — Patient Information */}
-                  <div className="bg-primary/5 border border-primary/20 rounded-2xl p-6">
-                    <div className="flex items-center gap-2 mb-5">
-                      <User className="h-5 w-5 text-foreground" />
-                      <h2 className="font-bold text-foreground">Patient Information</h2>
+                  <div className="bg-card border border-border rounded-2xl p-6 shadow-sm">
+                    <div className="flex items-center gap-2 mb-6 pb-4 border-b border-border">
+                      <div className="p-2 bg-primary/10 rounded-lg">
+                        <User className="h-5 w-5 text-primary" />
+                      </div>
+                      <h2 className="font-bold text-lg text-foreground">Patient Information</h2>
                     </div>
 
                     {/* Patient details */}
                     {user && (
-                      <div className="mb-5">
-                        <p className="font-semibold text-foreground">{user.fullName}</p>
-                        <p className="text-sm text-muted-foreground">{user.email}</p>
-                        <p className="text-sm text-muted-foreground">{user.phone}</p>
+                      <div className="mb-6 p-4 bg-muted/40 rounded-xl border border-border">
+                        <p className="font-bold text-foreground text-lg mb-1">{user.fullName}</p>
+                        <div className="flex gap-4 text-sm text-muted-foreground font-medium">
+                           <p>{user.email}</p>
+                           <p>•</p>
+                           <p>{user.phone}</p>
+                        </div>
                       </div>
                     )}
 
@@ -573,44 +637,44 @@ export default function BookAppointmentPage() {
                       control={form.control}
                       name="isForDependent"
                       render={({ field }) => (
-                        <FormItem className="flex items-center gap-2 space-y-0 mb-5">
+                        <FormItem className="flex items-center gap-3 space-y-0 mb-5 bg-primary/5 p-4 rounded-xl border border-primary/10">
                           <FormControl>
                             <Checkbox
                               checked={field.value}
                               onCheckedChange={field.onChange}
-                              className="border-primary data-[state=checked]:bg-primary"
+                              className="border-primary data-[state=checked]:bg-primary h-5 w-5 rounded"
                             />
                           </FormControl>
-                          <FormLabel className="font-normal cursor-pointer text-sm">
-                            Booking for a dependent (family member)
+                          <FormLabel className="font-semibold cursor-pointer text-sm m-0">
+                            I am booking this appointment for a family member or dependent
                           </FormLabel>
                         </FormItem>
                       )}
                     />
 
-                    {/* Dependent fields — single column */}
+                    {/* Dependent fields */}
                     {isForDependent && (
-                      <div className="flex flex-col gap-3 mb-5 p-4 bg-background/60 rounded-xl border border-border">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6 p-5 bg-muted/20 rounded-xl border border-border">
                         <FormField control={form.control} name="dependentName" render={({ field }) => (
-                          <FormItem>
-                            <FormLabel className="text-xs">Dependent Name *</FormLabel>
-                            <FormControl><Input placeholder="Full Name" className="text-sm" {...field} /></FormControl>
+                          <FormItem className="sm:col-span-2">
+                            <FormLabel className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Dependent Name *</FormLabel>
+                            <FormControl><Input placeholder="Full Name" className="bg-background h-11 rounded-xl" {...field} /></FormControl>
                             <FormMessage />
                           </FormItem>
                         )} />
                         <FormField control={form.control} name="dependentAge" render={({ field }) => (
                           <FormItem>
-                            <FormLabel className="text-xs">Age *</FormLabel>
-                            <FormControl><Input type="number" placeholder="Age" className="text-sm" {...field} /></FormControl>
+                            <FormLabel className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Age *</FormLabel>
+                            <FormControl><Input type="number" placeholder="Age" className="bg-background h-11 rounded-xl" {...field} /></FormControl>
                             <FormMessage />
                           </FormItem>
                         )} />
                         <FormField control={form.control} name="dependentGender" render={({ field }) => (
                           <FormItem>
-                            <FormLabel className="text-xs">Gender *</FormLabel>
+                            <FormLabel className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Gender *</FormLabel>
                             <Select onValueChange={field.onChange} defaultValue={field.value}>
                               <FormControl>
-                                <SelectTrigger className="text-sm"><SelectValue placeholder="Select" /></SelectTrigger>
+                                <SelectTrigger className="bg-background h-11 rounded-xl"><SelectValue placeholder="Select" /></SelectTrigger>
                               </FormControl>
                               <SelectContent>
                                 <SelectItem value={Gender.MALE}>Male</SelectItem>
@@ -622,9 +686,9 @@ export default function BookAppointmentPage() {
                           </FormItem>
                         )} />
                         <FormField control={form.control} name="dependentContact" render={({ field }) => (
-                          <FormItem>
-                            <FormLabel className="text-xs">Contact Number</FormLabel>
-                            <FormControl><Input placeholder="07XXXXXXXX" className="text-sm" {...field} /></FormControl>
+                          <FormItem className="sm:col-span-2">
+                            <FormLabel className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Contact Number (Optional)</FormLabel>
+                            <FormControl><Input placeholder="07XXXXXXXX" className="bg-background h-11 rounded-xl" {...field} /></FormControl>
                             <FormMessage />
                           </FormItem>
                         )} />
@@ -632,8 +696,13 @@ export default function BookAppointmentPage() {
                     )}
 
                     {/* Symptoms */}
-                    <div className="mb-5">
-                      <h3 className="font-bold text-foreground mb-3">Chief Complaint / Symptoms</h3>
+                    <div className="mb-6">
+                      <div className="flex items-center gap-2 mb-3">
+                        <div className="p-1.5 bg-rose-100 dark:bg-rose-900/30 rounded-lg text-rose-600 dark:text-rose-400">
+                           <AlertCircle className="w-4 h-4" />
+                        </div>
+                        <h3 className="font-bold text-foreground">Chief Complaint / Symptoms *</h3>
+                      </div>
                       <FormField
                         control={form.control}
                         name="symptoms"
@@ -642,7 +711,7 @@ export default function BookAppointmentPage() {
                             <FormControl>
                               <Textarea
                                 placeholder="Please describe your symptoms or reason for visit in detail..."
-                                className="min-h-[140px] bg-background/60 border-primary/30 focus:border-primary rounded-xl resize-none text-sm"
+                                className="min-h-[140px] bg-background border-border focus:border-primary rounded-xl resize-none text-sm p-4"
                                 data-testid="textarea-symptoms"
                                 {...field}
                               />
@@ -658,23 +727,21 @@ export default function BookAppointmentPage() {
                       control={form.control}
                       name="agreeTerms"
                       render={({ field }) => (
-                        <FormItem className="flex items-start gap-2 space-y-0">
+                        <FormItem className="flex items-start gap-3 space-y-0 bg-muted/40 p-4 rounded-xl border border-border">
                           <FormControl>
                             <Checkbox
                               checked={field.value}
                               onCheckedChange={field.onChange}
-                              className="border-primary data-[state=checked]:bg-primary mt-0.5"
+                              className="border-primary data-[state=checked]:bg-primary mt-0.5 rounded"
                               data-testid="checkbox-terms"
                             />
                           </FormControl>
                           <div className="space-y-1">
-                            <label className="font-normal cursor-pointer text-sm leading-relaxed text-foreground">
+                            <label className="font-medium cursor-pointer text-sm leading-relaxed text-muted-foreground">
                               I agree to the{" "}
-                              <Link href="/terms" className="text-primary underline">Terms of Service</Link>
-                              ,{" "}
-                              <Link href="/privacy" className="text-primary underline">Privacy Policy</Link>
-                              , and{" "}
-                              <Link href="/cancellation" className="text-primary underline">Cancellation Policy</Link>
+                              <Link href="/terms" className="text-primary font-bold hover:underline">Terms of Service</Link>,{" "}
+                              <Link href="/privacy" className="text-primary font-bold hover:underline">Privacy Policy</Link>, and{" "}
+                              <Link href="/cancellation" className="text-primary font-bold hover:underline">Cancellation Policy</Link>.
                             </label>
                             <FormMessage />
                           </div>
@@ -684,170 +751,75 @@ export default function BookAppointmentPage() {
                   </div>
 
                   {/* RIGHT — Booking Summary */}
-                  <BookingSummary />
+                  <div>
+                    <BookingSummary />
+                    
+                    {/* Bottom CTA — Details step */}
+                    <div className="mt-4">
+                      <button
+                        type="submit"
+                        disabled={bookingMutation.isPending}
+                        data-testid="button-book"
+                        className="w-full flex items-center justify-center gap-2 bg-primary hover:bg-primary/90 text-primary-foreground font-bold text-base py-4 rounded-2xl shadow-lg shadow-primary/20 transition-all hover:-translate-y-0.5 disabled:opacity-60 disabled:hover:translate-y-0"
+                      >
+                        <span>Continue to Payment</span>
+                        <BookOpen className="h-5 w-5" />
+                      </button>
+                    </div>
+                  </div>
                 </div>
               )}
 
-              {step === "payment" && (() => {
-                const now = new Date();
-                const currentYear = now.getFullYear();
-                const months = [
-                  { value: "1", label: "01 - January" }, { value: "2", label: "02 - February" },
-                  { value: "3", label: "03 - March" }, { value: "4", label: "04 - April" },
-                  { value: "5", label: "05 - May" }, { value: "6", label: "06 - June" },
-                  { value: "7", label: "07 - July" }, { value: "8", label: "08 - August" },
-                  { value: "9", label: "09 - September" }, { value: "10", label: "10 - October" },
-                  { value: "11", label: "11 - November" }, { value: "12", label: "12 - December" },
-                ];
-                const years = Array.from({ length: 12 }, (_, i) => currentYear + i);
-
-                return (
-                  <div className="grid md:grid-cols-2 gap-5">
-                    {/* LEFT — Payment Details */}
-                    <div className="bg-primary/5 border border-primary/20 rounded-2xl p-6">
-                      <div className="flex items-center gap-2 mb-6">
-                        <CreditCard className="h-5 w-5 text-foreground" />
-                        <h2 className="font-bold text-foreground">Payment Details</h2>
+              {step === "payment" && (
+                <div className="grid md:grid-cols-[1fr_400px] gap-6">
+                  {/* LEFT — PayHere integration */}
+                  <div className="bg-card border border-border rounded-2xl p-6 md:p-8 shadow-sm h-fit">
+                    <div className="flex items-center gap-3 mb-8 pb-4 border-b border-border">
+                      <div className="p-2.5 bg-blue-100 dark:bg-blue-900/30 rounded-xl text-blue-600 dark:text-blue-400">
+                        <CreditCard className="h-6 w-6" />
                       </div>
-
-                      {/* Card Type */}
-                      <div className="mb-4">
-                        <label className="text-sm font-medium text-foreground">Card Type*</label>
-                        <div className="flex items-center gap-6 mt-2">
-                          {/* Visa */}
-                          <label className="flex items-center gap-2 cursor-pointer">
-                            <input type="radio" name="cardType" value="visa"
-                              checked={cardType === "visa"}
-                              onChange={() => { setCardType("visa"); setPayErr(e => ({ ...e, cardType: "" })); }}
-                              className="accent-primary"
-                            />
-                            <span className="border border-border rounded px-2 py-0.5 text-xs font-bold text-blue-800 bg-white tracking-widest">VISA</span>
-                          </label>
-                          {/* Mastercard */}
-                          <label className="flex items-center gap-2 cursor-pointer">
-                            <input type="radio" name="cardType" value="mastercard"
-                              checked={cardType === "mastercard"}
-                              onChange={() => { setCardType("mastercard"); setPayErr(e => ({ ...e, cardType: "" })); }}
-                              className="accent-primary"
-                            />
-                            <span className="flex items-center gap-0.5">
-                              <span className="w-5 h-5 rounded-full bg-red-500 opacity-90 -mr-2.5 inline-block" />
-                              <span className="w-5 h-5 rounded-full bg-amber-400 opacity-90 inline-block" />
-                            </span>
-                          </label>
-                        </div>
-                        {payErr.cardType && <p className="text-destructive text-xs mt-1">{payErr.cardType}</p>}
-                      </div>
-
-                      {/* Card Number */}
-                      <div className="mb-4">
-                        <label className="text-sm font-medium text-foreground">Card Number*</label>
-                        <input
-                          type="text"
-                          inputMode="numeric"
-                          placeholder="1234 5678 9012 3456"
-                          value={cardNumber}
-                          maxLength={19}
-                          onChange={(e) => {
-                            setCardNumber(formatCardNumber(e.target.value));
-                            setPayErr(er => ({ ...er, cardNumber: "" }));
-                          }}
-                          className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
-                        />
-                        {payErr.cardNumber && <p className="text-destructive text-xs mt-1">{payErr.cardNumber}</p>}
-                      </div>
-
-                      {/* Expiration Month + Year */}
-                      <div className="grid grid-cols-2 gap-3 mb-4">
-                        <div>
-                          <label className="text-sm font-medium text-foreground">Expiration Month*</label>
-                          <select
-                            value={expirationMonth}
-                            onChange={(e) => { setExpirationMonth(e.target.value); setPayErr(er => ({ ...er, expirationMonth: "", expirationYear: "" })); }}
-                            className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
-                          >
-                            <option value="">Month</option>
-                            {months.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
-                          </select>
-                          {payErr.expirationMonth && <p className="text-destructive text-xs mt-1">{payErr.expirationMonth}</p>}
-                        </div>
-                        <div>
-                          <label className="text-sm font-medium text-foreground">Expiration Year*</label>
-                          <select
-                            value={expirationYear}
-                            onChange={(e) => { setExpirationYear(e.target.value); setPayErr(er => ({ ...er, expirationYear: "" })); }}
-                            className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
-                          >
-                            <option value="">Year</option>
-                            {years.map(y => <option key={y} value={String(y)}>{y}</option>)}
-                          </select>
-                          {payErr.expirationYear && <p className="text-destructive text-xs mt-1">{payErr.expirationYear}</p>}
-                        </div>
-                      </div>
-
-                      {/* CVN */}
-                      <div className="mb-6">
-                        <label className="text-sm font-medium text-foreground">CVN*</label>
-                        <input
-                          type="text"
-                          inputMode="numeric"
-                          placeholder="123"
-                          value={cvn}
-                          maxLength={3}
-                          onChange={(e) => {
-                            const v = e.target.value.replace(/\D/g, "").slice(0, 3);
-                            setCvn(v);
-                            setPayErr(er => ({ ...er, cvn: "" }));
-                          }}
-                          className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
-                        />
-                        {payErr.cvn && <p className="text-destructive text-xs mt-1">{payErr.cvn}</p>}
-                        <p className="text-xs text-muted-foreground mt-1">
-                          This code is a three digit number printed on the back of credit cards.
-                        </p>
-                      </div>
-
-                      {/* Buttons inside the card */}
-                      <div className="flex items-center gap-3">
-                        <button
-                          type="button"
-                          onClick={() => setStep("details")}
-                          className="flex items-center gap-1.5 border border-border bg-background text-foreground text-sm font-medium px-4 py-2 rounded-xl hover:bg-muted transition-colors"
-                        >
-                          <ChevronLeft className="h-4 w-4" />
-                          Back to Information
-                        </button>
-                        <button
-                          type="submit"
-                          disabled={bookingMutation.isPending}
-                          data-testid="button-book"
-                          className="flex-1 flex items-center justify-center gap-2 bg-primary hover:bg-primary/90 text-primary-foreground font-semibold text-sm py-2 rounded-xl transition-colors disabled:opacity-60"
-                        >
-                          {bookingMutation.isPending
-                            ? <><Loader2 className="h-4 w-4 animate-spin" /> Processing…</>
-                            : <><span>Pay {formatFee(totalAmount)}</span><CreditCard className="h-4 w-4" /></>}
-                        </button>
+                      <div>
+                        <h2 className="font-extrabold text-xl text-foreground">Secure Checkout</h2>
+                        <p className="text-sm font-medium text-muted-foreground">Complete your payment via PayHere</p>
                       </div>
                     </div>
+                    
+                    <div className="bg-muted/30 p-8 rounded-2xl border border-border text-center mb-8">
+                       <img src="https://www.payhere.lk/downloads/images/payhere_square_banner.png" alt="PayHere Secure Checkout" className="h-20 mx-auto mb-6 drop-shadow-sm rounded-lg" />
+                       <h3 className="font-bold text-foreground text-lg mb-2">Ready to complete your booking?</h3>
+                       <p className="text-sm font-medium text-muted-foreground max-w-md mx-auto leading-relaxed">
+                         You will be redirected to the secure PayHere payment gateway to process your card payment. No card details are saved on our servers.
+                       </p>
+                    </div>
 
-                    {/* RIGHT — Booking Summary */}
+                    <div className="flex flex-col sm:flex-row items-center gap-4">
+                      <button
+                        type="button"
+                        onClick={() => setStep("details")}
+                        className="w-full sm:w-auto flex items-center justify-center gap-2 border-2 border-border bg-background text-foreground text-sm font-bold px-6 py-3.5 rounded-xl hover:bg-muted transition-colors"
+                      >
+                        <ChevronLeft className="h-4 w-4" />
+                        Go Back
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onSubmit(form.getValues())}
+                        disabled={bookingMutation.isPending}
+                        className="w-full flex-1 flex items-center justify-center gap-2 bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold text-base py-3.5 rounded-xl transition-all shadow-lg shadow-blue-500/20 disabled:opacity-60"
+                      >
+                        {bookingMutation.isPending ? (
+                          <><Loader2 className="h-5 w-5 animate-spin" /> Preparing Checkout…</>
+                        ) : (
+                          <>Pay securely with PayHere <ChevronRight className="h-5 w-5" /></>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* RIGHT — Booking Summary */}
+                  <div>
                     <BookingSummary />
                   </div>
-                );
-              })()}
-
-              {/* ── Bottom CTA — only for details step ── */}
-              {step === "details" && (
-                <div className="mt-5">
-                  <button
-                    type="submit"
-                    disabled={bookingMutation.isPending}
-                    data-testid="button-book"
-                    className="w-full flex items-center justify-center gap-2 bg-primary hover:bg-primary/90 text-primary-foreground font-semibold text-base py-4 rounded-xl transition-colors disabled:opacity-60"
-                  >
-                    <span>Continue to Payment</span>
-                    <BookOpen className="h-5 w-5" />
-                  </button>
                 </div>
               )}
 

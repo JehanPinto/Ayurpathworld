@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { format, parseISO, isAfter, isBefore } from "date-fns";
@@ -56,6 +56,42 @@ export default function PatientAppointmentsPage() {
       isAfter(aptDate, now) || apt.appointmentDate === today
     ) && !["cancelled", "completed", "no_show"].includes(apt.status);
   });
+
+  // useEffect(() => {
+  //   // Request Permission
+  //   if ("Notification" in window && Notification.permission !== "granted") {
+  //     Notification.requestPermission();
+  //   }
+
+  //   const timeouts: NodeJS.Timeout[] = [];
+
+  //   upcomingAppointments.forEach((apt) => {
+  //     if (apt.consultationType === "online" && apt.meetingLink && apt.appointmentDate === today) {
+  //       const meetTime = new Date(`${apt.appointmentDate}T${apt.appointmentTime}`).getTime();
+  //       const now = Date.now();
+        
+  //       // විනාඩි 10 කට කලින්
+  //       const timeToAlert = meetTime - (10 * 60 * 1000) - now;
+
+  //       if (timeToAlert > 0) {
+  //         const timer = setTimeout(() => {
+  //           if (Notification.permission === "granted") {
+  //             const notification = new Notification("Upcoming Online Consultation", {
+  //               body: `Your meeting with Dr. ${apt.doctor.user.fullName} starts in 10 minutes. Click to join.`,
+  //               icon: "/logo-light.png",
+  //             });
+  //             notification.onclick = () => {
+  //               window.open(apt.meetingLink!, "_blank");
+  //             };
+  //           }
+  //         }, timeToAlert);
+  //         timeouts.push(timer);
+  //       }
+  //     }
+  //   });
+
+  //   return () => timeouts.forEach(clearTimeout);
+  // }, [upcomingAppointments]);
 
   const pastAppointments = appointments.filter((apt) => {
     const aptDate = parseISO(apt.appointmentDate);
@@ -287,6 +323,29 @@ export default function PatientAppointmentsPage() {
                 <div className="p-4 bg-destructive/10 border border-destructive/20 rounded-xl">
                   <p className="font-bold text-destructive mb-1.5">Cancellation Reason</p>
                   <p className="font-medium text-destructive/80 leading-relaxed">{selectedAppointment.cancelReason}</p>
+                </div>
+              )}
+
+              {/* Online Consultation Link Section */}
+              {selectedAppointment?.consultationType === ConsultationType.ONLINE && selectedAppointment.slot?.meetLink && (
+                <div className="flex items-center gap-3 p-4 bg-indigo-50 dark:bg-indigo-900/20 rounded-xl border border-indigo-100 dark:border-indigo-800">
+                  <div className="p-2 bg-indigo-100 dark:bg-indigo-900/50 rounded-lg">
+                    <Video className="h-5 w-5 text-indigo-600 dark:text-indigo-400" />
+                  </div>
+                  <div className="flex flex-col sm:flex-row sm:items-center gap-2 justify-between w-full">
+                    <p className="font-bold text-indigo-900 dark:text-indigo-100 text-sm">Online Consultation</p>
+                    <Button 
+                      variant="outline"
+                      className="px-3 py-1 h-auto text-sm font-semibold text-indigo-600 hover:text-indigo-800 dark:text-indigo-400"
+                      onClick={() => {
+                        if (selectedAppointment.slot?.meetLink) {
+                          window.open(selectedAppointment.slot.meetLink, "_blank", "noopener,noreferrer");
+                        }
+                      }}
+                    >
+                      Join Google Meet
+                    </Button>
+                  </div>
                 </div>
               )}
             </div>

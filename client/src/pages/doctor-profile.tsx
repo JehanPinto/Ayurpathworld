@@ -150,13 +150,6 @@ export default function DoctorProfilePage() {
                 variant="outline" 
                 size="sm" 
                 className="flex items-center gap-1.5 text-sm font-medium rounded-lg px-3 py-1.5 hover:bg-muted transition-colors"
-                onClick={() => {
-                    if (window.history.length > 1) {
-                        window.history.back();
-                    } else {
-                        navigate("/patient/find-doctors");
-                    }
-                }}
               >
                 <ChevronLeft className="h-4 w-4" />
                 Back
@@ -173,9 +166,9 @@ export default function DoctorProfilePage() {
             {/* Left: doctor info */}
             <div className="flex-1">
               <div className="flex items-start gap-4 mb-4">
-                <Avatar className="h-16 w-16 rounded-xl shrink-0">
+                <Avatar className="h-16 w-16 rounded-full shrink-0">
                   <AvatarImage src={doctor.user.profileImage} alt={doctor.user.fullName} />
-                  <AvatarFallback className="rounded-xl bg-primary/10 text-primary text-xl font-bold">
+                  <AvatarFallback className="rounded-full bg-primary/10 text-primary text-xl font-bold">
                     {getInitials(doctor.user.fullName)}
                   </AvatarFallback>
                 </Avatar>

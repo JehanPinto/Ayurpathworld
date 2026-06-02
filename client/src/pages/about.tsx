@@ -1,10 +1,12 @@
-import { 
-  Heart, 
-  Leaf, 
-  Shield, 
-  Award, 
+import { useState, useEffect } from "react";
+import {
+  Heart,
+  Leaf,
+  Shield,
+  Award,
   Target,
-  Globe
+  Globe,
+  ArrowUp
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { PublicLayout } from "@/components/layout/public-layout";
@@ -33,6 +35,12 @@ const values = [
 ];
 
 export default function AboutPage() {
+  const [showScrollTop, setShowScrollTop] = useState(false);
+  useEffect(() => {
+    const onScroll = () => setShowScrollTop(window.scrollY > 300);
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
   return (
     <PublicLayout>
       {/* Hero Section */}
@@ -183,6 +191,15 @@ export default function AboutPage() {
           </div>
         </div>
       </section>
+      <button
+        onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+        aria-label="Scroll to top"
+        className={`fixed bottom-6 right-6 z-50 w-11 h-11 rounded-full bg-primary text-primary-foreground shadow-lg flex items-center justify-center transition-all duration-300 hover:scale-110 hover:shadow-xl hover:brightness-110 ${
+          showScrollTop ? "opacity-100 translate-y-0" : "opacity-0 translate-y-4 pointer-events-none"
+        }`}
+      >
+        <ArrowUp className="h-5 w-5" />
+      </button>
     </PublicLayout>
   );
 }

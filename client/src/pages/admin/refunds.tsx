@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { 
   MoreHorizontal, 
@@ -46,14 +46,22 @@ export default function AdminRefunds() {
   const { toast } = useToast();
   const [selectedRefund, setSelectedRefund] = useState<any>(null);
 
-  const itemsPerPage = 10;
-  const [currentPage, setCurrentPage] = useUrlPagination(1);
+  const [currentPage, setCurrentPage] = useState(1);
 
-  // Fetching from the new refunds table logic
-  const { data: allRequests = [], isLoading, isFetching, isError, error } = useQuery<any[]>({
-    queryKey: ["/api/admin/refund-requests"],
-    staleTime: 0,
+  const { data: response, isLoading, isFetching, isError } = useQuery({
+    queryKey: ["/api/admin/refund-requests", currentPage],
+    queryFn: async () => { 
+      const res = await fetch(`/api/admin/refund-requests?page=${currentPage}&limit=10`);
+      if (!res.ok) throw new Error("Failed to load refund requests");
+      return res.json();
+    }
   });
+
+  const allRequests = response?.data || [];
+  const totalPages = response?.totalPages || 1;
+
+  console.log("Fetched refund requests:", allRequests);
+  console.log("Current page:", currentPage, "Total pages:", totalPages);
 
   const processMutation = useMutation({
     mutationFn: (data: { id: string; status: string }) => {
@@ -69,32 +77,21 @@ export default function AdminRefunds() {
     },
   });
 
-  // --- Statistics Calculations based on NEW Table ---
-  const pendingRequests = allRequests.filter((r) => r.refund.status === "pending");
-  const completedRefunds = allRequests.filter((r) => r.refund.status === "completed");
+  const pendingRequests = allRequests.filter((r: any) => r.refund.status === "pending");
+  const completedRefunds = allRequests.filter((r: any) => r.refund.status === "completed");
 
-  const doctorCancellationsPending = pendingRequests.filter((r) => r.appointment.cancelledBy === "doctor").length;
-  const doctorCancellationsTotal = allRequests.filter((r) => r.appointment.cancelledBy === "doctor").length;
+  const doctorCancellationsPending = pendingRequests.filter((r: any) => r.appointment.cancelledBy === "doctor").length;
+  const doctorCancellationsTotal = allRequests.filter((r: any) => r.appointment.cancelledBy === "doctor").length;
   const doctorRefundedAmount = completedRefunds
-    .filter((r) => r.appointment.cancelledBy === "doctor")
-    .reduce((sum, r) => sum + r.refund.amount, 0);
+    .filter((r: any) => r.appointment.cancelledBy === "doctor")
+    .reduce((sum: number, r: any) => sum + r.refund.amount, 0);
 
-  const patientCancellationsTotal = allRequests.filter((r) => r.appointment.cancelledBy === "patient").length;
+  const patientCancellationsTotal = allRequests.filter((r: any) => r.appointment.cancelledBy === "patient").length;
   const patientRefundedAmount = completedRefunds
-    .filter((r) => r.appointment.cancelledBy === "patient")
-    .reduce((sum, r) => sum + r.refund.amount, 0);
+    .filter((r: any) => r.appointment.cancelledBy === "patient")
+    .reduce((sum: number, r: any) => sum + r.refund.amount, 0);
 
-  const refundableTotal = pendingRequests.reduce((sum, r) => sum + r.refund.amount, 0);
-
-  const totalPages = Math.max(1, Math.ceil(pendingRequests.length / itemsPerPage));
-  const startIndex = (currentPage - 1) * itemsPerPage;
-  const currentPendingRequests = pendingRequests.slice(startIndex, startIndex + itemsPerPage);
-
-  useEffect(() => {
-    if (currentPage > totalPages) {
-      setCurrentPage(1);
-    }
-  }, [pendingRequests.length, currentPage, totalPages, setCurrentPage]);
+  const refundableTotal = pendingRequests.reduce((sum: number, r: any) => sum + r.refund.amount, 0);
 
   const formatPrice = (value: number) => 
     new Intl.NumberFormat("en-LK", { minimumFractionDigits: 0 }).format(value || 0);
@@ -103,10 +100,10 @@ export default function AdminRefunds() {
 
   if (isError) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-[400px] gap-4">
-        <AlertCircle className="h-12 w-12 text-rose-500" />
-        <p className="text-slate-500 font-medium">Failed to load refund data.</p>
-        <Button onClick={() => window.location.reload()} variant="outline">Reload Page</Button>
+      <div className="flex flex-col items-center justify-center min-h-[400px] gap-4 px-4 text-center">
+        <AlertCircle className="h-12 w-12 text-destructive" />
+        <p className="text-muted-foreground">Failed to load dashboard. Please try again.</p>
+        <Button onClick={() => window.location.reload()}>Retry</Button>
       </div>
     );
   }
@@ -201,16 +198,15 @@ export default function AdminRefunds() {
                   <RefundRowSkeleton />
                   <RefundRowSkeleton />
                 </>
-              ) : currentPendingRequests.length === 0 ? (
+              ) : allRequests.length === 0 ? (
                 <tr>
                   <td colSpan={8} className="px-6 py-16 text-center text-muted-foreground font-bold text-base">
-                    No pending refund requests.
+                    No refund requests found.
                   </td>
                 </tr>
               ) : (
-                currentPendingRequests.map((req, index) => (
+                allRequests.map((req: any, index: number) => (
                   <tr key={req.refund.id} className="hover:bg-accent/50 transition-colors">
-                    {/* Sticky Column Cell - bg-card use කරල තියෙන්නේ dark mode එකේදීත් පේන්න */}
                     <td className="px-3 py-4 md:px-6 md:py-5 font-mono font-bold text-muted-foreground bg-card sticky left-0 z-10 border-r border-border">
                       {index + 1}
                     </td>

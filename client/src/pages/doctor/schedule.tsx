@@ -304,6 +304,18 @@ export default function DoctorSchedule() {
                                 </span>
                               </>
                             )}
+
+                            {slot.consultationType === "online" && slot.meetLink && (
+                              <a 
+                                href={slot.meetLink} 
+                                target="_blank" 
+                                rel="noopener noreferrer" 
+                                className="flex items-center text-xs text-blue-600 hover:text-blue-700 hover:underline mt-0.5"
+                              >
+                                <Video className="w-3 h-3 mr-1" />
+                                Join Meeting
+                              </a>
+                            )}
                           </div>
                         </div>
                       </div>

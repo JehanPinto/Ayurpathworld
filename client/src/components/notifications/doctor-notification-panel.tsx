@@ -147,6 +147,12 @@ function getBadgeLabel(n: Notification): string {
 }
 
 function getButton(n: Notification) {
+
+  const meetLinkMatch = n.message.match(/https:\/\/meet\.google\.com\/[a-z\-]+/i);
+  if (meetLinkMatch) {
+    return { label: "Join Meeting", href: meetLinkMatch[0], isExternal: true };
+  }
+
   const title = n.title.toLowerCase();
   if (isAnnouncement(n))                                               return null;
   if (title.includes("additional documents") || title.includes("admin request"))
