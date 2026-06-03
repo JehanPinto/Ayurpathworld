@@ -1,7 +1,6 @@
 import { useState, useEffect } from "react";
 import { Link } from "wouter";
 import {
-  Search,
   Shield,
   Code,
   Droplet,
@@ -16,28 +15,18 @@ import {
   ArrowUp,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { PublicLayout } from "@/components/layout/public-layout";
-
-// Quick filter tags
-const QUICK_LINKS = [
-  "Billing & plans",
-  "Account setup",
-  "API access",
-  "Security",
-  "Integrations",
-];
 
 // Categories data
 const CATEGORIES = [
-  { icon: Shield, title: "Account &\nSecurity" },
-  { icon: Code, title: "API &\nIntegrations" },
-  { icon: Droplet, title: "Treatments &\nServices" },
-  { icon: Receipt, title: "Payments &\nBillings" },
-  { icon: Calendar, title: "Appointments" },
-  { icon: UserCircle, title: "Doctor\nProfiles" },
-  { icon: LifeBuoy, title: "Technical\nSupport" },
-  { icon: FileText, title: "Your\nAccount" },
+  { icon: Shield,     title: "Account &\nSecurity",    href: "/help/account-security" },
+  { icon: Code,       title: "API &\nIntegrations",    href: "/help/api-integrations" },
+  { icon: Droplet,    title: "Treatments &\nServices", href: "/help/treatments" },
+  { icon: Receipt,    title: "Payments &\nBillings",   href: "/help/payments" },
+  { icon: Calendar,   title: "Appointments",           href: "/help/appointments" },
+  { icon: UserCircle, title: "Doctor\nProfiles",       href: "/doctors" },
+  { icon: LifeBuoy,   title: "Technical\nSupport",     href: "/help/technical-support" },
+  { icon: FileText,   title: "Your\nAccount",          href: "/help/your-account" },
 ];
 
 // FAQ Data
@@ -77,9 +66,7 @@ const FAQS = [
 ];
 
 export default function HelpCenterPage() {
-  const [searchQuery, setSearchQuery] = useState("");
   const [openFaq, setOpenFaq] = useState<number | null>(null);
-  const [showQuickLinks, setShowQuickLinks] = useState(false);
   const [showScrollTop, setShowScrollTop] = useState(false);
   useEffect(() => {
     const onScroll = () => setShowScrollTop(window.scrollY > 300);
@@ -104,74 +91,22 @@ export default function HelpCenterPage() {
             Search our knowledge base or browse help topics below
           </p>
 
-          {/* Search Bar */}
-          <div className="relative max-w-3xl mx-auto mb-3 shadow-sm">
-            <Input
-              type="text"
-              placeholder="Search for answers, guides or topics ..."
-              className="h-14 pl-6 pr-16 rounded-2xl border-primary/70 bg-card text-base focus-visible:ring-primary"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-            />
-            <button 
-              className="absolute right-0 top-0 h-14 w-14 rounded-xl bg-primary hover:bg-primary/90 flex items-center justify-center"
-            >
-              <Search className="h-5 w-5 text-white" />
-            </button>
-          </div>
-
-          {/* Quick Links Section */}
-          <div className="max-w-3xl mx-auto">
-            
-            {/* 👉 Tablet & Mobile View Toggle Button (Desktop වලදි මේක පේන්නේ නෑ) */}
-            <div className="lg:hidden flex justify-center mb-4">
-              <button
-                onClick={() => setShowQuickLinks(!showQuickLinks)}
-                className="flex items-center gap-2 px-5 py-2 text-sm font-medium text-muted-foreground hover:text-primary bg-card border border-border/60 rounded-full transition-colors shadow-sm"
-              >
-                {showQuickLinks ? "Hide Topics" : "Popular Topics"}
-                <ChevronDown 
-                  className={`h-4 w-4 transition-transform duration-300 ${
-                    showQuickLinks ? "rotate-180" : ""
-                  }`} 
-                />
-              </button>
-            </div>
-
-            {/* 👉 Links Container - Desktop (lg) වලදි හැමතිස්සෙම පේනවා, අනිත් ඒවගේදි Button එක එබුවම පේනවා */}
-            <div 
-              className={`flex-wrap justify-center gap-3 transition-all duration-300 ${
-                showQuickLinks ? "flex animate-in fade-in slide-in-from-top-2" : "hidden lg:flex"
-              }`}
-            >
-              {QUICK_LINKS.map((link, idx) => (
-                <button
-                  key={idx}
-                  className="px-4 py-2 rounded-lg border border-primary/70 bg-card lg:text-[18px] md:text-[16px] sm:text-[14px] text-[12px] text-foreground/70 hover:border-primary hover:text-primary hover:bg-primary/5 transition-all shadow-sm"
-                >
-                  {link}
-                </button>
-              ))}
-            </div>
-            
-          </div>
         </section>
 
         {/* --- CATEGORIES GRID --- */}
         <section className="mt-12 container mx-auto max-w-6xl">
           <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-3 xl:grid-cols-4 gap-6">
             {CATEGORIES.map((category, idx) => (
-              <div
-                key={idx}
-                className="flex items-center gap-4 p-5 rounded-2xl border border-primary/70 bg-primary/10 dark:bg-primary/5 cursor-pointer hover:-translate-y-1 hover:shadow-md transition-all duration-300 group"
-              >
-                <div className="w-14 h-14 rounded-full border border-primary/70 bg-primary/0 flex items-center justify-center shrink-0 group-hover:bg-primary/10 transition-colors">
-                  <category.icon className="h-5 w-5 text-primary" />
+              <Link key={idx} href={category.href}>
+                <div className="flex items-center gap-4 p-5 rounded-2xl border border-primary/70 bg-primary/10 dark:bg-primary/5 cursor-pointer hover:-translate-y-1 hover:shadow-md transition-all duration-300 group">
+                  <div className="w-14 h-14 rounded-full border border-primary/70 bg-primary/0 flex items-center justify-center shrink-0 group-hover:bg-primary/10 transition-colors">
+                    <category.icon className="h-5 w-5 text-primary" />
+                  </div>
+                  <h3 className="font-semibold text-foreground lg:text-[20px] md:text-[18px] sm:text-[16px] text-[14px]">
+                    {category.title}
+                  </h3>
                 </div>
-                <h3 className="font-semibold text-foreground lg:text-[20px] md:text-[18px] sm:text-[16px] text-[14px]">
-                  {category.title}
-                </h3>
-              </div>
+              </Link>
             ))}
           </div>
         </section>
@@ -237,21 +172,23 @@ export default function HelpCenterPage() {
             </p>
             
             <div className="flex flex-col sm:flex-row items-center justify-center gap-4 mb-6">
-              <Button 
-                size="lg" 
-                className="bg-[#1a1a1a] hover:bg-black text-white border-0 w-full sm:w-auto h-12 rounded-lg px-8"
+              <Button
+                size="lg"
+                className="bg-[#1a1a1a] text-white border-0 w-full sm:w-auto h-12 rounded-lg px-8 transition-all duration-200 hover:bg-[#333333] hover:scale-105 hover:shadow-xl active:scale-95"
               >
                 Call Us Now
                 <Phone className="h-4 w-4 ml-2 fill-current opacity-80" />
               </Button>
-              <Button 
-                size="lg" 
-                variant="outline" 
-                className="bg-transparent border-white/40 text-white hover:bg-white/10 hover:text-white hover:border-white w-full sm:w-auto h-12 rounded-lg px-8"
-              >
-                Email Support
-                <Mail className="h-4 w-4 ml-2 opacity-80" />
-              </Button>
+              <a href="mailto:hr.coralabs@gmail.com?subject=Support%20Request&body=Hi%20AyurPath%20Support%20Team%2C%0A%0A" className="w-full sm:w-auto">
+                <Button
+                  size="lg"
+                  variant="outline"
+                  className="bg-transparent border-2 border-white/60 text-white w-full h-12 rounded-lg px-8 transition-all duration-200 hover:bg-white hover:text-[#2a9d5c] hover:border-white hover:scale-105 hover:shadow-xl active:scale-95"
+                >
+                  Email Support
+                  <Mail className="h-4 w-4 ml-2 opacity-80" />
+                </Button>
+              </a>
             </div>
           </div>
         </section>
