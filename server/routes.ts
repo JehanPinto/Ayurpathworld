@@ -4169,6 +4169,152 @@ export async function registerRoutes(
     },
   );
 
+  // REPORTS & ANALYTICS
+  app.get(
+    "/api/admin/reports",
+    authMiddleware,
+    roleMiddleware(UserRole.ADMIN),
+    async (_req: Request, res: Response) => {
+      try {
+        const now = new Date();
+        const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+        const sixtyDaysAgo = new Date(now.getTime() - 60 * 24 * 60 * 60 * 1000);
+
+        const pctChange = (cur: number, pre: number) =>
+          pre === 0 ? (cur > 0 ? 100 : 0) : Math.round(((cur - pre) / pre) * 1000) / 10;
+
+        // Revenue stats: current 30 days vs previous 30 days
+        const [currentRevenue, prevRevenue] = await Promise.all([
+          pool.query(
+            `SELECT
+               COALESCE(SUM(total_amount), 0) AS total_revenue,
+               COALESCE(SUM(doctor_earnings), 0) AS payouts,
+               COALESCE(SUM(platform_commission), 0) AS net_fees
+             FROM payments WHERE status = 'completed' AND created_at >= $1`,
+            [thirtyDaysAgo]
+          ),
+          pool.query(
+            `SELECT
+               COALESCE(SUM(total_amount), 0) AS total_revenue,
+               COALESCE(SUM(doctor_earnings), 0) AS payouts,
+               COALESCE(SUM(platform_commission), 0) AS net_fees
+             FROM payments WHERE status = 'completed' AND created_at >= $1 AND created_at < $2`,
+            [sixtyDaysAgo, thirtyDaysAgo]
+          ),
+        ]);
+
+        const curr = currentRevenue.rows[0];
+        const prev = prevRevenue.rows[0];
+        const revenueStats = {
+          totalRevenue: parseInt(curr.total_revenue),
+          payouts: parseInt(curr.payouts),
+          netFees: parseInt(curr.net_fees),
+          totalRevenuePct: pctChange(parseInt(curr.total_revenue), parseInt(prev.total_revenue)),
+          payoutsPct: pctChange(parseInt(curr.payouts), parseInt(prev.payouts)),
+          netFeesPct: pctChange(parseInt(curr.net_fees), parseInt(prev.net_fees)),
+        };
+
+        // Weekly appointments: last 4 weeks
+        const weeklyAppointments = [];
+        for (let w = 3; w >= 0; w--) {
+          const weekEnd = new Date(now.getTime() - w * 7 * 24 * 60 * 60 * 1000);
+          const weekStart = new Date(weekEnd.getTime() - 7 * 24 * 60 * 60 * 1000);
+          const result = await pool.query(
+            `SELECT
+               COUNT(*) FILTER (WHERE status = 'completed') AS completed,
+               COUNT(*) FILTER (WHERE status IN ('cancelled', 'no_show')) AS cancelled
+             FROM appointments WHERE created_at >= $1 AND created_at < $2`,
+            [weekStart, weekEnd]
+          );
+          weeklyAppointments.push({
+            week: `W${4 - w}`,
+            completed: parseInt(result.rows[0].completed),
+            cancelled: parseInt(result.rows[0].cancelled),
+          });
+        }
+
+        // Bookings by specialization — ALL specializations from DB, with booking count (0 if none)
+        const [allSpecsResult, specBookingsResult] = await Promise.all([
+          pool.query(`SELECT id, name FROM specializations ORDER BY name`),
+          pool.query(
+            `SELECT s.id, COUNT(a.id) AS count
+             FROM appointments a
+             JOIN doctor_profiles dp ON a.doctor_id = dp.id
+             JOIN specializations s ON s.id = ANY(dp.specialization_ids)
+             WHERE a.created_at >= $1
+             GROUP BY s.id`,
+            [thirtyDaysAgo]
+          ),
+        ]);
+        const bookingCountById: Record<string, number> = {};
+        for (const r of specBookingsResult.rows) {
+          bookingCountById[r.id] = parseInt(r.count);
+        }
+        const specializationBookings = allSpecsResult.rows
+          .map((r: any) => ({ name: r.name, value: bookingCountById[r.id] || 0 }))
+          .sort((a, b) => b.value - a.value);
+
+        // New patient registrations by week (last 4 weeks)
+        const patientRegistrations = [];
+        for (let w = 3; w >= 0; w--) {
+          const weekEnd = new Date(now.getTime() - w * 7 * 24 * 60 * 60 * 1000);
+          const weekStart = new Date(weekEnd.getTime() - 7 * 24 * 60 * 60 * 1000);
+          const result = await pool.query(
+            `SELECT COUNT(*) AS count FROM users
+             WHERE role = 'patient' AND created_at >= $1 AND created_at < $2`,
+            [weekStart, weekEnd]
+          );
+          patientRegistrations.push({
+            week: `W${4 - w}`,
+            patients: parseInt(result.rows[0].count),
+          });
+        }
+
+        const w1 = patientRegistrations[0].patients;
+        const w4 = patientRegistrations[3].patients;
+        const registrationGrowth = w1 === 0 ? (w4 > 0 ? 100 : 0) : Math.round(((w4 - w1) / w1) * 1000) / 10;
+
+        // Doctor performance table (top 10 by appointments)
+        const doctorPerf = await pool.query(
+          `SELECT
+             u.full_name,
+             dp.id,
+             dp.status,
+             dp.average_rating,
+             dp.total_reviews,
+             COALESCE(dp.total_appointments, 0) AS total_appointments,
+             (SELECT array_agg(s.name) FROM specializations s WHERE s.id = ANY(dp.specialization_ids)) AS specialization_names
+           FROM doctor_profiles dp
+           JOIN users u ON dp.user_id = u.id
+           ORDER BY dp.total_appointments DESC NULLS LAST
+           LIMIT 10`
+        );
+
+        const doctorPerformance = doctorPerf.rows.map((r: any) => ({
+          id: r.id,
+          name: r.full_name,
+          specializations: r.specialization_names || [],
+          status: r.status,
+          appointments: parseInt(r.total_appointments),
+          rating: parseFloat(r.average_rating) || 0,
+          totalReviews: parseInt(r.total_reviews) || 0,
+        }));
+
+        res.json({
+          revenueStats,
+          weeklyAppointments,
+          specializationBookings,
+          patientRegistrations,
+          registrationGrowth,
+          doctorPerformance,
+        });
+      } catch (error) {
+        console.error("Failed to get reports data:", error);
+        res.status(500).json({ error: "Failed to get reports data" });
+      }
+    },
+  );
+
   // Generate Hash for PayHere Checkout (Frontend will call this)
   app.post(
     "/api/payhere/hash",

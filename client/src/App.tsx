@@ -58,6 +58,7 @@ import TermsAndConditionsPage from "@/pages/terms-and-conditions";
 import RefundPolicyPage from "@/pages/refund-policy";
 import ContactPrivacyPage from "@/pages/contact-privacy";
 import AdminRefundsPage from "./pages/admin/refunds";
+import AdminReportsPage from "./pages/admin/reports";
 import FindDoctors from "./pages/patient/find-doctors";
 import DoctorDetailsPage from "./pages/doctor-details";
 
@@ -201,6 +202,7 @@ function Router() {
               <Route path="/admin/refunds" component={AdminRefundsPage} />
               <Route path="/admin/careers" component={AdminCareersPage} />
               <Route path="/admin/blogs" component={AdminBlogsPage} />
+              <Route path="/admin/reports" component={AdminReportsPage} />
               <Route path="/admin/settings" component={AdminSettingsPage} />
               <Route component={NotFound} />
             </Switch>
