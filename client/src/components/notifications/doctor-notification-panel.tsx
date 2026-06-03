@@ -30,69 +30,6 @@ const yesterday    = subDays(new Date(), 1).toISOString();
 const threeDaysAgo = subDays(new Date(), 3).toISOString();
 const fourDaysAgo  = subDays(new Date(), 4).toISOString();
 
-const DEMO_NOTIFICATIONS: Notification[] = [
-  {
-    id: "demo-doc-admin-request",
-    userId: "",
-    title: "Additional documents required",
-    message: "Please upload a clear copy of your specialist registration certificate to complete your profile review.",
-    type: "system",
-    isRead: false,
-    relatedId: null as any,
-    createdAt: new Date().toISOString(),
-  },
-  {
-    id: "demo-doc-verified",
-    userId: "",
-    title: "Verification approved",
-    message: "Your medical licence and credentials have been verified. Your profile is now fully visible to patients.",
-    type: "verification",
-    isRead: true,
-    relatedId: null as any,
-    createdAt: yesterday,
-  },
-  {
-    id: "demo-doc-reminder",
-    userId: "",
-    title: "Consultation tomorrow at 10:30 AM",
-    message: "You have an upcoming consultation with Sumudu Jayawardena tomorrow. Review their case notes beforehand.",
-    type: "reminder",
-    isRead: true,
-    relatedId: null as any,
-    createdAt: yesterday,
-  },
-  {
-    id: "demo-doc-payment",
-    userId: "",
-    title: "Payment received from patient",
-    message: "LKR 3,500 has been received for the consultation on 25 Apr. This will be included in your next payout.",
-    type: "payment",
-    isRead: true,
-    relatedId: null as any,
-    createdAt: yesterday,
-  },
-  {
-    id: "demo-doc-payout",
-    userId: "",
-    title: "Payout processed successfully",
-    message: "LKR 42,000 has been transferred to your registered bank account (ending 7731) for the period 15–25 Apr.",
-    type: "payment",
-    isRead: true,
-    relatedId: null as any,
-    createdAt: threeDaysAgo,
-  },
-  {
-    id: "demo-doc-announcement",
-    userId: "",
-    title: "New patient messaging feature live",
-    message: "You can now send follow-up messages directly to patients post-consultation from your dashboard.",
-    type: "system",
-    isRead: true,
-    relatedId: null as any,
-    createdAt: fourDaysAgo,
-  },
-];
-
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function isAnnouncement(n: Notification): boolean {
   const title = n.title.toLowerCase();
@@ -204,8 +141,7 @@ export function DoctorNotificationPanel({ open, onOpenChange }: Props) {
   // Merge real + demo (demo shown only when no real equivalent)
   const realTitles = new Set(apiNotifications.map((n) => n.title));
   const notifications = [
-    ...apiNotifications,
-    ...DEMO_NOTIFICATIONS.filter((d) => !realTitles.has(d.title)),
+    ...apiNotifications.filter((d) => !realTitles.has(d.title)),
   ];
 
   const unreadCount = notifications.filter((n) => !n.isRead).length;
