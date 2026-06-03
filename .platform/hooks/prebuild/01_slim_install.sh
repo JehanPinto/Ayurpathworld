@@ -8,10 +8,8 @@ cat > package.json << 'EOF'
 {
   "name": "ayurvedicdoc",
   "version": "1.0.0",
-  "description": "Minimal runtime deps for EB — all others are bundled.",
-  "dependencies": {
-    "bcryptjs": "^2.4.3"
-  }
+  "description": "No runtime deps — everything is bundled into dist/index.cjs.",
+  "dependencies": {}
 }
 EOF
 
