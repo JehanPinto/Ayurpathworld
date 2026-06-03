@@ -2,6 +2,9 @@ branch-defaults:
   nicol/aws-eb-backend-deployment:
     environment: null
     group_suffix: null
+  dev-aws-hosting:
+    environment: development
+    group_suffix: null
 global:
   application_name: ayurvedicdoc
   branch: null

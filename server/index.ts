@@ -2,7 +2,9 @@ import dotenv from "dotenv";
 import path from "path";
 import cookieParser from "cookie-parser";
 
-dotenv.config({ path: path.join(process.cwd(), ".env") });
+if (process.env.NODE_ENV !== "production") {
+  dotenv.config({ path: path.join(process.cwd(), ".env") });
+}
 
 import express, { NextFunction, type Request, Response } from "express";
 import { createServer } from "http";
@@ -116,7 +118,7 @@ app.use((req, res, next) => {
   // this serves both the API and the client.
   // It is the only port that is not firewalled.
 const port = parseInt(process.env.PORT || "5000", 10);
-const host = process.env.HOST || "localhost";
+const host = process.env.HOST || "0.0.0.0";
 
 httpServer.listen(
   {

@@ -3,11 +3,17 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import * as schema from "@shared/schema";
 import { config as loadEnv } from "dotenv";
 
-// Load environment variables for both Node 18 (dotenv) and Node 20+ (loadEnvFile)
-if (typeof (process as any).loadEnvFile === "function") {
-  (process as any).loadEnvFile();
-} else {
-  loadEnv();
+// Load .env only in development — on EB/production, env vars are injected by AWS
+if (process.env.NODE_ENV !== "production") {
+  try {
+    if (typeof (process as any).loadEnvFile === "function") {
+      (process as any).loadEnvFile();
+    } else {
+      loadEnv();
+    }
+  } catch {
+    // .env not found, relying on environment variables
+  }
 }
 
 const databaseUrl = process.env.DATABASE_URL;

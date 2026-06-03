@@ -1,0 +1,8 @@
+# EB ignore — overrides .gitignore
+# dist/ is intentionally included for EB deployment
+node_modules
+.env
+*.log
+.git
+.elasticbeanstalk/logs
+.elasticbeanstalk/app_versions

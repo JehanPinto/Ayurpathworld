@@ -1,7 +1,7 @@
 import { db } from "./db";
 import { users, specializations, hospitals, doctorProfiles, appointmentSlots } from "@shared/schema";
 import { sql } from "drizzle-orm";
-import bcrypt from "bcrypt";
+import bcrypt from "bcryptjs";
 
 async function seed() {
   console.log("Seeding database...");

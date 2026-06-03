@@ -30,7 +30,7 @@ import {
 } from "@shared/schema";
 
 import { insertCareerSchema } from "@shared/schema";
-import bcrypt from "bcrypt";
+import bcrypt from "bcryptjs";
 import rateLimit from "express-rate-limit";
 import type { File as MulterFile } from "multer";
 import passport from "passport";
