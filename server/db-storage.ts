@@ -638,6 +638,7 @@ export class DbStorage implements IStorage {
         and(
           eq(appointmentSlots.doctorId, doctorId),
           eq(appointmentSlots.date, date),
+          eq(appointmentSlots.isActive, true),
         ),
       )
       .orderBy(appointmentSlots.startTime);
