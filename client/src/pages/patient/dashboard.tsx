@@ -4,7 +4,8 @@ import { useQuery } from "@tanstack/react-query";
 import { 
   Calendar, CheckCircle2, CreditCard, FileClock, ArrowRight,
   Video, Building2, Map, Plus, AlertCircle, Download, FileText, User, 
-  ExternalLink, Printer, Receipt, X
+  ExternalLink, Printer, Receipt, X, Star, MapPin, GraduationCap, Info, Wallet, 
+  Stethoscope, Home
 } from "lucide-react";
 import { format } from "date-fns";
 import { Card, CardContent } from "@/components/ui/card";
@@ -15,12 +16,16 @@ import { LoadingPage } from "@/components/ui/loading-spinner";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { useAuth } from "@/lib/auth-context";
 import { Modal } from "@/components/ui/modal";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { toast } from "@/hooks/use-toast";
 
 export default function PatientDashboard() {
   const { user } = useAuth();
   
-  // 🟢 Receipt Modal State
+  // Receipt Modal State
   const [selectedTx, setSelectedTx] = useState<any>(null);
+  // Doctor Details Modal State
+  const [selectedDoctor, setSelectedDoctor] = useState<any>(null);
 
   const { data: dashboardData, isLoading, isError } = useQuery<any>({
     queryKey: ["/api/patient/dashboard"],
@@ -284,9 +289,37 @@ export default function PatientDashboard() {
                           <span className="font-bold text-xs sm:text-sm text-emerald-800 dark:text-emerald-200 bg-emerald-50 dark:bg-emerald-900/30 px-2.5 py-1 rounded-md">
                             {formattedDate}
                           </span>
-                          <Button variant="outline" size="sm" className="border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 h-8 text-xs font-semibold w-full sm:w-auto">
-                            {isOnline ? <><Video className="w-3.5 h-3.5 mr-1.5" /> Join call</> : <><Map className="w-3.5 h-3.5 mr-1.5" /> View map</>}
-                          </Button>
+                          {
+                            appointment.consultationType === "online" ? (
+                              <Button 
+                                variant="outline" 
+                                size="sm" 
+                                className="border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 h-8 text-xs font-semibold w-full sm:w-auto"
+                                onClick={() => {
+                                  if (appointment.slot?.meetLink) {
+                                    window.open(appointment.slot.meetLink, "_blank", "noopener,noreferrer");
+                                  }
+                                }}  
+                                >
+                                <Video className="w-3.5 h-3.5 mr-1.5" /> Join call
+                              </Button>
+                            ) : (
+                              <Button 
+                                variant="outline" 
+                                size="sm" 
+                                className="border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 h-8 text-xs font-semibold w-full sm:w-auto"
+                                onClick={() => {
+                                  toast({
+                                    title: "Coming Soon",
+                                    description: "This feature is currently under development.",
+                                    duration: 3000,
+                                  });
+                                }}
+                                >
+                                <Map className="w-3.5 h-3.5 mr-1.5" /> View map
+                              </Button>
+                            )
+                          }
                         </div>
                       </div>
                     );
@@ -318,7 +351,12 @@ export default function PatientDashboard() {
                   <div key={doc.id} className="flex items-center justify-between p-4 hover:bg-emerald-50/50 dark:hover:bg-emerald-900/10 transition-colors">
                     <span className="font-semibold text-xs sm:text-sm truncate mr-2">Dr. {doc.user?.fullName?.split(" ")[0]}</span>
                     <span className="text-[10px] sm:text-xs font-medium text-orange-500 dark:text-orange-400 truncate">{doc.specializations?.[0]?.name || "General"}</span>
-                    <Button variant="ghost" size="icon" className="h-7 w-7 border border-emerald-200 dark:border-emerald-800 text-emerald-600 dark:text-emerald-400 shrink-0 ml-2">
+                    <Button 
+                      variant="ghost" 
+                      size="icon" 
+                      onClick={() => setSelectedDoctor(doc)}
+                      className="h-7 w-7 border border-emerald-200 dark:border-emerald-800 text-emerald-600 dark:text-emerald-400 shrink-0 ml-2"
+                    >
                       <FileText className="w-3.5 h-3.5" />
                     </Button>
                   </div>
@@ -512,6 +550,229 @@ export default function PatientDashboard() {
           )}
         </DialogContent>
       </Dialog>
+
+      {/* ======================================================== */}
+      {/* DOCTOR INFO MODAL (TABBED UI) */}
+      {/* ======================================================== */}
+      <Modal 
+        isOpen={!!selectedDoctor} 
+        onClose={() => setSelectedDoctor(null)}
+        title="Doctor Profile"
+        description="Detailed information about the doctor."
+        icon={<Stethoscope className="w-6 h-6 text-emerald-600 dark:text-emerald-500" />}
+        footer={
+          <div className="flex justify-between w-full">
+            <Button variant="outline" onClick={() => setSelectedDoctor(null)}>Close</Button>
+            {selectedDoctor && (
+              <Link href={`/doctors/${selectedDoctor.id}`}>
+                <Button className="bg-emerald-600 hover:bg-emerald-700 text-white shadow-md">
+                  Book Appointment <ArrowRight className="ml-2 h-4 w-4" />
+                </Button>
+              </Link>
+            )}
+          </div>
+        }
+      >
+        {selectedDoctor && (
+          <div className="space-y-6 py-2">
+            
+            {/* ── Header: Avatar, Name, Rating ── */}
+            <div className="flex flex-col sm:flex-row items-center sm:items-start gap-4 text-center sm:text-left">
+              <Avatar className="h-20 w-20 sm:h-24 sm:w-24 border-4 border-emerald-100 dark:border-emerald-900/50 shadow-sm">
+                <AvatarImage src={selectedDoctor.user?.profileImage} />
+                <AvatarFallback className="bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 font-bold text-2xl sm:text-3xl">
+                  {getInitials(selectedDoctor.user?.fullName)}
+                </AvatarFallback>
+              </Avatar>
+              <div className="flex-1 space-y-1.5 pt-1">
+                <h3 className="font-bold text-xl text-foreground">
+                  Dr. {selectedDoctor.user?.fullName}
+                </h3>
+                <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2">
+                  {selectedDoctor.specializations?.map((s: any) => (
+                    <Badge key={s.id} variant="secondary" className="bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 hover:bg-emerald-100">
+                      {s.name}
+                    </Badge>
+                  ))}
+                  {(!selectedDoctor.specializations || selectedDoctor.specializations.length === 0) && (
+                    <Badge variant="secondary">General Practitioner</Badge>
+                  )}
+                </div>
+                
+                {/* Rating */}
+                <div className="flex items-center justify-center sm:justify-start gap-1 pt-1 text-sm font-medium text-amber-500">
+                  <Star className="h-4 w-4 fill-amber-500 text-amber-500" />
+                  <span>{selectedDoctor.averageRating?.toFixed(1) || "New"}</span>
+                  <span className="text-muted-foreground ml-1">
+                    ({selectedDoctor.totalReviews || 0} Reviews)
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* ── Tabs Section ── */}
+            <Tabs defaultValue="overview" className="w-full">
+              <TabsList className="grid w-full grid-cols-3 bg-muted/50 p-1 rounded-xl">
+                <TabsTrigger value="overview" className="rounded-lg text-xs sm:text-sm"><Info className="h-4 w-4 mr-2 hidden sm:block" /> Overview</TabsTrigger>
+                <TabsTrigger value="locations" className="rounded-lg text-xs sm:text-sm"><MapPin className="h-4 w-4 mr-2 hidden sm:block" /> Locations</TabsTrigger>
+                <TabsTrigger value="fees" className="rounded-lg text-xs sm:text-sm"><Wallet className="h-4 w-4 mr-2 hidden sm:block" /> Fees & Services</TabsTrigger>
+              </TabsList>
+
+              {/* TAB 1: OVERVIEW */}
+              <TabsContent value="overview" className="mt-4 space-y-4 max-h-[50vh] overflow-y-auto pr-2">
+                
+                {/* Biography */}
+                <div className="space-y-2">
+                  <h4 className="text-sm font-bold text-foreground flex items-center gap-2">
+                    <User className="h-4 w-4 text-emerald-600" /> About Doctor
+                  </h4>
+                  <p className="text-sm text-muted-foreground leading-relaxed bg-muted/30 p-3 rounded-lg border border-border">
+                    {selectedDoctor.biography || "No biography provided by the doctor yet."}
+                  </p>
+                </div>
+
+                {/* Qualifications */}
+                <div className="space-y-2">
+                  <h4 className="text-sm font-bold text-foreground flex items-center gap-2">
+                    <GraduationCap className="h-4 w-4 text-emerald-600" /> Qualifications & Credentials
+                  </h4>
+                  <div className="grid sm:grid-cols-2 gap-3">
+                    <div className="bg-primary/5 p-3 rounded-lg border border-primary/10">
+                      <span className="block text-[10px] sm:text-xs text-primary font-bold uppercase mb-1">Degrees / Certifications</span>
+                      <span className="text-sm font-medium text-foreground">{selectedDoctor.qualifications || "N/A"}</span>
+                    </div>
+                    <div className="bg-primary/5 p-3 rounded-lg border border-primary/10">
+                      <span className="block text-[10px] sm:text-xs text-primary font-bold uppercase mb-1">SLAMC Registration No.</span>
+                      <span className="text-sm font-medium text-foreground">{selectedDoctor.registrationNumber || "N/A"}</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Languages */}
+                <div className="space-y-2">
+                  <h4 className="text-sm font-bold text-foreground flex items-center gap-2">
+                    <FileText className="h-4 w-4 text-emerald-600" /> Languages Spoken
+                  </h4>
+                  <div className="flex flex-wrap gap-2">
+                    {selectedDoctor.languagesSpoken?.map((lang: string) => (
+                      <Badge key={lang} variant="outline" className="capitalize border-border bg-background">
+                        {lang}
+                      </Badge>
+                    )) || <span className="text-sm text-muted-foreground">English</span>}
+                  </div>
+                </div>
+              </TabsContent>
+
+              {/* TAB 2: LOCATIONS */}
+              <TabsContent value="locations" className="mt-4 space-y-4 max-h-[50vh] overflow-y-auto pr-2">
+                <div className="space-y-3">
+                  {/* Hospitals from DB */}
+                  {selectedDoctor.hospitals?.map((hosp: any) => (
+                    <div key={hosp.id} className="flex items-start gap-3 p-4 rounded-xl border border-border bg-background shadow-sm hover:border-emerald-200 transition-colors">
+                      <div className="p-2.5 bg-emerald-100 dark:bg-emerald-900/30 rounded-lg text-emerald-600 dark:text-emerald-400 shrink-0">
+                        <Building2 className="h-5 w-5" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <h4 className="font-bold text-sm text-foreground truncate">{hosp.name}</h4>
+                        <p className="text-xs text-muted-foreground mt-1 leading-relaxed">{hosp.address}</p>
+                        {hosp.city && <p className="text-xs font-medium text-emerald-600 dark:text-emerald-400 mt-1">{hosp.city}</p>}
+                      </div>
+                    </div>
+                  ))}
+
+                  {/* Manual Clinic Locations */}
+                  {selectedDoctor.clinic_locations?.map((loc: string, idx: number) => (
+                    <div key={idx} className="flex items-start gap-3 p-4 rounded-xl border border-border bg-background shadow-sm hover:border-emerald-200 transition-colors">
+                      <div className="p-2.5 bg-blue-100 dark:bg-blue-900/30 rounded-lg text-blue-600 dark:text-blue-400 shrink-0">
+                        <MapPin className="h-5 w-5" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <h4 className="font-bold text-sm text-foreground">Private Clinic</h4>
+                        <p className="text-xs text-muted-foreground mt-1 leading-relaxed">{loc}</p>
+                      </div>
+                    </div>
+                  ))}
+
+                  {/* Empty State */}
+                  {(!selectedDoctor.hospitals?.length && !selectedDoctor.clinic_locations?.length) && (
+                    <div className="text-center py-8 bg-muted/30 rounded-xl border border-dashed border-border">
+                      <MapPin className="h-8 w-8 mx-auto text-muted-foreground/50 mb-2" />
+                      <p className="text-sm font-medium text-muted-foreground">No specific locations listed.</p>
+                      <p className="text-xs text-muted-foreground mt-1">Check online availability.</p>
+                    </div>
+                  )}
+                </div>
+              </TabsContent>
+
+              {/* TAB 3: FEES & SERVICES */}
+              <TabsContent value="fees" className="mt-4 space-y-4 max-h-[50vh] overflow-y-auto pr-2">
+                <div className="grid gap-3">
+                  
+                  {/* In Person */}
+                  {selectedDoctor.consultationTypes?.includes("in_person") && (
+                    <div className="flex items-center justify-between p-4 rounded-xl border border-emerald-100 dark:border-emerald-900/30 bg-emerald-50/50 dark:bg-emerald-900/10">
+                      <div className="flex items-center gap-3">
+                        <div className="p-2 bg-white dark:bg-background rounded-lg shadow-sm">
+                          <Building2 className="h-4 w-4 text-emerald-600" />
+                        </div>
+                        <div>
+                          <h4 className="font-bold text-sm text-foreground">Clinic Consultation</h4>
+                          <p className="text-xs text-muted-foreground">In-person visit</p>
+                        </div>
+                      </div>
+                      <span className="font-black text-emerald-700 dark:text-emerald-400">
+                        {formatFee(selectedDoctor.consultationFee || 0)}
+                      </span>
+                    </div>
+                  )}
+
+                  {/* Online */}
+                  {selectedDoctor.consultationTypes?.includes("online") && (
+                    <div className="flex items-center justify-between p-4 rounded-xl border border-blue-100 dark:border-blue-900/30 bg-blue-50/50 dark:bg-blue-900/10">
+                      <div className="flex items-center gap-3">
+                        <div className="p-2 bg-white dark:bg-background rounded-lg shadow-sm">
+                          <Video className="h-4 w-4 text-blue-600" />
+                        </div>
+                        <div>
+                          <h4 className="font-bold text-sm text-foreground">Video Consultation</h4>
+                          <p className="text-xs text-muted-foreground">Online via Google Meet</p>
+                        </div>
+                      </div>
+                      <span className="font-black text-blue-700 dark:text-blue-400">
+                        {formatFee(selectedDoctor.onlineConsultationFee || selectedDoctor.consultationFee || 0)}
+                      </span>
+                    </div>
+                  )}
+
+                  {/* Home Visit */}
+                  {selectedDoctor.consultationTypes?.includes("home_visit") && (
+                    <div className="flex items-center justify-between p-4 rounded-xl border border-purple-100 dark:border-purple-900/30 bg-purple-50/50 dark:bg-purple-900/10">
+                      <div className="flex items-center gap-3">
+                        <div className="p-2 bg-white dark:bg-background rounded-lg shadow-sm">
+                          <Home className="h-4 w-4 text-purple-600" />
+                        </div>
+                        <div>
+                          <h4 className="font-bold text-sm text-foreground">Home Visit</h4>
+                          <p className="text-xs text-muted-foreground">Doctor visits your home</p>
+                        </div>
+                      </div>
+                      <span className="font-black text-purple-700 dark:text-purple-400">
+                        {formatFee(selectedDoctor.homeVisitFee || 0)}
+                      </span>
+                    </div>
+                  )}
+
+                  <p className="text-[10px] sm:text-xs text-muted-foreground text-center mt-2 flex items-center justify-center gap-1.5">
+                    <AlertCircle className="w-3 h-3" />
+                    Fees shown above exclude platform booking charges & taxes.
+                  </p>
+                </div>
+              </TabsContent>
+
+            </Tabs>
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }

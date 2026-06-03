@@ -360,17 +360,6 @@ export default function DoctorAppointments() {
                               </DropdownMenuContent>
                             </DropdownMenu>
                           )}
-
-                          {appointment.status === "completed" && (
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() => window.location.href = `/doctor/prescriptions?appointmentId=${appointment.id}`}
-                              data-testid={`button-prescription-${appointment.id}`}
-                            >
-                              <FileText className="h-4 w-4 mr-1" /> Prescription
-                            </Button>
-                          )}
                         </div>
                       </div>
                     </div>

@@ -30,80 +30,6 @@ const yesterday   = subDays(new Date(), 1).toISOString();
 const threeDaysAgo = subDays(new Date(), 3).toISOString();
 const fourDaysAgo  = subDays(new Date(), 4).toISOString();
 
-// Demo notifications — shown only until real ones of the same title arrive
-const DEMO_NOTIFICATIONS: Notification[] = [
-  {
-    id: "demo-rescheduled",
-    userId: "",
-    title: "Appointment Rescheduled",
-    message: "Dr. Raj Patel has rescheduled your 29 Apr session to 2 May at 2:00 PM due to an emergency.",
-    type: "appointment",
-    isRead: false,
-    relatedId: "demo",
-    createdAt: new Date().toISOString(),
-  },
-  {
-    id: "demo-payment-failed",
-    userId: "",
-    title: "Payment Failed",
-    message: "We were unable to charge your card ending in 4821 for LKR 3,500. Please update your payment method.",
-    type: "payment",
-    isRead: false,
-    relatedId: "demo",
-    createdAt: new Date().toISOString(),
-  },
-  {
-    id: "demo-doctor-approved",
-    userId: "",
-    title: "Doctor approved your request",
-    message: "Dr. Anoma Wijesuriya has reviewed your referral request and approved specialist care.",
-    type: "system",
-    isRead: false,
-    relatedId: "demo",
-    createdAt: yesterday,
-  },
-  {
-    id: "demo-reminder",
-    userId: "",
-    title: "Consultation tomorrow at 10:30 AM",
-    message: "Reminder: You have an upcoming consultation with Dr. Sarah Mendez tomorrow. Please arrive 10 minutes early.",
-    type: "reminder",
-    isRead: true,
-    relatedId: "demo",
-    createdAt: yesterday,
-  },
-  {
-    id: "demo-payment-success",
-    userId: "",
-    title: "Payment successful",
-    message: "LKR 2,800 was successfully charged for your consultation on 24 Apr. Receipt has been emailed.",
-    type: "payment",
-    isRead: true,
-    relatedId: "demo",
-    createdAt: yesterday,
-  },
-  {
-    id: "demo-cancelled",
-    userId: "",
-    title: "Appointment cancelled",
-    message: "Your 26 Apr appointment with Dr. K. Perera has been cancelled. You may rebook at your convenience.",
-    type: "appointment",
-    isRead: true,
-    relatedId: "demo",
-    createdAt: threeDaysAgo,
-  },
-  {
-    id: "demo-announcement",
-    userId: "",
-    title: "New telehealth feature available",
-    message: "You can now join video consultations directly from the app. No downloads required.",
-    type: "system",
-    isRead: true,
-    relatedId: null as any,
-    createdAt: fourDaysAgo,
-  },
-];
-
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function isAnnouncement(n: Notification): boolean {
@@ -212,8 +138,7 @@ export function NotificationPanel({ open, onOpenChange }: Props) {
   // Merge real notifications with demos (demo shown only when no real equivalent exists)
   const realTitles = new Set(apiNotifications.map((n) => n.title));
   const notifications = [
-    ...apiNotifications,
-    ...DEMO_NOTIFICATIONS.filter((d) => !realTitles.has(d.title)),
+    ...apiNotifications.filter((d) => !realTitles.has(d.title)),
   ];
 
   const unreadCount = notifications.filter((n) => !n.isRead).length;

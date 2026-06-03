@@ -30,69 +30,6 @@ const yesterday    = subDays(new Date(), 1).toISOString();
 const threeDaysAgo = subDays(new Date(), 3).toISOString();
 const fourDaysAgo  = subDays(new Date(), 4).toISOString();
 
-const DEMO_NOTIFICATIONS: Notification[] = [
-  {
-    id: "demo-admin-failed-txn",
-    userId: "",
-    title: "Failed transaction — high value",
-    message: "LKR 12,500 payment for consultation ID #APT-0892 failed twice. Card issuer declined. Patient has been notified.",
-    type: "system",
-    isRead: false,
-    relatedId: null as any,
-    createdAt: new Date().toISOString(),
-  },
-  {
-    id: "demo-admin-password-reset",
-    userId: "",
-    title: "Admin account password reset",
-    message: "Password was reset from an unrecognised device. If this was not you, contact the security team immediately.",
-    type: "system",
-    isRead: false,
-    relatedId: null as any,
-    createdAt: new Date().toISOString(),
-  },
-  {
-    id: "demo-admin-verification-pending",
-    userId: "",
-    title: "Verification pending — overdue",
-    message: "Documents submitted on 23 Apr have not been reviewed. SLMC registration and degree certificates are awaiting approval.",
-    type: "system",
-    isRead: true,
-    relatedId: null as any,
-    createdAt: yesterday,
-  },
-  {
-    id: "demo-admin-maintenance",
-    userId: "",
-    title: "Scheduled maintenance completed",
-    message: "Maintenance window (02:00–04:00 AM) completed successfully. Uptime restored. All services operational.",
-    type: "system",
-    isRead: true,
-    relatedId: null as any,
-    createdAt: yesterday,
-  },
-  {
-    id: "demo-admin-milestone",
-    userId: "",
-    title: "Platform milestone reached",
-    message: "500 active doctors and 10,000 patient registrations reached. Monthly consultation volume up 22% vs March.",
-    type: "system",
-    isRead: true,
-    relatedId: null as any,
-    createdAt: threeDaysAgo,
-  },
-  {
-    id: "demo-admin-complaint",
-    userId: "",
-    title: "Patient complaint filed",
-    message: "Patient reports unprofessional conduct during a 24 Apr teleconsultation. Awaiting admin review and response.",
-    type: "system",
-    isRead: true,
-    relatedId: null as any,
-    createdAt: fourDaysAgo,
-  },
-];
-
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function getVariant(n: Notification): CardVariant {
   const text = (n.title + " " + n.message).toLowerCase();
@@ -217,8 +154,7 @@ export function AdminNotificationPanel({ open, onOpenChange }: Props) {
   const realTitles = new Set(apiNotifications.map((n) => n.title));
 
   const notifications = [
-    ...apiNotifications,
-    ...DEMO_NOTIFICATIONS.filter((d) => {
+    ...apiNotifications.filter((d) => {
       if (d.id === "demo-admin-verification-pending" && hasRealOverdue) return false;
       if (d.id === "demo-admin-failed-txn" && hasRealFailedTxn) return false;
       return !realTitles.has(d.title);

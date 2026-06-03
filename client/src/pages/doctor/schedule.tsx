@@ -74,6 +74,12 @@ export default function DoctorSchedule() {
     hospitalId: "",
   });
 
+  const maxDate = useMemo(() => {
+    const d = new Date();
+    d.setDate(d.getDate() + 5);
+    return format(d, "yyyy-MM-dd");
+  }, []);
+
   const { data: profile } = useQuery<DoctorWithDetails>({
     queryKey: ["/api/doctor/profile"],
   });
@@ -389,12 +395,23 @@ export default function DoctorSchedule() {
           {/* Date Picker */}
           <div className="space-y-2">
             <Label>Date</Label>
-            <Input
-              type="date"
-              min={todayDateStr}
-              value={newSlot.date}
-              onChange={(e) => setNewSlot({ ...newSlot, date: e.target.value })}
-            />
+            <div className="relative flex items-center">
+                            
+              <Input
+                type="date"
+                min={todayDateStr}
+                max={maxDate}
+                value={newSlot.date}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  if (val >= todayDateStr && val <= maxDate) {
+                    setNewSlot({ ...newSlot, date: val });
+                  } else {
+                    toast({ title: "Invalid Date", description: "You can only schedule up to 5 days ahead.", variant: "destructive" });
+                  }
+                }}
+              />
+            </div>
           </div>
 
           {/* Time Pickers */}
