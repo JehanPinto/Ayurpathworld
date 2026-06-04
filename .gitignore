@@ -27,5 +27,9 @@ build/
 # Uploads
 uploads/
 
+# Elastic Beanstalk local deployment artifacts
+.elasticbeanstalk/app_versions/
+.elasticbeanstalk/logs/
+
 # OS-specific
 Thumbs.db
