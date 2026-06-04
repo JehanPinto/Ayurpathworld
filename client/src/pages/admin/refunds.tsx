@@ -50,10 +50,8 @@ export default function AdminRefunds() {
 
   const { data: response, isLoading, isFetching, isError } = useQuery({
     queryKey: ["/api/admin/refund-requests", currentPage],
-    queryFn: async () => { 
-      const res = await fetch(`/api/admin/refund-requests?page=${currentPage}&limit=10`);
-      if (!res.ok) throw new Error("Failed to load refund requests");
-      return res.json();
+    queryFn: async () => {
+      return apiRequest("GET", `/api/admin/refund-requests?page=${currentPage}&limit=10`);
     }
   });
 

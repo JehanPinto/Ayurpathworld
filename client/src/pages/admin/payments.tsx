@@ -60,9 +60,7 @@ export default function AdminPaymentsPage() {
   const { data: response, isLoading, isError } = useQuery({
     queryKey: ["/api/admin/payments", currentPage],
     queryFn: async () => {
-      const res = await fetch(`/api/admin/payments?page=${currentPage}&limit=10`);
-      if (!res.ok) throw new Error("Failed to load");
-      return res.json();
+      return apiRequest("GET", `/api/admin/payments?page=${currentPage}&limit=10`);
     }
   });
 

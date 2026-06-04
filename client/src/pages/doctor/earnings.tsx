@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { apiRequest } from "@/lib/queryClient";
 import {
   DollarSign,
   TrendingUp,
@@ -66,9 +67,7 @@ export default function DoctorEarnings() {
 
   const settleMutation = useMutation({
     mutationFn: async () => {
-      const res = await fetch("/api/doctor/earnings/settle", { method: "POST", credentials: "include" });
-      if (!res.ok) throw new Error("Failed to settle");
-      return res.json();
+      return apiRequest("POST", "/api/doctor/earnings/settle");
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/doctor/earnings"] });

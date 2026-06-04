@@ -109,9 +109,7 @@ export default function AdminDoctorsPage() {
     queryKey: ["/api/admin/doctors/paginated", currentPage, statusFilter, debouncedSearch],
     queryFn: async () => {
       const url = `/api/admin/doctors/paginated?page=${currentPage}&limit=10&status=${statusFilter}&search=${encodeURIComponent(debouncedSearch)}`;
-      const res = await fetch(url);
-      if (!res.ok) throw new Error("Failed to load");
-      return res.json();
+      return apiRequest("GET", url);
     }
   });
 
