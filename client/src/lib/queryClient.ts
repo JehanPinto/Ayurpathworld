@@ -40,6 +40,10 @@ export async function apiRequest<T = unknown>(
   if (data) {
     headers["Content-Type"] = "application/json";
   }
+  const token = localStorage.getItem("token");
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
 
   const res = await fetch(url, {
     method,
@@ -63,7 +67,13 @@ export const getQueryFn: <T>(options: {
 }) => QueryFunction<T> =
   ({ on401: unauthorizedBehavior }) =>
   async ({ queryKey }) => {
+    const headers: HeadersInit = {};
+    const token = localStorage.getItem("token");
+    if (token) {
+      headers["Authorization"] = `Bearer ${token}`;
+    }
     const res = await fetch(queryKey[0] as string, {
+      headers,
       credentials: "include",
     });
 
