@@ -19,7 +19,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     async function validateSession() {
       try {
-        const res = await fetch("/api/auth/me", { credentials: "include" });
+        const token = localStorage.getItem("token");
+        const headers: HeadersInit = { };
+        if (token) headers["Authorization"] = `Bearer ${token}`;
+        const res = await fetch("/api/auth/me", { credentials: "include", headers });
         if (res.ok) {
           const data = await res.json();
           setUser(data.user);
@@ -58,8 +61,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const updateUser = async (): Promise<void> => {
     try {
+      const token = localStorage.getItem("token");
+      const headers: HeadersInit = {};
+      if (token) headers["Authorization"] = `Bearer ${token}`;
       const res = await fetch("/api/auth/me", {
         credentials: "include",
+        headers,
       });
       if (res.ok) {
         const data = await res.json();
