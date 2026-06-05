@@ -158,14 +158,8 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
   };
 
   const handleLogout = async () => {
-    try {
-      await apiRequest("POST", "/api/auth/logout");
-    } catch (error) {
-      console.error("Server logout failed:", error);
-    } finally {
-      logout();
-      setLocation("/");
-    }
+    await logout();
+    setLocation("/login");
   };
 
   const getRoleLabel = (role: string) => {
