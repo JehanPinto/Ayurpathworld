@@ -143,13 +143,13 @@ End-to-end test performed on **2026-06-04**:
 
 | Test | Result |
 |---|---|
-| Push to `dev-aws-hosting` triggers workflow | ✅ Passed |
-| Workflow builds project successfully | ✅ Passed — completed in 1m 36s |
-| Workflow deploys to EB automatically | ✅ Passed |
-| Site accessible after automated deploy | ✅ Passed — HTTP 200 |
-| EB environment health after deploy | ✅ Green / Ready |
-| Admin login and dashboard | ✅ Working |
-| Doctor login and dashboard | ✅ Working |
-| Patient login and dashboard | ✅ Working |
-| API endpoints returning data | ✅ Working |
-| CloudWatch logs streaming | ✅ Active |
+| Push to `dev-aws-hosting` triggers workflow | Passed |
+| Workflow builds project successfully | Passed — completed in 1m 36s |
+| Workflow deploys to EB automatically | Passed |
+| Site accessible after automated deploy | Passed — HTTP 200 |
+| EB environment health after deploy | Green / Ready |
+| Admin login and dashboard |  Working |
+| Doctor login and dashboard |  Working |
+| Patient login and dashboard |  Working |
+| API endpoints returning data | Working |
+| CloudWatch logs streaming |  Active |
