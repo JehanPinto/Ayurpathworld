@@ -1326,7 +1326,7 @@ export default function DoctorSettings() {
                     Verified
                   </Badge>
                 ) : (
-                  <Button variant="outline" size="sm">
+                  <Button variant="outline" size="sm" onClick={() => toast({ title: "Verification email sent", description: "Please check your inbox and follow the instructions to verify your email." })}>
                     Verify Email
                   </Button>
                 )}

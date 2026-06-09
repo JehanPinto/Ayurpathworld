@@ -138,11 +138,7 @@ export function DoctorNotificationPanel({ open, onOpenChange }: Props) {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/notifications"] }),
   });
 
-  // Merge real + demo (demo shown only when no real equivalent)
-  const realTitles = new Set(apiNotifications.map((n) => n.title));
-  const notifications = [
-    ...apiNotifications.filter((d) => !realTitles.has(d.title)),
-  ];
+  const notifications = apiNotifications;
 
   const unreadCount = notifications.filter((n) => !n.isRead).length;
 

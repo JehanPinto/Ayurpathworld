@@ -93,6 +93,8 @@ export default function AdminDashboard() {
   const queryClient = useQueryClient();
   const [selectedDoctor, setSelectedDoctor] = useState<DoctorWithDetails | null>(null);
   const [showVerificationDialog, setShowVerificationDialog] = useState(false);
+  const [showRejectDialog, setShowRejectDialog] = useState(false);
+  const [rejectReason, setRejectReason] = useState("");
 
   const { data: dashboardData, isLoading, isError } = useQuery<DashboardData>({
     queryKey: ["/api/admin/dashboard"],
@@ -119,6 +121,23 @@ export default function AdminDashboard() {
         description: "Could not verify the doctor. Please try again.",
         variant: "destructive",
       });
+    },
+  });
+
+  const rejectMutation = useMutation({
+    mutationFn: ({ doctorId, reason }: { doctorId: string; reason: string }) =>
+      apiRequest("PATCH", `/api/admin/doctors/${doctorId}/reject`, { reason }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/dashboard"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/doctors"] });
+      toast({ title: "Doctor Rejected", description: "The doctor application has been rejected." });
+      setShowRejectDialog(false);
+      setShowVerificationDialog(false);
+      setSelectedDoctor(null);
+      setRejectReason("");
+    },
+    onError: () => {
+      toast({ title: "Rejection failed", description: "Could not reject the doctor. Please try again.", variant: "destructive" });
     },
   });
 
@@ -352,12 +371,13 @@ export default function AdminDashboard() {
                     <span className="text-[10px] sm:text-[11px] text-muted-foreground font-medium whitespace-nowrap">
                       Applied: {format(new Date(doctor.createdAt), "MMM dd, yyyy")}
                     </span>
-                    <Button 
+                    <Button
                       onClick={() => handleOpenDoctor(doctor)}
-                      className="bg-primary hover:bg-primary/90 text-primary-foreground rounded-md px-4 sm:px-5 h-8 sm:h-9 shadow-sm text-xs sm:text-sm"
+                      variant="outline"
+                      className="rounded-md px-4 sm:px-5 h-8 sm:h-9 shadow-sm text-xs sm:text-sm"
                     >
-                      <CheckCircle className="h-3.5 w-3.5 sm:h-4 sm:w-4 mr-1.5 sm:mr-2" />
-                      Verify
+                      <ArrowRight className="h-3.5 w-3.5 sm:h-4 sm:w-4 mr-1.5 sm:mr-2" />
+                      View More
                     </Button>
                   </div>
                 </div>
@@ -659,7 +679,15 @@ export default function AdminDashboard() {
                 <Button variant="outline" onClick={handleCloseDialog} className="rounded-full px-6 w-full sm:w-auto order-1 sm:order-none">
                   Cancel
                 </Button>
-                <Button 
+                <Button
+                  variant="destructive"
+                  onClick={() => setShowRejectDialog(true)}
+                  disabled={rejectMutation.isPending}
+                  className="rounded-full px-6 sm:px-8 w-full sm:w-auto"
+                >
+                  Reject
+                </Button>
+                <Button
                   onClick={() => selectedDoctor && verifyMutation.mutate(selectedDoctor.id)}
                   disabled={verifyMutation.isPending}
                   className="rounded-full px-6 sm:px-8 bg-primary hover:bg-primary/90 text-primary-foreground w-full sm:w-auto"
@@ -670,6 +698,36 @@ export default function AdminDashboard() {
               </DialogFooter>
             </div>
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Reject Reason Dialog */}
+      <Dialog open={showRejectDialog} onOpenChange={setShowRejectDialog}>
+        <DialogContent className="max-w-md bg-background rounded-xl">
+          <DialogHeader>
+            <DialogTitle>Reject Doctor Application</DialogTitle>
+            <DialogDescription>Please provide a reason for rejecting this application.</DialogDescription>
+          </DialogHeader>
+          <textarea
+            className="w-full border border-border rounded-lg p-3 text-sm bg-background resize-none focus:outline-none focus:ring-2 focus:ring-primary"
+            rows={4}
+            placeholder="Enter rejection reason..."
+            value={rejectReason}
+            onChange={(e) => setRejectReason(e.target.value)}
+          />
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setShowRejectDialog(false)} className="rounded-full">
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={!rejectReason.trim() || rejectMutation.isPending}
+              onClick={() => selectedDoctor && rejectMutation.mutate({ doctorId: selectedDoctor.id, reason: rejectReason })}
+              className="rounded-full"
+            >
+              {rejectMutation.isPending ? "Rejecting..." : "Confirm Reject"}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>

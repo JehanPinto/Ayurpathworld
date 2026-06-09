@@ -33,3 +33,7 @@ uploads/
 
 # OS-specific
 Thumbs.db
+
+# Elastic Beanstalk local deployment artifacts
+.elasticbeanstalk/app_versions/
+.elasticbeanstalk/logs/
