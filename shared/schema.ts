@@ -1216,6 +1216,35 @@ export const refunds = pgTable("refunds", {
   statusIdx: index("refund_status_idx").on(table.status),
 }));
 
+// ================== AUDIT LOGS ==================
+export const auditLogs = pgTable("audit_logs", {
+  id: varchar("id", { length: 50 }).primaryKey().default(sql`gen_random_uuid()`),
+  actorId: varchar("actor_id", { length: 50 }).notNull().references(() => users.id),
+  actorRole: varchar("actor_role", { length: 20 }).notNull(),
+  action: varchar("action", { length: 255 }).notNull(),
+  status: varchar("status", { length: 20 }).default("success"),
+  entityType: varchar("entity_type", { length: 50 }),
+  entityId: varchar("entity_id", { length: 50 }),
+  ipAddress: varchar("ip_address", { length: 50 }),
+  device: varchar("device", { length: 255 }),
+  location: varchar("location", { length: 255 }),
+  sessionId: varchar("session_id", { length: 100 }),
+  metadata: jsonb("metadata").default(sql`'{}'::jsonb`),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => ({
+  actorIdx: index("audit_actor_idx").on(table.actorId),
+  actionIdx: index("audit_action_idx").on(table.action),
+  createdIdx: index("audit_created_idx").on(table.createdAt),
+}));
+
+export const insertAuditLogSchemaDb = createInsertSchema(auditLogs).omit({ 
+  id: true, 
+  createdAt: true 
+});
+
+export type AuditLog = typeof auditLogs.$inferSelect;
+export type InsertAuditLog = z.infer<typeof insertAuditLogSchemaDb>;
+
 export const insertRefundSchemaDb = createInsertSchema(refunds).omit({ id: true, createdAt: true, updatedAt: true, processedAt: true });
 export type Refund = typeof refunds.$inferSelect;
 export type InsertRefund = z.infer<typeof insertRefundSchemaDb>;
