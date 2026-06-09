@@ -49,6 +49,8 @@ import {
   InsertRefund,
   payments,
   payments,
+  InsertAuditLog,
+  AuditLog,
 } from "@shared/schema";
 import { randomUUID } from "crypto";
 
@@ -291,6 +293,8 @@ export interface IStorage {
   processRefund(refundId: string, status: string): Promise<any>;
   getPaginatedPayments(page: number, limit: number): Promise<any>;
   getPaginatedRefundRequests(page: number, limit: number): Promise<any>;
+  createAuditLog(data: InsertAuditLog): Promise<AuditLog>;
+  getPaginatedAuditLogs(page: number, limit: number): Promise<any>;
 }
 
 export class MemStorage implements IStorage {
@@ -307,6 +311,7 @@ export class MemStorage implements IStorage {
   private notifications: Map<string, Notification>;
   private jobApplications: Map<string, JobApplication>;
   private careersMap = new Map<string, Career>();
+  // private auditLogs: Map<string, AuditLog> = new Map();
 
   constructor() {
     this.users = new Map();
@@ -1795,11 +1800,19 @@ export class MemStorage implements IStorage {
     
     return result[0];
   }
+
+  // MemStorage ඇතුළත:
+  async createAuditLog(data: InsertAuditLog): Promise<AuditLog> {
+    return { ...data, id: "mock-id", createdAt: new Date() } as AuditLog;
+  }
+  async getPaginatedAuditLogs(page: number, limit: number): Promise<any> {
+    return { data: [], totalCount: 0, totalPages: 1, currentPage: page };
+  }
 }
 
 import { db } from "./db";
 import { dbStorage } from "./db-storage";
-import { inArray } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 
 // Use database storage instead of in-memory storage
 export const storage = dbStorage;
