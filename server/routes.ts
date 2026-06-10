@@ -494,22 +494,66 @@ export async function registerRoutes(
     done(null, user);
   });
 
+  // 🟢 Helper to safely get actor info (Resolves Foreign Key constraint issue natively)
   const getActorInfo = async (req: Request) => {
+    // 1. User login වෙලා නම් (Authenticated)
     const authUser = (req as AuthenticatedRequest).user;
     if (authUser) {
       return { actorId: authUser.id, actorRole: authUser.role };
     }
+
+    // 2. Request එකේ Email එකක් එවලා තියෙනවද කියලා බලනවා (Login, Forgot PW, Register, Upload CV)
+    const providedEmail = req.body?.email || req.headers["x-registration-email"];
     
-    try {
-      const admins = await storage.getAllUsers("admin");
-      if (admins && admins.length > 0) {
-        return { actorId: admins[0].id, actorRole: 'system_guest' };
+    if (providedEmail && typeof providedEmail === 'string') {
+      try {
+        const existingUser = await storage.getUserByEmail(providedEmail.toLowerCase().trim());
+        if (existingUser) {
+          // Email එකට අදාළ User කෙනෙක් DB එකේ ඉන්නවා නම්, එයාගේ ID එක යවනවා
+          // හැබැයි තවම ලොග් වෙලා නැති නිසා 'unverified' හෝ 'guest' විදිහට තියන්නත් පුළුවන්, 
+          // ඒත් වඩා හොඳයි එයාගේ ඇත්ත role එකම යවන එක.
+          return { actorId: existingUser.id, actorRole: existingUser.role };
+        }
+      } catch (e) {
+        console.error("Failed to fetch user by provided email in getActorInfo:", e);
       }
-    } catch (e) {
-      console.error("Failed to fetch admin for fallback:", e);
     }
     
-    return { actorId: 'system', actorRole: 'system_guest' }; 
+    // 3. User login වෙලත් නැත්නම්, ගහපු Email එක DB එකේ ඇත්තෙත් නැත්නම් (හෝ Email එකක් ගැහුවේ නැත්නම්) - "System Guest" Pattern
+    const GUEST_EMAIL = "guest@ayurpath.system";
+    
+    try {
+      // Guest User කෙනෙක් කලින් හැදිලා තියෙනවද බලනවා
+      let guestUser = await storage.getUserByEmail(GUEST_EMAIL);
+      
+      // එහෙම කෙනෙක් නැත්නම්, පළවෙනි පාරට ඒ Dummy User ව හදනවා
+      if (!guestUser) {
+        // මේකෙන් ලොග් වෙන්න බැරි වෙන්න Random Password එකක් දෙනවා
+        const dummyPassword = await hashPassword(randomUUID() + randomUUID()); 
+        
+        guestUser = await storage.createUser({
+          fullName: "System Guest",
+          email: GUEST_EMAIL,
+          password: dummyPassword,
+          phone: "0000000000",
+          role: "patient", // DB Schema එකේ තියෙන Default Role එක
+        } as any);
+      }
+      
+      // 🟢 Database එකේ තියෙන ඇත්තම ID එක දෙනවා, හැබැයි Role එක 'guest' කියලා යවනවා
+      return { actorId: guestUser.id, actorRole: 'guest' };
+      
+    } catch (error) {
+      console.error("Failed to fetch/create guest user:", error);
+      
+      // මොකක් හරි වෙලා Guest User ව හදන්න බැරි වුණොත්, Admin ගේ ID එක පාවිච්චි කරනවා (Fallback)
+      const admins = await storage.getAllUsers("admin");
+      if (admins && admins.length > 0) {
+         return { actorId: admins[0].id, actorRole: 'guest' };
+      }
+      
+      return { actorId: 'system', actorRole: 'guest' };
+    }
   };
 
   app.post(
@@ -2848,9 +2892,27 @@ export async function registerRoutes(
     authMiddleware,
     roleMiddleware(UserRole.DOCTOR),
     async (req: AuthenticatedRequest, res: Response) => {
+      const tRequestReceived = new Date().toISOString();
+      const { ipAddress, device, location, sessionId } = getReqInfo(req);
+      const { actorId, actorRole } = await getActorInfo(req);
+
       try {
         const profile = await storage.getDoctorProfileByUserId(req.user!.id);
         if (!profile) {
+          const tFailed = new Date().toISOString();
+          try {
+            await storage.createAuditLog({
+              actorId, actorRole,
+              action: 'SLOT_CREATED', status: 'failed',
+              entityType: 'appointment_slots', entityId: req.params.id,
+              ipAddress, device, location, sessionId: sessionId || 'N/A',
+              metadata: {
+                auditType: 'APPOINTMENT',
+                reason: 'Doctor profile not found',
+                timeline: { requestReceivedAt: tRequestReceived, completedAt: tFailed }
+              }
+            });
+          } catch (e) {}
           return res.status(404).json({ error: "Doctor profile not found" });
         }
 
@@ -2872,16 +2934,30 @@ export async function registerRoutes(
         );
 
         if (hasOverlap) {
+          const tFailed = new Date().toISOString();
+          try {
+            await storage.createAuditLog({
+              actorId, actorRole,
+              action: 'SLOT_CREATED', status: 'failed',
+              entityType: 'appointment_slots', entityId: 'N/A',
+              ipAddress, device, location, sessionId: sessionId || 'N/A',
+              metadata: {
+                auditType: 'APPOINTMENT',
+                date: data.date,
+                time: `${data.startTime} - ${data.endTime}`,
+                type: data.consultationType,
+                reason: 'Overlapping slot exists',
+                timeline: { requestReceivedAt: tRequestReceived, completedAt: tFailed }
+              }
+            });
+          } catch (e) {}
           return res.status(400).json({ error: "A slot already exists during this time period on the selected date." });
         }
 
-        // 🟢 අලුතෙන් ADD කරපු කෑල්ල (Online නම් විතරක් Google Meet Link එක හදනවා)
         let meetLink: string | undefined = undefined;
         if (data.consultationType === "online") {
-          // ලංකාවේ Timezone එකට අදාලව ISO Date string එකක් හදාගන්නවා
           const startDateTime = new Date(`${data.date}T${data.startTime}:00+05:30`).toISOString();
           
-          // Slot එක හදද්දී patient කෙනෙක් නැති නිසා null යවනවා
           const meetData = await createGoogleMeetEvent(req.user!.email, null, startDateTime);
           
           if (meetData && meetData.meetingLink) {
@@ -2889,13 +2965,58 @@ export async function registerRoutes(
           }
         }
 
-        // meetLink එකත් එක්කම DB එකට save කරනවා
         const slot = await storage.createAppointmentSlot({ ...data, meetLink });
+
+        const tCompleted = new Date().toISOString();
+        try {
+          await storage.createAuditLog({
+            actorId, actorRole,
+            action: 'SLOT_CREATED', status: 'success',
+            entityType: 'appointment_slots', entityId: req.params.id,
+            ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: {
+              auditType: 'APPOINTMENT',
+              date: data.date,
+              time: `${data.startTime} - ${data.endTime}`,
+              type: data.consultationType,
+              hasGoogleMeet: !!meetLink,
+              timeline: { requestReceivedAt: tRequestReceived, completedAt: tCompleted }
+            }
+          });
+        } catch (e) {}
         res.status(201).json(slot);
       } catch (error) {
+        const tFailed = new Date().toISOString();
         if (error instanceof z.ZodError) {
+          try {
+            await storage.createAuditLog({
+              actorId, actorRole,
+              action: 'SLOT_CREATED', status: 'failed',
+              entityType: 'appointment_slots', entityId: req.params.id,
+              ipAddress, device, location, sessionId: sessionId || 'N/A',
+              metadata: {
+                auditType: 'APPOINTMENT',
+                reason: 'Validation failed',
+                details: error.errors,
+                timeline: { requestReceivedAt: tRequestReceived, completedAt: tFailed }
+              }
+            });
+          } catch (e) {}
           return res.status(400).json({ error: error.errors });
         }
+        try {
+          await storage.createAuditLog({
+            actorId, actorRole,
+            action: 'SLOT_CREATED', status: 'failed',
+            entityType: 'system', entityId: 'N/A',
+            ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: {
+              auditType: 'APPOINTMENT',
+              reason: 'Server error (500)',
+              timeline: { requestReceivedAt: tRequestReceived, completedAt: tFailed }
+            }
+          });
+        } catch (e) {}
         res.status(500).json({ error: "Failed to create slot" });
       }
     },
@@ -3419,6 +3540,9 @@ export async function registerRoutes(
     "/api/payments/:id/fail",
     authMiddleware,
     async (req: AuthenticatedRequest, res: Response) => {
+      const tRequestReceived = new Date().toISOString();
+      const { ipAddress, device, location, sessionId } = getReqInfo(req);
+      const { actorId, actorRole } = await getActorInfo(req);
       try {
         const { lastFourDigits } = req.body;
 
@@ -3466,8 +3590,40 @@ export async function registerRoutes(
           ),
         );
 
+        const tCompleted = new Date().toISOString();
+        try {
+          await storage.createAuditLog({
+            actorId, actorRole,
+            action: 'PAYMENT_MARKED_FAILED', status: 'success',
+            entityType: 'payment', entityId: payment.id,
+            ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: {
+              auditType: 'PAYMENT',
+              amount: payment.totalAmount,
+              lastFourDigits: last4,
+              patientId: payment.patientId,
+              reason: 'Payment manually marked as failed.',
+              timeline: { requestReceivedAt: tRequestReceived, completedAt: tCompleted }
+            }
+          });
+        } catch (e) {}
+
         res.json(updated);
       } catch (error) {
+        const tFailed = new Date().toISOString();
+        try {
+          await storage.createAuditLog({
+            actorId, actorRole,
+            action: 'PAYMENT_MARKED_FAILED', status: 'error',
+            entityType: 'payment', entityId: req.params.id,
+            ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: {
+              auditType: 'PAYMENT',
+              reason: 'Internal Server Error (500)',
+              timeline: { requestReceivedAt: tRequestReceived, failedAt: tFailed }
+            }
+          });
+        } catch (e) {}
         res.status(500).json({ error: "Failed to update payment status" });
       }
     },
@@ -3572,9 +3728,24 @@ export async function registerRoutes(
     authMiddleware,
     roleMiddleware(UserRole.DOCTOR),
     async (req: AuthenticatedRequest, res: Response) => {
+      const tRequestReceived = new Date().toISOString();
+      const { ipAddress, device, location, sessionId } = getReqInfo(req);
+      const { actorId, actorRole } = await getActorInfo(req);
       try {
         const profile = await storage.getDoctorProfileByUserId(req.user!.id);
         if (!profile) {
+          await storage.createAuditLog({
+            actorId, actorRole,
+            action: 'DOCTOR_SETTLE_EARNINGS', status: 'error',
+            entityType: 'doctor', entityId: req.user!.id,
+            ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: {
+              method: 'Money deducted from doctor for cancellation charges',
+              reason: "Doctor profile not found",
+              auditType: 'PAYMENT',
+              timeline: { requestReceivedAt: tRequestReceived, failedAt: new Date().toISOString() }
+            }
+          });
           return res.status(404).json({ error: "Doctor profile not found" });
         }
 
@@ -3584,8 +3755,39 @@ export async function registerRoutes(
         }
 
         await storage.settleDoctorCharges(profile.id);
+
+        const tCompleted = new Date().toISOString();
+        try {
+          await storage.createAuditLog({
+            actorId, actorRole,
+            action: 'EARNINGS_SETTLED', status: 'success',
+            entityType: 'doctor_profile', entityId: profile.id,
+            ipAddress, device, location, sessionId: 'N/A',
+            metadata: {
+              auditType: 'PAYMENT',
+              settledAmount: unsettled.totalOwed,
+              reason: 'Doctor settled their outstanding cancellation charges with the platform.',
+              timeline: { requestReceivedAt: tRequestReceived, completedAt: tCompleted }
+            }
+          });
+        } catch (e) {}
+        
         res.json({ settled: true, amountDeducted: unsettled.totalOwed });
       } catch (error) {
+        const tFailed = new Date().toISOString();
+        try {
+          await storage.createAuditLog({
+            actorId, actorRole,
+            action: 'EARNINGS_SETTLEMENT_FAILED', status: 'error',
+            entityType: 'doctor_profile', entityId: req.user!.id,
+            ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: {
+              auditType: 'PAYMENT',
+              reason: 'Internal Server Error (500) during settlement of doctor charges.',
+              timeline: { requestReceivedAt: tRequestReceived, failedAt: tFailed }
+            }
+          });
+        } catch (e) {}
         res.status(500).json({ error: "Failed to settle charges" });
       }
     },
@@ -4301,15 +4503,48 @@ export async function registerRoutes(
     authMiddleware,
     roleMiddleware(UserRole.ADMIN),
     async (req: Request, res: Response) => {
+      const tRequestReceived = new Date().toISOString();
+      const { ipAddress, device, location, sessionId } = getReqInfo(req);
+      const { actorId, actorRole } = await getActorInfo(req);
       try {
         const { refundAmount, refundReason } = req.body;
         
         const payment = await storage.getPayment(req.params.id);
         if (!payment) {
+          const tFailed = new Date().toISOString();
+          try {
+            await storage.createAuditLog({
+              actorId, actorRole,
+              action: 'PAYMENT_REFUND_ATTEMPT', status: 'error',
+              entityType: 'payment', entityId: req.params.id,
+              ipAddress, device, location, sessionId: sessionId || 'N/A',
+              metadata: {
+                auditType: 'PAYMENT',
+                reason: 'Payment not found',
+                timeline: { requestReceivedAt: tRequestReceived, failedAt: tFailed }
+              }
+            });
+          } catch (e) {}
           return res.status(404).json({ error: "Payment not found" });
         }
 
         if (refundAmount !== undefined && refundAmount > payment.totalAmount) {
+          const tFailed = new Date().toISOString();
+          try {
+            await storage.createAuditLog({
+              actorId, actorRole,
+              action: 'PAYMENT_REFUND_ATTEMPT', status: 'error',
+              entityType: 'payment', entityId: req.params.id,
+              ipAddress, device, location, sessionId: sessionId || 'N/A',
+              metadata: {
+                auditType: 'PAYMENT',
+                reason: 'Refund amount exceeds original payment',
+                originalAmount: payment.totalAmount,
+                attemptedRefundAmount: refundAmount,
+                timeline: { requestReceivedAt: tRequestReceived, failedAt: tFailed }
+              }
+            });
+          } catch (e) {}
           return res.status(400).json({ error: "Refund amount cannot exceed the original payment amount" });
         }
 
@@ -4319,8 +4554,40 @@ export async function registerRoutes(
           refundReason,
           refundDate: new Date().toISOString().split("T")[0],
         });
+
+        const tCompleted = new Date().toISOString();
+        try {
+          await storage.createAuditLog({
+            actorId, actorRole,
+            action: 'PAYMENT_REFUNDED', status: 'success',
+            entityType: 'payment', entityId: payment.id,
+            ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: {
+              auditType: 'PAYMENT',
+              originalAmount: payment.totalAmount,
+              refundedAmount: refundAmount,
+              reason: refundReason || 'No reason provided',
+              patientId: payment.patientId,
+              timeline: { requestReceivedAt: tRequestReceived, completedAt: tCompleted }
+            }
+          });
+        } catch (e) {}
         res.json(updatedPayment);
       } catch (error) {
+        const tFailed = new Date().toISOString();
+        try {
+          await storage.createAuditLog({
+            actorId, actorRole,
+            action: 'PAYMENT_REFUND_ATTEMPT', status: 'error',
+            entityType: 'payment', entityId: req.params.id,
+            ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: {
+              auditType: 'PAYMENT',
+              reason: error instanceof Error ? error.message : 'Unknown error',
+              timeline: { requestReceivedAt: tRequestReceived, failedAt: tFailed }
+            }
+          });
+        } catch (e) {}
         res.status(500).json({ error: "Failed to refund payment" });
       }
     },
@@ -6137,172 +6404,211 @@ export async function registerRoutes(
   app.post(
     "/api/payhere/notify",
     async (req: Request, res: Response) => {
-      console.log("\n[PAYHERE WEBHOOK] 📥 Received notification:", req.body);
+
+      const tRequestReceived = new Date().toISOString();
+      const { ipAddress, device, location, sessionId } = getReqInfo(req);
+      const { actorId, actorRole } = await getActorInfo(req);
       
       try {
         const {
-          merchant_id, order_id, payhere_amount, payhere_currency, status_code, md5sig
+          merchant_id, order_id, payhere_amount, payhere_currency, status_code, md5sig, method, status_message
         } = req.body;
 
         const merchant_secret = process.env.PAYHERE_SECRET;
-        
-        // 1. Verify the signature
+        const appointmentId = order_id ? order_id.replace('booking-', '') : 'N/A';
+        const paymentMethodUsed = method || 'PayHere Gateway';
+
+        let payment = null;
+        let appt = null;
+        let slot = null;
+
+        if (appointmentId !== 'N/A') {
+           payment = await storage.getPaymentByAppointment(appointmentId);
+           appt = await storage.getAppointment(appointmentId);
+           slot = appt ? await storage.getAppointmentSlot(appt.slotId) : null;
+        }
+
+        const richMetadata = {
+          auditType: 'PAYMENT',
+          method: paymentMethodUsed,
+          paymentDetails: {
+            payhereOrderId: order_id,
+            gatewayAmount: payhere_amount,
+            gatewayCurrency: payhere_currency,
+            statusCode: status_code,
+            statusMessage: status_message || 'N/A',
+            internalPaymentId: payment?.id || 'N/A',
+            dbTotalAmount: payment?.totalAmount || 'N/A',
+            platformCommission: payment?.platformCommission || 'N/A',
+            doctorEarnings: payment?.doctorEarnings || 'N/A'
+          },
+          appointmentDetails: appt ? {
+            appointmentId: appt.id,
+            patientId: appt.patientId,
+            doctorId: appt.doctorId,
+            consultationType: appt.consultationType,
+            statusBeforeWebhook: appt.status
+          } : 'N/A',
+          slotDetails: slot ? {
+            slotId: slot.id,
+            date: slot.date,
+            startTime: slot.startTime,
+            endTime: slot.endTime,
+            isOnline: !!slot.meetLink
+          } : 'N/A'
+        };
+
         const hashedSecret = createHash('md5').update(merchant_secret!).digest('hex').toUpperCase();
         const hashString = merchant_id + order_id + payhere_amount + payhere_currency + status_code + hashedSecret;
         const generatedSig = createHash('md5').update(hashString).digest('hex').toUpperCase();
 
         if (generatedSig !== md5sig) {
-          console.error("[PAYHERE WEBHOOK] ❌ Security Alert: Invalid Signature!");
+          const tFailed = new Date().toISOString();
+          
+          try {
+            const auditLogData = {
+              actorId, actorRole,
+              action: 'PAYHERE_WEBHOOK', status: 'failed',
+              entityType: 'payment', entityId: payment?.id || 'N/A', // Add ID if we found it
+              ipAddress, device, location, sessionId: sessionId || 'N/A',
+              metadata: {
+                ...richMetadata,
+                reason: 'Security Alert: Invalid signature in PayHere webhook. Possible spoofing.',
+                receivedPayload: { order_id, payhere_amount, payhere_currency, status_code },
+                timeline: {
+                  requestReceivedAt: tRequestReceived,
+                  signatureVerificationFailedAt: tFailed,
+                  completedAt: tFailed,
+                }
+              }
+            };
+            await storage.createAuditLog(auditLogData);
+          } catch (e) { console.error("Audit log failed:", e); }
           return res.status(400).send("Invalid Signature");
         }
 
-        console.log(`[PAYHERE WEBHOOK] ✅ Signature Valid. Status Code: ${status_code}`);
-
-        const appointmentId = order_id.replace('booking-', '');
-
-        if (status_code === "2") {
-          console.log(`[PAYHERE WEBHOOK] 💰 Payment Success for Appointment: ${appointmentId}`);
-          
-          // Payment record
-          const payment = await storage.getPaymentByAppointment(appointmentId);
-          
-          if (payment) {
+        if (status_code === "2") {          
+          if (payment && appt && slot) {
             await storage.updatePayment(payment.id, { status: PaymentStatus.COMPLETED });
-            
             await storage.updateAppointment(appointmentId, { status: AppointmentStatus.CONFIRMED });
-            
             await pool.query(
               `UPDATE appointment_slots SET is_booked = true WHERE id = $1`,
               [(payment as any).slotId]
             );
             
-            console.log(`[PAYHERE WEBHOOK] ✅ DB Updated & Slot Locked Successfully.`);
-
-            const appt = await storage.getAppointment(appointmentId);
-            
-            if (appt) {
-              try {
-                await storage.createAuditLog({
-                  actorId: appt.patientId,
-                  actorRole: 'patient',
-                  action: 'PAYMENT_COMPLETED',
-                  status: 'success',
-                  entityType: 'payment',
-                  entityId: payment.id,
-                  metadata: {
-                    amount: payhere_amount,
-                    currency: payhere_currency,
-                    appointmentId: appointmentId,
-                    transactionDetails: "PayHere Online Payment"
-                  }
+            // Send Notifications & Emails
+            const docProfile = await storage.getDoctorProfile(appt.doctorId);
+            if(docProfile) {
+              const docUser = await storage.getUser(docProfile.userId);
+              const ptUser = await storage.getUser(appt.patientId);
+              if(docUser && ptUser) {
+                await storage.createNotification({
+                  userId: ptUser.id, title: "Payment Successful",
+                  message: `Your payment of LKR ${payhere_amount} for appointment with Dr. ${docUser.fullName} was successful.`,
+                  type: "payment", isRead: false, relatedId: payment.id,
                 });
-              } catch (auditErr) {
-                console.error("[PAYHERE WEBHOOK] Failed to create audit log:", auditErr);
+                await storage.createNotification({
+                  userId: docUser.id, title: "New Online Payment",
+                  message: `${ptUser.fullName} has paid for their upcoming appointment.`,
+                  type: "payment", isRead: false, relatedId: payment.id,
+                });
+
+                await sendPatientBookingReceiptEmail(
+                  ptUser.email, ptUser.fullName, docUser.fullName, String(slot.date),
+                  slot.startTime, payment.totalAmount, slot.consultationType,
+                  slot.meetLink || "unavailable", "online"
+                );
+                await sendDoctorNewBookingEmail(
+                  docUser.email, docUser.fullName, ptUser.fullName, appt.symptoms,
+                  String(slot.date), slot.startTime, slot.consultationType,
+                  slot.meetLink || "unavailable"
+                ); 
               }
             }
-            
-            // Send Success Notifications
-            if(appt){
-              const docProfile = await storage.getDoctorProfile(appt.doctorId);
-              const slot = await storage.getAppointmentSlot(appt.slotId);
-              if(docProfile && slot) {
-                const docUser = await storage.getUser(docProfile.userId);
-                const ptUser = await storage.getUser(appt.patientId);
-                if(docUser && ptUser) {
-                  await storage.createNotification({
-                    userId: ptUser.id, title: "Payment Successful",
-                    message: `Your payment of LKR ${payhere_amount} for appointment with Dr. ${docUser.fullName} was successful.`,
-                    type: "payment", isRead: false, relatedId: payment.id,
-                  });
-                  await storage.createNotification({
-                    userId: docUser.id, title: "New Online Payment",
-                    message: `${ptUser.fullName} has paid for their upcoming appointment.`,
-                    type: "payment", isRead: false, relatedId: payment.id,
-                  });
 
-                  console.log(`[PAYHERE WEBHOOK] 📧 Triggering Resend Emails...`);
-
-                  await sendPatientBookingReceiptEmail(
-                    ptUser.email,
-                    ptUser.fullName,
-                    docUser.fullName,
-                    slot.date as unknown as string,
-                    slot.startTime,
-                    payment.totalAmount,
-                    slot.consultationType,
-                    slot.meetLink || "unavailable for online consultations without video, please check your notifications for details",
-                    "online"
-                  );
-
-                  await sendDoctorNewBookingEmail(
-                    docUser.email,
-                    docUser.fullName,
-                    ptUser.fullName,
-                    appt.symptoms,
-                    slot.date as unknown as string,
-                    slot.startTime,
-                    slot.consultationType,
-                    slot.meetLink || "unavailable for online consultations without video, please check your notifications for details"
-                  ); 
-                  console.log(`[PAYHERE WEBHOOK] ✅ Email sending process completed.`);
+            // SUCCESS AUDIT LOG
+            const tCompleted = new Date().toISOString();
+            try {
+              await storage.createAuditLog({
+                actorId, actorRole,
+                action: 'PAYHERE_WEBHOOK_SUCCESS', status: 'success',
+                entityType: 'payment', entityId: payment.id,
+                ipAddress, device, location, sessionId: sessionId || 'N/A',
+                metadata: {
+                  ...richMetadata,
+                  reason: 'Payment completed successfully via PayHere.',
+                  timeline: { requestReceivedAt: tRequestReceived, dbUpdatesAt: tCompleted, completedAt: tCompleted }
                 }
-              }
-            }
-          } else {
-             console.error(`[PAYHERE WEBHOOK] ❌ Payment record not found for Appointment: ${appointmentId}`);
-          }
-        } else if (status_code === "-2" || status_code === "-1" || status_code === "0") {
-          // Canceled or Failed Payment
-          console.log(`[PAYHERE WEBHOOK] ⚠️ Payment Failed/Canceled for Appointment: ${appointmentId}`);
-          const payment = await storage.getPaymentByAppointment(appointmentId);
-          const appt = await storage.getAppointment(appointmentId);
+              });
+            } catch (auditErr) {}
 
+          } else {          }
+          
+        // PAYMENT FAILED/CANCELED
+        } else if (status_code === "-2" || status_code === "-1" || status_code === "0") {
+          console.log(`[PAYHERE WEBHOOK] ⚠️ Payment Failed/Canceled for Appointment: ${appointmentId}`);
           if (payment && appt) {
             await storage.updatePayment(payment.id, { status: PaymentStatus.FAILED });
             await storage.updateAppointment(appointmentId, { 
                 status: AppointmentStatus.CANCELLED, 
-                cancelReason: "Payment Failed or Canceled by User" 
+                cancelReason: `PayHere Payment Failed (Code: ${status_code})` 
             });
-            await pool.query(
-              `UPDATE appointment_slots SET is_booked = false WHERE id = $1`,
-              [(payment as any).slotId]
-            );
+            await pool.query(`UPDATE appointment_slots SET is_booked = false WHERE id = $1`, [(payment as any).slotId]);
 
+            // FAILED AUDIT LOG
+            const tCompleted = new Date().toISOString();
             try {
               await storage.createAuditLog({
-                actorId: appt.patientId,
-                actorRole: 'patient',
-                action: 'PAYMENT_FAILED',
-                status: 'failed',
-                entityType: 'payment',
-                entityId: payment.id,
+                actorId, actorRole,
+                action: 'PAYHERE_WEBHOOK_FAILED', status: 'failed',
+                entityType: 'payment', entityId: payment.id,
+                ipAddress, device, location, sessionId: sessionId || 'N/A',
                 metadata: {
-                  amount: payhere_amount,
-                  reason: `PayHere Status Code: ${status_code}`,
-                  appointmentId: appointmentId
+                  ...richMetadata,
+                  reason: `Payment failed or canceled. Status Code: ${status_code}`,
+                  timeline: { requestReceivedAt: tRequestReceived, dbRevertAt: tCompleted, completedAt: tCompleted }
                 }
               });
-            } catch (auditErr) {
-              console.error("[PAYHERE WEBHOOK] Failed to create failed audit log:", auditErr);
-            }
+            } catch (auditErr) {}
           }
         }
         
         res.status(200).send("OK");
       } catch (error) {
-        console.error("[PAYHERE WEBHOOK] ❌ Processing error:", error);
+        
+        // CATCH BLOCK AUDIT LOG
+        const tFailed = new Date().toISOString();
+        try {
+          await storage.createAuditLog({
+            actorId, actorRole,
+            action: 'PAYHERE_WEBHOOK_ERROR', status: 'failed',
+            entityType: 'system', entityId: 'N/A',
+            ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: {
+              auditType: 'PAYMENT',
+              method: 'PayHere Webhook',
+              reason: 'Internal Server Error (500) while processing webhook.',
+              errorDetail: String(error),
+              timeline: { requestReceivedAt: tRequestReceived, completedAt: tFailed }
+            }
+          });
+        } catch (e) {}
+
         res.status(500).send("Internal Server Error");
       }
     }
   );
 
-  //  =========================================
+  // ==========================================
   // EXPLICIT FAIL ROUTE
   // ==========================================
   app.patch(
     "/api/appointments/:id/payment-failed",
     authMiddleware,
     async (req: AuthenticatedRequest, res: Response) => {
+      const tRequestReceived = new Date().toISOString();
+      const { ipAddress, device, location, sessionId } = getReqInfo(req);
+      const { actorId, actorRole } = await getActorInfo(req);
       try {
         const appointmentId = req.params.id;
         
@@ -6330,9 +6636,34 @@ export async function registerRoutes(
           [appointment.slotId]
         );
 
+        const tCompleted = new Date().toISOString();
+        try {
+          await storage.createAuditLog({
+            actorId, actorRole,
+            action: 'EXPLICIT_PAYMENT_FAILED', status: 'success',
+            entityType: 'appointment', entityId: appointmentId,
+            ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: {
+              auditType: 'PAYMENT',
+              paymentId: payment?.id || 'N/A',
+              slotId: appointment.slotId,
+              reason: 'User explicitly cancelled the payment or gateway timeout occurred.',
+              actionTaken: 'Appointment cancelled and slot released to the public.',
+              timeline: { requestReceivedAt: tRequestReceived, completedAt: tCompleted }
+            }
+          });
+        } catch (e) {}
+
         res.json({ success: true, message: "Slot released successfully" });
       } catch (error) {
-        console.error("Payment Fail Error:", error);
+        const tFailed = new Date().toISOString();
+        try {
+          await storage.createAuditLog({
+            actorId, actorRole, action: 'EXPLICIT_PAYMENT_FAILED', status: 'failed',
+            entityType: 'system', entityId: req.params.id, ipAddress, device, location, sessionId: 'N/A',
+            metadata: { auditType: 'PAYMENT', reason: 'Internal Server Error (500)', timeline: { requestReceivedAt: tRequestReceived, completedAt: tFailed } }
+          });
+        } catch (e) {}
         res.status(500).json({ error: "Failed to release slot" });
       }
     }
@@ -6391,7 +6722,6 @@ export async function registerRoutes(
         const page = parseInt(req.query.page as string) || 1;
         const limit = parseInt(req.query.limit as string) || 50; // එක පාර ගොඩක් පෙන්නන්න 50ක් දැම්මා
         
-        // අලුත් Filters ටික
         const type = req.query.type as string;
         const search = req.query.search as string;
         const startDate = req.query.startDate as string;
