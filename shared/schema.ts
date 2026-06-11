@@ -134,7 +134,7 @@ export const hospitals = pgTable("hospitals", {
   name: varchar("name", { length: 255 }).notNull(),
   address: text("address").notNull(),
   city: varchar("city", { length: 100 }).notNull(),
-  contactNumber: varchar("contact_number", { length: 20 }).notNull(),
+  contactNumber: varchar("contact_number", { length: 20 }),
   email: varchar("email", { length: 255 }),
   latitude: real("latitude"),
   longitude: real("longitude"),
@@ -166,7 +166,6 @@ export const doctorProfiles = pgTable("doctor_profiles", {
   hospitalIds: text("hospital_ids")
     .array()
     .default(sql`ARRAY[]::text[]`),
-  clinic_locations: text("clinic_locations").array().default(sql`ARRAY[]::text[]`),  consultationFee: integer("consultation_fee").notNull().default(0),
   onlineConsultationFee: integer("online_consultation_fee"),
   homeVisitFee: integer("home_visit_fee"),
   status: varchar("status", { length: 20 }).notNull().default("pending"),
@@ -603,8 +602,8 @@ export const insertHospitalSchema = z.object({
   name: z.string().min(2, "Hospital name required"),
   address: z.string().min(5, "Address required"),
   city: z.string().min(2, "City required"),
-  contactNumber: z.string().min(10, "Contact number required"),
-  email: z.string().email().optional(),
+  contactNumber: z.string().optional().or(z.literal('')),
+  email: z.string().email().optional().or(z.literal('')),
   latitude: z.number().optional(),
   longitude: z.number().optional(),
   parkingAvailable: z.boolean().default(false),
@@ -616,6 +615,10 @@ export type InsertHospital = z.infer<typeof insertHospitalSchema>;
 export interface Hospital extends InsertHospital {
   id: string;
 }
+
+export const updateHospitalSchema = insertHospitalSchema.partial();
+
+export type UpdateHospital = z.infer<typeof updateHospitalSchema>;
 
 export const insertDoctorProfileSchema = z.object({
   userId: z.string(),
@@ -637,7 +640,6 @@ export const insertDoctorProfileSchema = z.object({
       ]),
     )
     .min(1),
-  clinic_locations: z.array(z.string()).default([]),
   hospitalIds: z.array(z.string()).default([]),
   consultationFee: z.number().min(0, "Fee must be positive"),
   onlineConsultationFee: z.number().min(0).optional(),
@@ -978,7 +980,7 @@ export const registerDoctorSchema = insertUserSchema
         ]),
       )
       .min(1),
-    clinic_locations: z.array(z.string()).default([]),
+    newHospitals: z.array(insertHospitalSchema).optional(),
     consultationFee: z.number().min(0),
   })
   .refine((data) => data.password === data.confirmPassword, {
@@ -988,6 +990,17 @@ export const registerDoctorSchema = insertUserSchema
   .refine((data) => data.role === UserRole.DOCTOR, {
     message: "Invalid role for doctor registration",
     path: ["role"],
+  })
+  .superRefine((data, ctx) => {
+    if (data.consultationTypes.includes(ConsultationType.IN_PERSON)) {
+      if (!data.newHospitals || data.newHospitals.length === 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Please add at least one consultation location for In-Person visits",
+          path: ["newHospitals"],
+        });
+      }
+    }
   });
 
 export type RegisterDoctorInput = z.infer<typeof registerDoctorSchema>;
