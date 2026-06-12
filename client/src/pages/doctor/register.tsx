@@ -304,7 +304,10 @@ export default function DoctorRegisterPage() {
         });
         if (!response.ok) {
           const error = await response.json();
-          throw new Error(error.error || "Registration failed");
+          const message = error.details?.length
+            ? error.details.map((d: any) => d.message).join(", ")
+            : error.error || "Registration failed";
+          throw new Error(message);
         }
         return response.json();
       }
@@ -319,7 +322,10 @@ export default function DoctorRegisterPage() {
       });
       if (!response.ok) {
         const error = await response.json();
-        throw new Error(error.error || "Registration failed");
+        const message = error.details?.length
+          ? error.details.map((d: any) => d.message).join(", ")
+          : error.error || "Registration failed";
+        throw new Error(message);
       }
       return response.json();
     },
@@ -415,7 +421,7 @@ export default function DoctorRegisterPage() {
     } catch (error: any) {
       toast({
         title: "Upload failed",
-        description: "Failed to upload documents. Please try again.",
+        description: error?.message || "Failed to upload documents. Please try again.",
         variant: "destructive",
       });
     } finally {
@@ -456,10 +462,10 @@ export default function DoctorRegisterPage() {
       setUploadToken(result.token);
       setPersonalInfo(data);
       setCurrentStep(2);
-    } catch (error) {
+    } catch (error: any) {
       toast({
         title: "Error",
-        description: "Failed to start registration. Please try again.",
+        description: error?.message || "Unable to connect to the server. Please check your internet connection and try again.",
         variant: "destructive",
       });
     }

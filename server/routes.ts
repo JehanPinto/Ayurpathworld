@@ -1128,7 +1128,7 @@ export async function registerRoutes(
 
       if (!checkSessionCreationLimit(clientIp)) {
         return res.status(429).json({
-          error: "Too many registration attempts. Please try again later.",
+          error: "Too many registration attempts from this device. Please wait 1 hour before trying again.",
         });
       }
 
@@ -1190,8 +1190,17 @@ export async function registerRoutes(
           size: req.file.size,
           cloudinary: true,
         });
-      } catch (error) {
-        res.status(500).json({ error: "Failed to upload file" });
+      } catch (error: any) {
+        console.error("[UPLOAD ERROR]", error);
+        const message =
+          error?.message?.includes("File too large")
+            ? "File is too large. Maximum size is 10MB."
+            : error?.message?.includes("Invalid file type") || error?.message?.includes("not allowed")
+            ? "Invalid file type. Only PDF, JPG, and PNG are allowed."
+            : error?.message?.includes("cloudinary") || error?.message?.includes("Cloudinary")
+            ? "Upload service is temporarily unavailable. Please try again."
+            : "Failed to upload file. Please try again.";
+        res.status(500).json({ error: message });
       }
     },
   );
