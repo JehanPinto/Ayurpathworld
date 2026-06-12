@@ -71,7 +71,18 @@ import {
   AuditLog,
   auditLogs,
 } from "@shared/schema";
-import { and, desc, eq, gte, ilike, inArray, lte, sql, or } from "drizzle-orm";
+import {
+  and,
+  desc,
+  eq,
+  gte,
+  ilike,
+  inArray,
+  lte,
+  sql,
+  or,
+  lt,
+} from "drizzle-orm";
 import { randomUUID } from "crypto";
 import { db, pool } from "./db";
 
@@ -375,8 +386,6 @@ export class DbStorage implements IStorage {
     };
   }
 
-
-
   async getAllDoctors(filters?: {
     specializationId?: string;
     city?: string;
@@ -508,8 +517,7 @@ export class DbStorage implements IStorage {
 
   async addDoctorHospital(
     doctorProfileId: string,
-    name: string,
-    address: string,
+    hospitalData: InsertHospital,
   ): Promise<{ hospital: Hospital; hospitalIds: string[] } | null> {
     const profile = await this.getDoctorProfile(doctorProfileId);
     if (!profile) return null;
@@ -519,10 +527,15 @@ export class DbStorage implements IStorage {
     const hospResult = await db
       .insert(hospitals)
       .values({
-        name,
-        address,
-        city: "",
-        contactNumber: "N/A",
+        name: hospitalData.name,
+        address: hospitalData.address,
+        city: hospitalData.city,
+        contactNumber: hospitalData.contactNumber || null,
+        email: hospitalData.email || null,
+        latitude: hospitalData.latitude,
+        longitude: hospitalData.longitude,
+        parkingAvailable: hospitalData.parkingAvailable,
+        directions: hospitalData.directions,
       })
       .returning();
     const hospital = hospResult[0] as Hospital;
@@ -952,16 +965,18 @@ export class DbStorage implements IStorage {
     reason: string,
     cancelledBy: string,
   ): Promise<Appointment | undefined> {
-    console.log(`[DB-STORAGE] 🛑 Cancelling appointment ID: ${id} by ${cancelledBy}`);
-    
+    console.log(
+      `[DB-STORAGE] 🛑 Cancelling appointment ID: ${id} by ${cancelledBy}`,
+    );
+
     // 1. Update Appointment Status
     const [updated] = await db
       .update(appointments)
-      .set({ 
-        status: AppointmentStatus.CANCELLED, 
-        cancelReason: reason, 
+      .set({
+        status: AppointmentStatus.CANCELLED,
+        cancelReason: reason,
         cancelledBy: cancelledBy as any,
-        updatedAt: new Date() 
+        updatedAt: new Date(),
       })
       .where(eq(appointments.id, id))
       .returning();
@@ -978,24 +993,33 @@ export class DbStorage implements IStorage {
 
     try {
       await this.createAuditLog({
-         actorId: updated.patientId, 
-         actorRole: cancelledBy as any,
-         action: 'APPOINTMENT_CANCELLED',
-         status: 'success',
-         entityType: 'appointment',
-         entityId: id,
-         metadata: { reason: reason || "No reason", cancelledBy, appointmentDate: updated.appointmentDate }
+        actorId: updated.patientId,
+        actorRole: cancelledBy as any,
+        action: "APPOINTMENT_CANCELLED",
+        status: "success",
+        entityType: "appointment",
+        entityId: id,
+        metadata: {
+          reason: reason || "No reason",
+          cancelledBy,
+          appointmentDate: updated.appointmentDate,
+        },
       });
     } catch (e) {
       console.error("[AUDIT LOG] Error saving cancel log:", e);
     }
-    
+
     // 3. Create Refund Request if Payment exists
     const payment = await this.getPaymentByAppointment(id);
     if (payment && payment.status === PaymentStatus.COMPLETED) {
-      console.log(`[DB-STORAGE] 💰 Payment found for refund. Status: ${payment.status}`);
-      const amountToRefund = payment.totalAmount - (payment.bookingCharges || 0) - (payment.tax || 0);
-      
+      console.log(
+        `[DB-STORAGE] 💰 Payment found for refund. Status: ${payment.status}`,
+      );
+      const amountToRefund =
+        payment.totalAmount -
+        (payment.bookingCharges || 0) -
+        (payment.tax || 0);
+
       if (amountToRefund > 0) {
         await this.createRefundRequest({
           paymentId: payment.id,
@@ -1003,7 +1027,7 @@ export class DbStorage implements IStorage {
           patientId: updated.patientId,
           amount: amountToRefund,
           reason: reason || `Cancelled by ${cancelledBy}`,
-          status: "pending"
+          status: "pending",
         });
       }
     }
@@ -1063,13 +1087,16 @@ export class DbStorage implements IStorage {
       .set({ ...updates, updatedAt: new Date() })
       .where(eq(payments.id, id))
       .returning();
-    
+
     if (!result[0]) return undefined;
 
-    if (updates.status && ["completed", "failed", "refunded"].includes(updates.status)) {
+    if (
+      updates.status &&
+      ["completed", "failed", "refunded"].includes(updates.status)
+    ) {
       try {
         await this.createAuditLog({
-          actorId: result[0].patientId, 
+          actorId: result[0].patientId,
           actorRole: "system", // System/Webhook triggered
           action: `PAYMENT_${updates.status.toUpperCase()}`,
           status: updates.status === "failed" ? "failed" : "success",
@@ -1078,8 +1105,8 @@ export class DbStorage implements IStorage {
           metadata: {
             totalAmount: result[0].totalAmount,
             paymentMethod: result[0].method,
-            status: updates.status
-          }
+            status: updates.status,
+          },
         });
       } catch (e) {
         console.error("[AUDIT LOG] Error saving payment log:", e);
@@ -1231,7 +1258,6 @@ export class DbStorage implements IStorage {
             ? toISOString(r.doctorRespondedAt)
             : undefined,
           patient: safePatient as SafeUser,
-
         } as ReviewWithPatient);
       }
     }
@@ -1336,21 +1362,38 @@ export class DbStorage implements IStorage {
   async hideReview(id: string): Promise<Review | undefined> {
     return this.updateReview(id, { isHidden: true });
   }
-  
+
   async deleteReview(id: string): Promise<boolean> {
-    const existing = await db.select().from(reviews).where(eq(reviews.id, id)).limit(1);
+    const existing = await db
+      .select()
+      .from(reviews)
+      .where(eq(reviews.id, id))
+      .limit(1);
     if (!existing[0]) return false;
     const doctorId = existing[0].doctorId;
 
-    const result = await db.delete(reviews).where(eq(reviews.id, id)).returning();
-    
+    const result = await db
+      .delete(reviews)
+      .where(eq(reviews.id, id))
+      .returning();
+
     if (result.length > 0) {
-      const doctorReviews = await db.select().from(reviews).where(and(eq(reviews.doctorId, doctorId), eq(reviews.isHidden, false)));
+      const doctorReviews = await db
+        .select()
+        .from(reviews)
+        .where(
+          and(eq(reviews.doctorId, doctorId), eq(reviews.isHidden, false)),
+        );
       const totalRating = doctorReviews.reduce((sum, r) => sum + r.rating, 0);
-      const avgRating = doctorReviews.length > 0 ? totalRating / doctorReviews.length : 0;
-      
-      await db.update(doctorProfiles)
-        .set({ averageRating: parseFloat(avgRating.toFixed(1)), totalReviews: doctorReviews.length })
+      const avgRating =
+        doctorReviews.length > 0 ? totalRating / doctorReviews.length : 0;
+
+      await db
+        .update(doctorProfiles)
+        .set({
+          averageRating: parseFloat(avgRating.toFixed(1)),
+          totalReviews: doctorReviews.length,
+        })
         .where(eq(doctorProfiles.id, doctorId));
       return true;
     }
@@ -1615,26 +1658,36 @@ export class DbStorage implements IStorage {
         .offset(offset);
 
       // 2. Doctor ගේ නම ගන්නවා
-      const doctorUserIds = [...new Set(rawData.map(r => r.doctorProfile?.userId).filter(Boolean))];
-      const doctorUsers = doctorUserIds.length > 0 
-        ? await db.select({ id: users.id, fullName: users.fullName }).from(users).where(inArray(users.id, doctorUserIds as string[]))
-        : [];
-      const doctorUserMap = new Map(doctorUsers.map(u => [u.id, u.fullName]));
+      const doctorUserIds = [
+        ...new Set(rawData.map((r) => r.doctorProfile?.userId).filter(Boolean)),
+      ];
+      const doctorUsers =
+        doctorUserIds.length > 0
+          ? await db
+              .select({ id: users.id, fullName: users.fullName })
+              .from(users)
+              .where(inArray(users.id, doctorUserIds as string[]))
+          : [];
+      const doctorUserMap = new Map(doctorUsers.map((u) => [u.id, u.fullName]));
 
       // 3. Frontend එකට ඕනේ විදිහට හදනවා
-      const formattedData = rawData.map(row => {
-        const docFullName = row.doctorProfile ? doctorUserMap.get(row.doctorProfile.userId) : "Unknown Doctor";
+      const formattedData = rawData.map((row) => {
+        const docFullName = row.doctorProfile
+          ? doctorUserMap.get(row.doctorProfile.userId)
+          : "Unknown Doctor";
         return {
           ...row.payment,
           createdAt: toISOString(row.payment.createdAt as any),
           updatedAt: toISOString(row.payment.updatedAt as any),
-          appointment: row.appointment ? {
-            ...row.appointment,
-            patient: row.patient,
-            doctor: {
-              user: { fullName: docFullName }
-            }
-          } : undefined
+          appointment: row.appointment
+            ? {
+                ...row.appointment,
+                patient: row.patient,
+                doctor: {
+                  user: { fullName: docFullName },
+                },
+              }
+            : undefined,
         };
       });
 
@@ -1646,7 +1699,7 @@ export class DbStorage implements IStorage {
         data: formattedData,
         totalCount: count,
         totalPages: Math.ceil(count / limit) || 1,
-        currentPage: page
+        currentPage: page,
       };
     } catch (error) {
       console.error("[DB] Error in getPaginatedPayments:", error);
@@ -1786,7 +1839,10 @@ export class DbStorage implements IStorage {
           eq(doctorCancellationCharges.settled, true),
         ),
       );
-    const totalDeductions = settledCharges.reduce((sum, c) => sum + c.amountOwed, 0);
+    const totalDeductions = settledCharges.reduce(
+      (sum, c) => sum + c.amountOwed,
+      0,
+    );
 
     return {
       totalEarnings: Math.max(0, totalEarnings - totalDeductions),
@@ -1989,8 +2045,15 @@ export class DbStorage implements IStorage {
         created_at TIMESTAMP DEFAULT NOW()
       )
     `);
-    const result = await pool.query(`SELECT id, title, rate, created_at FROM tax_entries ORDER BY created_at ASC`);
-    return result.rows.map((r: any) => ({ id: r.id, title: r.title, rate: r.rate, createdAt: r.created_at }));
+    const result = await pool.query(
+      `SELECT id, title, rate, created_at FROM tax_entries ORDER BY created_at ASC`,
+    );
+    return result.rows.map((r: any) => ({
+      id: r.id,
+      title: r.title,
+      rate: r.rate,
+      createdAt: r.created_at,
+    }));
   }
 
   async createTaxEntry(title: string, rate: number): Promise<TaxEntry> {
@@ -2004,14 +2067,16 @@ export class DbStorage implements IStorage {
     `);
     const result = await pool.query(
       `INSERT INTO tax_entries (title, rate) VALUES ($1, $2) RETURNING id, title, rate, created_at`,
-      [title, rate]
+      [title, rate],
     );
     const r = result.rows[0];
     return { id: r.id, title: r.title, rate: r.rate, createdAt: r.created_at };
   }
 
   async deleteTaxEntry(id: string): Promise<boolean> {
-    const result = await pool.query(`DELETE FROM tax_entries WHERE id = $1`, [id]);
+    const result = await pool.query(`DELETE FROM tax_entries WHERE id = $1`, [
+      id,
+    ]);
     return (result.rowCount ?? 0) > 0;
   }
 
@@ -2227,7 +2292,12 @@ export class DbStorage implements IStorage {
     return true;
   }
 
-  async getPaginatedDoctors(page: number, limit: number, search?: string, status?: string): Promise<any> {
+  async getPaginatedDoctors(
+    page: number,
+    limit: number,
+    search?: string,
+    status?: string,
+  ): Promise<any> {
     const offset = (page - 1) * limit;
 
     try {
@@ -2240,8 +2310,8 @@ export class DbStorage implements IStorage {
           or(
             ilike(users.fullName, `%${search}%`),
             ilike(users.email, `%${search}%`),
-            ilike(doctorProfiles.registrationNumber, `%${search}%`)
-          )
+            ilike(doctorProfiles.registrationNumber, `%${search}%`),
+          ),
         );
       }
 
@@ -2255,7 +2325,7 @@ export class DbStorage implements IStorage {
             phone: users.phone,
             city: users.city,
             profileImage: users.profileImage,
-          }
+          },
         })
         .from(doctorProfiles)
         .leftJoin(users, eq(doctorProfiles.userId, users.id));
@@ -2272,9 +2342,13 @@ export class DbStorage implements IStorage {
       const allSpecs = await this.getAllSpecializations();
       const allHospitals = await this.getAllHospitals();
 
-      const formattedData = rawData.map(row => {
-        const specList = allSpecs.filter(s => row.profile.specializationIds?.includes(s.id));
-        const hospList = allHospitals.filter(h => row.profile.hospitalIds?.includes(h.id));
+      const formattedData = rawData.map((row) => {
+        const specList = allSpecs.filter((s) =>
+          row.profile.specializationIds?.includes(s.id),
+        );
+        const hospList = allHospitals.filter((h) =>
+          row.profile.hospitalIds?.includes(h.id),
+        );
 
         return {
           ...row.profile,
@@ -2282,25 +2356,35 @@ export class DbStorage implements IStorage {
           updatedAt: toISOString(row.profile.updatedAt as any),
           user: row.user,
           specializations: specList,
-          hospitals: hospList
+          hospitals: hospList,
         };
       });
 
-      let countQuery = db.select({ count: sql`count(*)`.mapWith(Number) })
-                         .from(doctorProfiles)
-                         .leftJoin(users, eq(doctorProfiles.userId, users.id));
+      let countQuery = db
+        .select({ count: sql`count(*)`.mapWith(Number) })
+        .from(doctorProfiles)
+        .leftJoin(users, eq(doctorProfiles.userId, users.id));
       if (conditions.length > 0) {
         countQuery = countQuery.where(and(...conditions)) as any;
       }
       const [{ count }] = await countQuery;
 
-      const statsRaw = await db.select({
-        status: doctorProfiles.status,
-        count: sql`count(*)`.mapWith(Number)
-      }).from(doctorProfiles).groupBy(doctorProfiles.status);
+      const statsRaw = await db
+        .select({
+          status: doctorProfiles.status,
+          count: sql`count(*)`.mapWith(Number),
+        })
+        .from(doctorProfiles)
+        .groupBy(doctorProfiles.status);
 
-      const stats = { all: 0, pending: 0, verified: 0, rejected: 0, suspended: 0 };
-      statsRaw.forEach(s => {
+      const stats = {
+        all: 0,
+        pending: 0,
+        verified: 0,
+        rejected: 0,
+        suspended: 0,
+      };
+      statsRaw.forEach((s) => {
         if (s.status in stats) {
           (stats as any)[s.status] = s.count;
         }
@@ -2312,7 +2396,7 @@ export class DbStorage implements IStorage {
         totalCount: count,
         totalPages: Math.ceil(count / limit) || 1,
         currentPage: page,
-        stats
+        stats,
       };
     } catch (error) {
       console.error("[DB] Error in getPaginatedDoctors:", error);
@@ -2335,7 +2419,9 @@ export class DbStorage implements IStorage {
     });
   }
 
-  async getDoctorUnsettledCharges(doctorId: string): Promise<{ count: number; totalOwed: number }> {
+  async getDoctorUnsettledCharges(
+    doctorId: string,
+  ): Promise<{ count: number; totalOwed: number }> {
     const rows = await db
       .select()
       .from(doctorCancellationCharges)
@@ -2386,70 +2472,101 @@ export class DbStorage implements IStorage {
       .leftJoin(payments, eq(refunds.paymentId, payments.id))
       .leftJoin(appointments, eq(refunds.appointmentId, appointments.id))
       .leftJoin(users, eq(refunds.patientId, users.id))
-      .orderBy(sql`CASE WHEN ${refunds.status} = 'pending' THEN 0 ELSE 1 END`, desc(refunds.createdAt))
+      .orderBy(
+        sql`CASE WHEN ${refunds.status} = 'pending' THEN 0 ELSE 1 END`,
+        desc(refunds.createdAt),
+      )
       .limit(limit)
       .offset(offset);
 
-    const formattedData = rawData.map(row => ({
+    const formattedData = rawData.map((row) => ({
       refund: row.refund,
       payment: {
         ...row.payment,
-        createdAt: row.payment?.createdAt ? toISOString(row.payment.createdAt) : null,
+        createdAt: row.payment?.createdAt
+          ? toISOString(row.payment.createdAt)
+          : null,
       },
-      appointment: row.appointment ? {
-        ...row.appointment,
-        patient: row.patient
-      } : null
+      appointment: row.appointment
+        ? {
+            ...row.appointment,
+            patient: row.patient,
+          }
+        : null,
     }));
 
-    const [{ count }] = await db.select({ count: sql`count(*)`.mapWith(Number) }).from(refunds);
+    const [{ count }] = await db
+      .select({ count: sql`count(*)`.mapWith(Number) })
+      .from(refunds);
 
     return {
       data: formattedData,
       totalCount: count,
       totalPages: Math.ceil(count / limit),
-      currentPage: page
+      currentPage: page,
     };
   }
 
   async processRefund(refundId: string, status: string): Promise<any> {
-    console.log(`\n[DB-STORAGE] ⚙️ Processing refund ID: ${refundId} with status: ${status}`);
+    console.log(
+      `\n[DB-STORAGE] ⚙️ Processing refund ID: ${refundId} with status: ${status}`,
+    );
 
     let refundRecord;
 
     // 1. Check if this is a "virtual" (legacy) refund request
-    if (refundId.startsWith('virtual-')) {
-      const originalAptId = refundId.replace('virtual-', '');
-      const [apt] = await db.select().from(appointments).where(eq(appointments.id, originalAptId));
-      const [pay] = await db.select().from(payments).where(eq(payments.appointmentId, originalAptId));
+    if (refundId.startsWith("virtual-")) {
+      const originalAptId = refundId.replace("virtual-", "");
+      const [apt] = await db
+        .select()
+        .from(appointments)
+        .where(eq(appointments.id, originalAptId));
+      const [pay] = await db
+        .select()
+        .from(payments)
+        .where(eq(payments.appointmentId, originalAptId));
 
-      if (!apt || !pay) throw new Error("Could not find appointment or payment data for this virtual refund.");
+      if (!apt || !pay)
+        throw new Error(
+          "Could not find appointment or payment data for this virtual refund.",
+        );
 
-      const amount = pay.totalAmount - (pay.bookingCharges || 0) - (pay.tax || 0);
+      const amount =
+        pay.totalAmount - (pay.bookingCharges || 0) - (pay.tax || 0);
 
-      const [inserted] = await db.insert(refunds).values({
-        paymentId: pay.id, appointmentId: apt.id, patientId: apt.patientId,
-        amount: amount, reason: apt.cancelReason || "Legacy cancellation (Auto-processed)",
-        status: status, processedAt: new Date(), updatedAt: new Date()
-      }).returning();
-      
+      const [inserted] = await db
+        .insert(refunds)
+        .values({
+          paymentId: pay.id,
+          appointmentId: apt.id,
+          patientId: apt.patientId,
+          amount: amount,
+          reason: apt.cancelReason || "Legacy cancellation (Auto-processed)",
+          status: status,
+          processedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .returning();
+
       refundRecord = inserted;
     } else {
-      const [updated] = await db.update(refunds)
+      const [updated] = await db
+        .update(refunds)
         .set({ status, processedAt: new Date(), updatedAt: new Date() })
         .where(eq(refunds.id, refundId))
         .returning();
       refundRecord = updated;
     }
-      
+
     // 3. Sync Payments table if status is completed
-    if (refundRecord && status === 'completed') {
-      await db.update(payments)
-        .set({ 
-          status: PaymentStatus.REFUNDED, 
-          refundAmount: refundRecord.amount, 
-          refundReason: refundRecord.reason, 
-          refundDate: new Date().toISOString().split('T')[0] 
+    if (refundRecord && status === "completed") {
+      await db
+        .update(payments)
+        .set({
+          status: PaymentStatus.REFUNDED,
+          refundAmount: refundRecord.amount,
+          refundReason: refundRecord.reason,
+          refundDate: new Date().toISOString().split("T")[0],
         })
         .where(eq(payments.id, refundRecord.paymentId));
     }
@@ -2458,19 +2575,22 @@ export class DbStorage implements IStorage {
     if (refundRecord) {
       try {
         await this.createAuditLog({
-           actorId: refundRecord.patientId,
-           actorRole: 'admin',
-           action: `REFUND_${status.toUpperCase()}`,
-           status: status === 'rejected' ? 'failed' : 'success',
-           entityType: 'refund',
-           entityId: refundRecord.id,
-           metadata: { amount: refundRecord.amount, reason: refundRecord.reason }
+          actorId: refundRecord.patientId,
+          actorRole: "admin",
+          action: `REFUND_${status.toUpperCase()}`,
+          status: status === "rejected" ? "failed" : "success",
+          entityType: "refund",
+          entityId: refundRecord.id,
+          metadata: {
+            amount: refundRecord.amount,
+            reason: refundRecord.reason,
+          },
         });
-      } catch(e) {
+      } catch (e) {
         console.error("Audit log failed:", e);
       }
     }
-    
+
     return refundRecord;
   }
 
@@ -2507,11 +2627,21 @@ export class DbStorage implements IStorage {
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW(), NOW())
          RETURNING *`,
         [
-          appointment.id, appointment.patientId, appointment.doctorId, appointment.slotId,
-          appointment.hospitalId, appointment.appointmentDate, appointment.appointmentTime,
-          appointment.consultationType, appointment.symptoms, appointment.isForDependent,
-          appointment.dependentName, appointment.dependentAge, appointment.dependentGender,
-          appointment.dependentContact, appointment.status,
+          appointment.id,
+          appointment.patientId,
+          appointment.doctorId,
+          appointment.slotId,
+          appointment.hospitalId,
+          appointment.appointmentDate,
+          appointment.appointmentTime,
+          appointment.consultationType,
+          appointment.symptoms,
+          appointment.isForDependent,
+          appointment.dependentName,
+          appointment.dependentAge,
+          appointment.dependentGender,
+          appointment.dependentContact,
+          appointment.status,
         ],
       );
       const createdAppointment = appointmentResult.rows[0];
@@ -2524,10 +2654,18 @@ export class DbStorage implements IStorage {
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), NOW())
          RETURNING *`,
         [
-          randomUUID(), paymentData.appointmentId, paymentData.patientId, paymentData.doctorId,
-          paymentData.consultationFee, paymentData.bookingCharges, paymentData.tax,
-          paymentData.platformCommission, paymentData.doctorEarnings, paymentData.totalAmount,
-          paymentData.status, paymentData.method,
+          randomUUID(),
+          paymentData.appointmentId,
+          paymentData.patientId,
+          paymentData.doctorId,
+          paymentData.consultationFee,
+          paymentData.bookingCharges,
+          paymentData.tax,
+          paymentData.platformCommission,
+          paymentData.doctorEarnings,
+          paymentData.totalAmount,
+          paymentData.status,
+          paymentData.method,
         ],
       );
       const createdPayment = paymentResult.rows[0];
@@ -2543,19 +2681,19 @@ export class DbStorage implements IStorage {
          (id, actor_id, actor_role, action, status, entity_type, entity_id, ip_address, device, location, session_id, metadata, created_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())`,
         [
-          randomUUID(), 
-          appointment.patientId, 
-          'patient', 
-          'APPOINTMENT_BOOKED', 
-          'success',
-          'appointment', 
-          createdAppointment.id, 
-          'System IP',
-          'System/Webhook',
-          'Sri Lanka',
-          'SYS-AUTO',
-          JSON.stringify(auditMetadata)
-        ]
+          randomUUID(),
+          appointment.patientId,
+          "patient",
+          "APPOINTMENT_BOOKED",
+          "success",
+          "appointment",
+          createdAppointment.id,
+          "System IP",
+          "System/Webhook",
+          "Sri Lanka",
+          "SYS-AUTO",
+          JSON.stringify(auditMetadata),
+        ],
       );
 
       await client.query("COMMIT");
@@ -2585,16 +2723,29 @@ export class DbStorage implements IStorage {
     return result[0] as AuditLog;
   }
 
-  async getPaginatedAuditLogs(page: number, limit: number, filters?: { type?: string, search?: string, startDate?: string, endDate?: string }): Promise<any> {
+  async getPaginatedAuditLogs(
+    page: number,
+    limit: number,
+    filters?: {
+      type?: string;
+      search?: string;
+      startDate?: string;
+      endDate?: string;
+    },
+  ): Promise<any> {
     const offset = (page - 1) * limit;
     const conditions = [];
 
     // 1. Filter by Audit Type (Tab)
     if (filters?.type && filters.type !== "ALL") {
       if (filters.type === "SYSTEM") {
-        conditions.push(sql`${auditLogs.metadata}->>'auditType' NOT IN ('AUTH', 'CAREER')`);
+        conditions.push(
+          sql`${auditLogs.metadata}->>'auditType' NOT IN ('AUTH', 'CAREER')`,
+        );
       } else {
-        conditions.push(sql`${auditLogs.metadata}->>'auditType' = ${filters.type}`);
+        conditions.push(
+          sql`${auditLogs.metadata}->>'auditType' = ${filters.type}`,
+        );
       }
     }
 
@@ -2603,7 +2754,6 @@ export class DbStorage implements IStorage {
       conditions.push(gte(auditLogs.createdAt, new Date(filters.startDate)));
     }
     if (filters?.endDate) {
-      // අපි Frontend එකෙන් එවන End Date එක ඒ විදිහටම අල්ලනවා (Time එකත් එක්ක එවන නිසා)
       conditions.push(lt(auditLogs.createdAt, new Date(filters.endDate)));
     }
 
@@ -2616,9 +2766,8 @@ export class DbStorage implements IStorage {
           ilike(users.email, searchLower),
           ilike(auditLogs.actorId, searchLower),
           ilike(auditLogs.action, searchLower),
-          // Event ID එක (UUID) Search කරන්න
-          sql`CAST(${auditLogs.id} AS TEXT) ILIKE ${searchLower}`
-        )
+          sql`CAST(${auditLogs.id} AS TEXT) ILIKE ${searchLower}`,
+        ),
       );
     }
 
@@ -2631,7 +2780,7 @@ export class DbStorage implements IStorage {
         actor: {
           fullName: users.fullName,
           email: users.email,
-        }
+        },
       })
       .from(auditLogs)
       .leftJoin(users, eq(auditLogs.actorId, users.id))
@@ -2641,17 +2790,34 @@ export class DbStorage implements IStorage {
       .offset(offset);
 
     // Count the total rows
-    const [{ count }] = await db.select({ count: sql`count(*)`.mapWith(Number) })
+    const [{ count }] = await db
+      .select({ count: sql`count(*)`.mapWith(Number) })
       .from(auditLogs)
       .leftJoin(users, eq(auditLogs.actorId, users.id))
       .where(whereClause);
 
     return {
-      data: rawData.map(r => ({ ...r.log, actorName: r.actor?.fullName, actorEmail: r.actor?.email })),
+      data: rawData.map((r) => ({
+        ...r.log,
+        actorName: r.actor?.fullName,
+        actorEmail: r.actor?.email,
+      })),
       totalCount: count,
       totalPages: Math.ceil(count / limit) || 1,
-      currentPage: page
+      currentPage: page,
     };
+  }
+
+  async updateDoctorHospital(
+    doctorProfileId: string,
+    hospitalId: string,
+    updates: Partial<InsertHospital>
+  ): Promise<Hospital | null> {
+    const profile = await this.getDoctorProfile(doctorProfileId);
+    if (!profile || !profile.hospitalIds.includes(hospitalId)) return null;
+
+    const updated = await this.updateHospital(hospitalId, updates);
+    return updated || null;
   }
 }
 

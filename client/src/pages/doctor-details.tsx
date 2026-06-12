@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useParams, Link, useLocation } from "wouter";
 import {
@@ -11,7 +12,8 @@ import {
     Languages,
     ArrowUpRight,
     Navigation,
-    ChevronLeft
+    ChevronLeft,
+    Video
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -19,16 +21,24 @@ import { LoadingPage } from "@/components/ui/loading-spinner";
 import { PublicLayout } from "@/components/layout/public-layout";
 import { type DoctorWithDetails } from "@shared/schema";
 import { navigate } from "wouter/use-browser-location";
+import { GoogleMap, Marker, useJsApiLoader } from "@react-google-maps/api";
+import { HospitalViewModal } from "@/components/ui/hospital-view-modal";
 
 export default function DoctorDetailsPage() {
     const { id } = useParams();
     const [location] = useLocation();
     const isPatientRoute = location.startsWith("/patient");
+    const [viewHospital, setViewHospital] = useState<any | null>(null);
 
     // Fetch doctor data
     const { data: doctor, isLoading, isError } = useQuery<DoctorWithDetails>({
         queryKey: [`/api/doctors/${id}`],
         enabled: !!id,
+    });
+
+    const { isLoaded } = useJsApiLoader({
+        id: 'google-map-script',
+        googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_API_KEY || "",
     });
 
     const appointmentCount = doctor?.totalAppointments ?? 0;
@@ -203,24 +213,55 @@ export default function DoctorDetailsPage() {
                         {doctor.hospitals && doctor.hospitals.length > 0 ? (
                             <div className="grid md:grid-cols-2 gap-4 mb-16">
                                 {doctor.hospitals.map((hospital) => (
-                                    <div key={hospital.id} className="bg-white dark:bg-background rounded-2xl overflow-hidden border border-primary/10 shadow-sm flex flex-col">
-                                        {/* Dummy Map Background */}
-                                        <div className="h-32 w-full bg-green-50 dark:bg-green-950/20 relative flex items-center justify-center border-b border-border"
-                                            style={{ backgroundImage: 'radial-gradient(#22c55e33 1px, transparent 0)', backgroundSize: '12px 12px' }}>
-                                            <div className="absolute">
-                                                <MapPin className="h-8 w-8 text-primary drop-shadow-md animate-bounce" />
+                                    <div 
+                                        key={hospital.id} 
+                                        className="bg-white dark:bg-background rounded-2xl overflow-hidden border border-primary/10 shadow-sm flex flex-col group cursor-pointer hover:border-primary/50 transition-all hover:shadow-md"
+                                        onClick={() => setViewHospital(hospital)} // 🟢 Click කරාම Modal එක Open වෙනවා
+                                    >
+                                        {/* Mini Map View */}
+                                        <div className="h-36 w-full bg-muted/20 relative border-b border-border overflow-hidden">
+                                            {isLoaded && hospital.latitude && hospital.longitude ? (
+                                                <>
+                                                    {/* Block pointer events so user clicks the card, not the map itself */}
+                                                    <div className="pointer-events-none w-full h-full opacity-80 group-hover:opacity-100 transition-opacity">
+                                                        <GoogleMap 
+                                                            mapContainerStyle={{ width: "100%", height: "100%" }} 
+                                                            center={{ lat: hospital.latitude, lng: hospital.longitude }} 
+                                                            zoom={14} 
+                                                            options={{ 
+                                                                disableDefaultUI: true, 
+                                                                gestureHandling: "none", // Prevent map scrolling inside card
+                                                                keyboardShortcuts: false 
+                                                            }}
+                                                        >
+                                                            <Marker position={{ lat: hospital.latitude, lng: hospital.longitude }} />
+                                                        </GoogleMap>
+                                                    </div>
+                                                </>
+                                            ) : (
+                                                <div className="w-full h-full bg-green-50 dark:bg-green-950/20 flex flex-col items-center justify-center"
+                                                     style={{ backgroundImage: 'radial-gradient(#22c55e33 1px, transparent 0)', backgroundSize: '12px 12px' }}>
+                                                    <MapPin className="h-8 w-8 text-primary/50" />
+                                                </div>
+                                            )}
+                                            
+                                            {/* Hover Overlay Badge */}
+                                            <div className="absolute inset-0 bg-black/5 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                                                <Badge className="bg-primary text-white gap-1.5 shadow-lg px-3 py-1 rounded-full scale-95 group-hover:scale-100 transition-transform">
+                                                    <Navigation className="h-3 w-3 fill-current" /> View on Map
+                                                </Badge>
                                             </div>
-                                            <Badge className="absolute bottom-3 bg-primary/90 hover:bg-primary text-white gap-1 backdrop-blur-sm shadow-sm rounded-full">
-                                                <Navigation className="h-3 w-3" /> View on Map
-                                            </Badge>
                                         </div>
+                                        
                                         {/* Address Info */}
                                         <div className="p-4 flex-1">
-                                            <div className="flex items-start gap-2">
-                                                <MapPin className="h-5 w-5 text-primary shrink-0 mt-0.5" />
+                                            <div className="flex items-start gap-2.5">
+                                                <div className="bg-primary/10 p-2 rounded-lg shrink-0 mt-0.5 group-hover:bg-primary/20 transition-colors">
+                                                    <MapPin className="h-4 w-4 text-primary" />
+                                                </div>
                                                 <div>
-                                                    <p className="font-bold text-sm text-foreground">{hospital.name}</p>
-                                                    <p className="text-xs text-muted-foreground mt-1 leading-relaxed">{hospital.address}</p>
+                                                    <p className="font-bold text-sm text-foreground group-hover:text-primary transition-colors">{hospital.name}</p>
+                                                    <p className="text-xs text-muted-foreground mt-1 leading-relaxed line-clamp-2">{hospital.address}</p>
                                                 </div>
                                             </div>
                                         </div>
@@ -228,15 +269,23 @@ export default function DoctorDetailsPage() {
                                 ))}
                             </div>
                         ) : (
-                            <div className="bg-white dark:bg-background rounded-2xl p-6 text-center border border-primary/10 mb-16">
-                                <MapPin className="h-8 w-8 text-muted-foreground mx-auto mb-2" />
-                                <p className="font-medium text-foreground">No physical locations listed</p>
-                                <p className="text-sm text-muted-foreground">Available for online consultations only</p>
+                            <div className="bg-white dark:bg-background rounded-2xl p-8 text-center border border-primary/10 mb-16">
+                                <div className="bg-primary/10 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-3">
+                                    <Video className="h-7 w-7 text-primary" />
+                                </div>
+                                <p className="font-bold text-foreground">Available for Online Consultations Only</p>
+                                <p className="text-sm text-muted-foreground mt-1">This doctor currently does not have physical clinic locations listed.</p>
                             </div>
                         )}
                     </div>
                 </div>
             </div>
+
+            <HospitalViewModal
+                isOpen={!!viewHospital}
+                onClose={() => setViewHospital(null)}
+                hospital={viewHospital}
+            />
         </div>
     );
 

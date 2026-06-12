@@ -36,6 +36,8 @@ import {
   Share2,
   Loader2,
   MoreHorizontal,
+  Edit2,
+  Eye
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -64,7 +66,9 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/auth-context";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import type { User as UserType, DoctorWithDetails, Specialization } from "@shared/schema";
+import type { User as UserType, DoctorWithDetails, Specialization, InsertHospital, Hospital } from "@shared/schema";
+import { HospitalModal } from "@/components/ui/hospital-modal";
+import { HospitalViewModal } from "@/components/ui/hospital-view-modal";
 
 // Profile form schema (basic user info)
 const profileSchema = z.object({
@@ -116,13 +120,20 @@ export default function DoctorSettings() {
   const [showAddLocationForm, setShowAddLocationForm] = useState(false);
   const [newHospName, setNewHospName] = useState("");
   const [newHospAddress, setNewHospAddress] = useState("");
-  const [isAddingLocation, setIsAddingLocation] = useState(false);
-  const [removingHospitalId, setRemovingHospitalId] = useState<string | null>(null);
+  // const [isAddingLocation, setIsAddingLocation] = useState(false);
+  // const [removingHospitalId, setRemovingHospitalId] = useState<string | null>(null);
   const [showAddSpecModal, setShowAddSpecModal] = useState(false);
   const [newSpecName, setNewSpecName] = useState("");
   const [newSpecDescription, setNewSpecDescription] = useState("");
   const [isSavingSpec, setIsSavingSpec] = useState(false);
   const [isShareOpen, setIsShareOpen] = useState(false);
+  const [showHospitalModal, setShowHospitalModal] = useState(false);
+  // const [hospitalModalConfig, setHospitalModalConfig] = useState<{ isOpen: boolean; mode: "add" | "edit"; data: any | null }>({ isOpen: false, mode: "add", data: null });
+  // const [viewHospital, setViewHospital] = useState<Hospital | null>(null);
+  const [hospitalModalConfig, setHospitalModalConfig] = useState<{ isOpen: boolean; mode: "add" | "edit"; data: any | null }>({ isOpen: false, mode: "add", data: null });
+  const [viewHospital, setViewHospital] = useState<any | null>(null);
+  const [isAddingLocation, setIsAddingLocation] = useState(false);
+  const [removingHospitalId, setRemovingHospitalId] = useState<string | null>(null);
 
   // Fetch doctor profile with details
   const { data: doctorProfile, isLoading: isLoadingProfile } = useQuery<DoctorWithDetails>({
@@ -389,35 +400,36 @@ export default function DoctorSettings() {
     return name.split(" ").map(n => n[0]).join("").toUpperCase().slice(0, 2);
   };
 
-  const handleAddLocation = async (e: FormEvent) => {
-    e.preventDefault();
-    if (!newHospName.trim() || !newHospAddress.trim()) return;
-    const currentCount = doctorProfile?.hospitals?.length ?? 0;
-    if (currentCount >= 5) {
-      toast({ title: "Location limit reached", description: "You can only add up to 5 consultation locations.", variant: "destructive" });
-      return;
-    }
+  const handleSaveHospital = async (data: InsertHospital, hospitalId?: string) => {
     setIsAddingLocation(true);
     try {
-      await apiRequest("POST", "/api/doctor/hospitals", { name: newHospName.trim(), address: newHospAddress.trim() });
+      if (hospitalModalConfig.mode === "edit" && hospitalId) {
+        await apiRequest("PUT", `/api/doctor/hospitals/${hospitalId}`, data);
+        toast({ title: "Location updated successfully" });
+      } else {
+        await apiRequest("POST", "/api/doctor/hospitals", data);
+        toast({ title: "Location added successfully" });
+      }
       queryClient.invalidateQueries({ queryKey: ["/api/doctor/profile"] });
-      setNewHospName("");
-      setNewHospAddress("");
-      setShowAddLocationForm(false);
-      toast({ title: "Location added successfully" });
+      setHospitalModalConfig({ isOpen: false, mode: "add", data: null });
     } catch {
-      toast({ title: "Failed to add location", variant: "destructive" });
+      toast({ title: `Failed to ${hospitalModalConfig.mode} location`, variant: "destructive" });
     } finally {
       setIsAddingLocation(false);
     }
   };
 
   const handleRemoveLocation = async (hospitalId: string) => {
+    if (!window.confirm("Are you sure you want to permanently remove this consultation location?")) {
+      return;
+    }
+
     setRemovingHospitalId(hospitalId);
     try {
       await apiRequest("DELETE", `/api/doctor/hospitals/${hospitalId}`);
       queryClient.invalidateQueries({ queryKey: ["/api/doctor/profile"] });
       toast({ title: "Location removed" });
+      setHospitalModalConfig({ isOpen: false, mode: "add", data: null });
     } catch {
       toast({ title: "Failed to remove location", variant: "destructive" });
     } finally {
@@ -698,24 +710,31 @@ export default function DoctorSettings() {
                 {doctorProfile?.hospitals && doctorProfile.hospitals.length > 0 && (
                   <div className="grid sm:grid-cols-2 gap-3">
                     {doctorProfile.hospitals.map((hospital) => (
-                      <div key={hospital.id} className="bg-white dark:bg-background rounded-xl p-4 space-y-2 relative group">
-                        <button
-                          type="button"
-                          onClick={() => handleRemoveLocation(hospital.id)}
-                          disabled={removingHospitalId === hospital.id}
-                          className="absolute top-2 right-2 h-7 w-7 rounded-full flex items-center justify-center text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors opacity-0 group-hover:opacity-100"
-                        >
-                          {removingHospitalId === hospital.id ? (
-                            <LoadingSpinner className="h-3.5 w-3.5" />
-                          ) : (
-                            <Trash2 className="h-3.5 w-3.5" />
-                          )}
-                        </button>
-                        <div className="flex items-center gap-2">
-                          <MapPin className="h-4 w-4 text-primary shrink-0" />
-                          <p className="font-semibold text-sm">{hospital.name}</p>
+                      <div key={hospital.id} className="bg-white dark:bg-background rounded-xl p-4 space-y-2 relative group hover:border-primary/50 transition-colors border border-border">
+                        
+                        <div className="absolute top-2 right-2 flex gap-1 opacity-100 transition-opacity">
+                           <button
+                             type="button"
+                             onClick={(e) => { e.stopPropagation(); setHospitalModalConfig({ isOpen: true, mode: "edit", data: hospital }); }}
+                             className="h-7 w-7 rounded-full flex items-center justify-center text-muted-foreground hover:text-blue-600 hover:bg-blue-600/10 transition-colors"
+                           >
+                             <Edit2 className="h-3.5 w-3.5" />
+                           </button>
+                           <button
+                             type="button"
+                             onClick={(e) => { e.stopPropagation(); handleRemoveLocation(hospital.id); }}
+                             disabled={removingHospitalId === hospital.id}
+                             className="h-7 w-7 rounded-full flex items-center justify-center text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
+                           >
+                             {removingHospitalId === hospital.id ? <LoadingSpinner className="h-3.5 w-3.5" /> : <Trash2 className="h-3.5 w-3.5" />}
+                           </button>
                         </div>
-                        <p className="text-xs text-muted-foreground pl-6 leading-relaxed">
+
+                        <div className="flex items-center gap-2 cursor-pointer" onClick={() => setViewHospital(hospital)}>
+                          <MapPin className="h-4 w-4 text-primary shrink-0" />
+                          <p className="font-semibold text-sm truncate pr-16">{hospital.name}</p>
+                        </div>
+                        <p className="text-xs text-muted-foreground pl-6 leading-relaxed line-clamp-2 cursor-pointer" onClick={() => setViewHospital(hospital)}>
                           {hospital.address}
                         </p>
                       </div>
@@ -723,89 +742,41 @@ export default function DoctorSettings() {
                   </div>
                 )}
 
-                {/* Add location — button or form */}
-                {!showAddLocationForm ? (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if ((doctorProfile?.hospitals?.length ?? 0) >= 5) {
-                        toast({ title: "Location limit exceeded", description: "You can only have up to 5 consultation locations.", variant: "destructive" });
-                      } else {
-                        setShowAddLocationForm(true);
-                      }
-                    }}
-                    className="w-full border-2 border-dashed border-primary/30 rounded-xl p-4 flex items-center gap-3 hover:border-primary/60 transition-colors text-left"
-                  >
-                    <div className="h-8 w-8 rounded-full border-2 border-primary/40 flex items-center justify-center shrink-0">
-                      <Plus className="h-4 w-4 text-primary" />
-                    </div>
-                    <div>
-                      <p className="text-sm font-medium">Add another location</p>
-                      <p className="text-xs text-muted-foreground">You can list up to 5 consultation venues on your profile</p>
-                    </div>
-                  </button>
-                ) : (
-                  <div className="bg-white dark:bg-background rounded-xl p-4 space-y-3">
-                    <div>
-                      <p className="text-sm font-medium">Add another location</p>
-                      <p className="text-xs text-muted-foreground">You can list up to 5 consultation venues on your profile</p>
-                    </div>
-                    <div className="space-y-2">
-                      <label className="text-sm font-medium">Hospital Name</label>
-                      <Input
-                        value={newHospName}
-                        onChange={(e) => setNewHospName(e.target.value)}
-                        placeholder="Meridian Heart Clinic"
-                        className="rounded-lg"
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <label className="text-sm font-medium">Address</label>
-                      <Input
-                        value={newHospAddress}
-                        onChange={(e) => setNewHospAddress(e.target.value)}
-                        placeholder="Suite 4B, 12 Wellness Ave Colombo 07, Western Province"
-                        className="rounded-lg"
-                      />
-                    </div>
-                    <div className="flex justify-end gap-2">
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => { setShowAddLocationForm(false); setNewHospName(""); setNewHospAddress(""); }}
-                      >
-                        Cancel
-                      </Button>
-                      <Button
-                        type="button"
-                        size="sm"
-                        disabled={isAddingLocation || !newHospName.trim() || !newHospAddress.trim()}
-                        onClick={handleAddLocation as any}
-                        className="bg-primary text-white gap-1"
-                      >
-                        {isAddingLocation ? <LoadingSpinner className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
-                        Add Location
-                      </Button>
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {/* Save Button */}
-              <div className="flex justify-end">
-                <Button
-                  type="submit"
-                  disabled={updateProfileMutation.isPending}
-                  className="bg-primary hover:bg-primary/90 text-white gap-2"
+                <button
+                  type="button"
+                  onClick={() => {
+                    if ((doctorProfile?.hospitals?.length ?? 0) >= 5) {
+                      toast({ title: "Location limit exceeded", description: "You can only have up to 5 consultation locations.", variant: "destructive" });
+                    } else {
+                      setHospitalModalConfig({ isOpen: true, mode: "add", data: null });
+                    }
+                  }}
+                  className="w-full border-2 border-dashed border-primary/30 rounded-xl p-4 flex items-center gap-3 hover:border-primary/60 transition-colors text-left"
                 >
-                  {updateProfileMutation.isPending ? (
-                    <LoadingSpinner className="h-4 w-4" />
-                  ) : (
-                    <Save className="h-4 w-4" />
-                  )}
-                  Save Personal Profile
-                </Button>
+                  <div className="h-8 w-8 rounded-full border-2 border-primary/40 flex items-center justify-center shrink-0">
+                    <Plus className="h-4 w-4 text-primary" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium">Add another location</p>
+                    <p className="text-xs text-muted-foreground">You can list up to 5 consultation venues on your profile</p>
+                  </div>
+                </button>
+
+                <HospitalViewModal
+                  isOpen={!!viewHospital}
+                  onClose={() => setViewHospital(null)}
+                  hospital={viewHospital}
+                />
+
+                <HospitalModal 
+                  isOpen={hospitalModalConfig.isOpen} 
+                  mode={hospitalModalConfig.mode}
+                  initialData={hospitalModalConfig.data}
+                  onClose={() => setHospitalModalConfig({ isOpen: false, mode: "add", data: null })}
+                  isSaving={isAddingLocation}
+                  onSave={handleSaveHospital}
+                  onDelete={(id) => handleRemoveLocation(id)}
+                />
               </div>
             </form>
           </Form>

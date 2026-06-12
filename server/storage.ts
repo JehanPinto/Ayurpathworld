@@ -51,6 +51,7 @@ import {
   payments,
   InsertAuditLog,
   AuditLog,
+  hospitals,
 } from "@shared/schema";
 import { randomUUID } from "crypto";
 
@@ -108,7 +109,7 @@ export interface IStorage {
     status: string,
     rejectionReason?: string,
   ): Promise<DoctorProfile | undefined>;
-  addDoctorHospital(doctorProfileId: string, name: string, address: string): Promise<{ hospital: Hospital; hospitalIds: string[] } | null>;
+  addDoctorHospital(doctorProfileId: string, hospitalData: InsertHospital): Promise<{ hospital: Hospital; hospitalIds: string[] } | null>;
   removeDoctorHospital(doctorProfileId: string, hospitalId: string): Promise<boolean>;
 
   getDoctorSchedules(doctorId: string): Promise<DoctorSchedule[]>;
@@ -295,6 +296,7 @@ export interface IStorage {
   getPaginatedRefundRequests(page: number, limit: number): Promise<any>;
   createAuditLog(data: InsertAuditLog): Promise<AuditLog>;
   getPaginatedAuditLogs(page: number, limit: number): Promise<any>;
+  updateDoctorHospital(doctorProfileId: string, hospitalId: string, updates: Partial<InsertHospital>): Promise<Hospital | null>;
 }
 
 export class MemStorage implements IStorage {
@@ -937,17 +939,36 @@ export class MemStorage implements IStorage {
     return this.updateDoctorProfile(id, updates);
   }
 
-  async addDoctorHospital(doctorProfileId: string, name: string, address: string): Promise<{ hospital: Hospital; hospitalIds: string[] } | null> {
-    const profile = this.doctorProfiles.get(doctorProfileId);
+  async addDoctorHospital(
+    doctorProfileId: string,
+    hospitalData: InsertHospital,
+  ): Promise<{ hospital: Hospital; hospitalIds: string[] } | null> {
+    const profile = await this.getDoctorProfile(doctorProfileId);
     if (!profile) return null;
-    const currentIds: string[] = (profile as any).hospitalIds || [];
+    const currentIds: string[] = profile.hospitalIds || [];
     if (currentIds.length >= 5) return null;
-    const hospId = randomUUID();
-    const hospital: Hospital = { id: hospId, name, address, city: "", contactNumber: "N/A", parkingAvailable: false };
-    this.hospitals.set(hospId, hospital);
-    const newIds = [...currentIds, hospId];
-    const updated = { ...profile, hospitalIds: newIds, updatedAt: new Date().toISOString() };
-    this.doctorProfiles.set(doctorProfileId, updated as any);
+
+    const hospResult = await db
+      .insert(hospitals)
+      .values({
+        name: hospitalData.name,
+        address: hospitalData.address,
+        city: hospitalData.city,
+        contactNumber: hospitalData.contactNumber || null,
+        email: hospitalData.email || null,
+        latitude: hospitalData.latitude,
+        longitude: hospitalData.longitude,
+        parkingAvailable: hospitalData.parkingAvailable || false,
+      })
+      .returning();
+    const hospital = hospResult[0] as Hospital;
+
+    await pool.query(
+      `UPDATE doctor_profiles SET hospital_ids = array_append(hospital_ids, $1), updated_at = NOW() WHERE id = $2`,
+      [hospital.id, doctorProfileId],
+    );
+
+    const newIds = [...currentIds, hospital.id];
     return { hospital, hospitalIds: newIds };
   }
 
@@ -1810,7 +1831,7 @@ export class MemStorage implements IStorage {
   }
 }
 
-import { db } from "./db";
+import { db, pool } from "./db";
 import { dbStorage } from "./db-storage";
 import { eq, inArray } from "drizzle-orm";
 

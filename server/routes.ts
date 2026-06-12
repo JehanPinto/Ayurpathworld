@@ -26,6 +26,7 @@ import {
   loginSchema,
   PaymentMethod,
   PaymentStatus,
+  updateHospitalSchema,
   UserRole,
 } from "@shared/schema";
 
@@ -778,10 +779,8 @@ export async function registerRoutes(
           if (files) sessionFiles = files;
         }
 
-        const userData = insertUserSchema.parse({
-          ...req.body,
-          role: UserRole.DOCTOR,
-        });
+        const { newHospitals, ...otherBodyData } = req.body;
+        const userData = insertUserSchema.parse({ ...otherBodyData, role: UserRole.DOCTOR });
 
         const passwordValidation = validatePasswordStrength(userData.password);
         if (!passwordValidation.valid) {
@@ -873,16 +872,31 @@ export async function registerRoutes(
           return res.status(400).json({ error: "Email already registered" });
         }
 
+        let hospitalIds: string[] = [];
+        if (req.body.consultationTypes?.includes("in_person") && newHospitals && Array.isArray(newHospitals)) {
+          for (const hosp of newHospitals) {
+             const validatedHosp = insertHospitalSchema.parse(hosp);
+             const savedHosp = await storage.createHospital(validatedHosp);
+             hospitalIds.push(savedHosp.id);
+          }
+        }
+
         const verificationDocs = sessionFiles.length > 0 ? sessionFiles : req.body.verificationDocuments || [];
         const doctorData = insertDoctorProfileSchema.parse({
-          userId: "temp-id", registrationNumber: req.body.registrationNumber, qualifications: req.body.qualifications,
-          specializationIds: req.body.specializationIds || [], languagesSpoken: req.body.languagesSpoken || ["english"],
-          consultationTypes: req.body.consultationTypes || ["in_person"], clinic_locations: req.body.clinic_locations || [],
+          userId: "temp-id", 
+          registrationNumber: req.body.registrationNumber, 
+          qualifications: req.body.qualifications,
+          specializationIds: req.body.specializationIds || [], 
+          languagesSpoken: req.body.languagesSpoken || ["english"],
+          consultationTypes: req.body.consultationTypes || ["online"], 
+          hospitalIds: hospitalIds,
           consultationFee: parseInt(req.body.consultationFee) || 0,
           onlineConsultationFee: req.body.onlineConsultationFee ? parseInt(req.body.onlineConsultationFee) : undefined,
           homeVisitFee: req.body.homeVisitFee ? parseInt(req.body.homeVisitFee) : undefined,
-          verificationDocuments: verificationDocs, bankName: req.body.bankName || null,
-          bankAccountNumber: req.body.bankAccountNumber || null, bankBranch: req.body.bankBranch || null,
+          verificationDocuments: verificationDocs, 
+          bankName: req.body.bankName || null,
+          bankAccountNumber: req.body.bankAccountNumber || null, 
+          bankBranch: req.body.bankBranch || null,
           status: DoctorStatus.PENDING,
         });
 
@@ -2757,36 +2771,25 @@ export async function registerRoutes(
     },
   );
 
-  app.post(
-    "/api/doctor/hospitals",
-    authMiddleware,
-    roleMiddleware(UserRole.DOCTOR),
-    async (req: AuthenticatedRequest, res: Response) => {
+  app.post("/api/doctor/hospitals", authMiddleware, roleMiddleware(UserRole.DOCTOR), async (req: AuthenticatedRequest, res: Response) => {
       try {
         const profile = await storage.getDoctorProfileByUserId(req.user!.id);
-        if (!profile) {
-          return res.status(404).json({ error: "Doctor profile not found" });
-        }
+        if (!profile) return res.status(404).json({ error: "Doctor profile not found" });
 
         if ((profile.hospitalIds || []).length >= 5) {
           return res.status(400).json({ error: "You have reached the maximum of 5 consultation locations." });
         }
 
-        const { name, address } = req.body;
-        if (!name?.trim() || !address?.trim()) {
-          return res.status(400).json({ error: "Hospital name and address are required." });
-        }
+        const data = insertHospitalSchema.parse(req.body);
 
-        const result = await storage.addDoctorHospital(profile.id, name.trim(), address.trim());
-        if (!result) {
-          return res.status(400).json({ error: "Could not add location. Limit may have been reached." });
-        }
+        const result = await storage.addDoctorHospital(profile.id, data);
+        if (!result) return res.status(400).json({ error: "Could not add location." });
 
         res.status(201).json(result.hospital);
       } catch (error) {
         res.status(500).json({ error: "Failed to add location" });
       }
-    },
+    }
   );
 
   app.delete(
@@ -6729,7 +6732,7 @@ export async function registerRoutes(
     async (req: Request, res: Response) => {
       try {
         const page = parseInt(req.query.page as string) || 1;
-        const limit = parseInt(req.query.limit as string) || 50; // එක පාර ගොඩක් පෙන්නන්න 50ක් දැම්මා
+        const limit = parseInt(req.query.limit as string) || 50;
         
         const type = req.query.type as string;
         const search = req.query.search as string;
@@ -6741,6 +6744,46 @@ export async function registerRoutes(
       } catch (error) {
         console.error("Failed to fetch audit logs:", error);
         res.status(500).json({ error: "Failed to fetch audit logs" });
+      }
+    }
+  );
+
+  app.put(
+    "/api/doctor/hospitals/:id",
+    authMiddleware,
+    roleMiddleware(UserRole.DOCTOR),
+    async (req: AuthenticatedRequest, res: Response) => {
+      const tRequestReceived = new Date().toISOString();
+      const { ipAddress, device, location, sessionId } = getReqInfo(req);
+      const { actorId, actorRole } = await getActorInfo(req);
+
+      try {
+        const profile = await storage.getDoctorProfileByUserId(req.user!.id);
+        if (!profile) return res.status(404).json({ error: "Doctor profile not found" });
+
+        const hospitalId = req.params.id;
+        const data = updateHospitalSchema.parse(req.body);
+
+        const updatedHospital = await storage.updateDoctorHospital(profile.id, hospitalId, data);
+        
+        if (!updatedHospital) {
+          return res.status(403).json({ error: "Unauthorized or Hospital not found" });
+        }
+
+        try {
+          await storage.createAuditLog({
+            actorId, actorRole, action: 'UPDATE_CONSULTATION_LOCATION', status: 'success',
+            entityType: 'hospital', entityId: hospitalId, ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: { auditType: "SYSTEM", locationName: data.name, timeline: { requestReceivedAt: tRequestReceived, completedAt: new Date().toISOString() } }
+          });
+        } catch (e) {}
+
+        res.json(updatedHospital);
+      } catch (error) {
+        if (error instanceof z.ZodError) {
+          return res.status(400).json({ error: "Validation failed", details: error.errors });
+        }
+        res.status(500).json({ error: "Failed to update location" });
       }
     }
   );
