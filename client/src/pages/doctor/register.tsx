@@ -46,18 +46,29 @@ import {
   Upload,
   User,
   X,
+  Edit2,
+  Trash2,
+  MapPin,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { Link, useLocation } from "wouter";
 import { z } from "zod";
+import { HospitalModal } from "@/components/ui/hospital-modal";
+import type { InsertHospital } from "@shared/schema";
+import { HospitalViewModal } from "@/components/ui/hospital-view-modal";
 
 const buildPersonalInfoSchema = (requirePassword: boolean) =>
   z
     .object({
       fullName: z.string().min(2, "Full name is required"),
       email: z.string().email("Invalid email address"),
-      phone: z.string().regex(/^07[0-9]{8}$/, "Please enter a valid Sri Lankan mobile number (07XXXXXXXX)"),
+      phone: z
+        .string()
+        .regex(
+          /^07[0-9]{8}$/,
+          "Please enter a valid Sri Lankan mobile number (07XXXXXXXX)",
+        ),
       password: requirePassword
         ? z
             .string()
@@ -100,15 +111,6 @@ const professionalInfoSchema = z.object({
     .min(1, "Select at least one consultation type"),
   consultationFee: z.string().min(1, "Consultation fee is required"),
   onlineConsultationFee: z.string().optional(),
-  clinic_locations: z.array(z.string()).default([]),
-}).superRefine((data, ctx) => {
-  if (data.consultationTypes.includes(ConsultationType.IN_PERSON) && (!data.clinic_locations || data.clinic_locations.length === 0)) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "Please enter your meeting location for In-Person consultations",
-      path: ["clinic_locations"],
-    });
-  }
 });
 
 const bankInfoSchema = z.object({
@@ -192,7 +194,15 @@ export default function DoctorRegisterPage() {
     type: string;
     previewUrl?: string;
   } | null>(null);
-  const [locationInput, setLocationInput] = useState("");
+  const [showHospitalModal, setShowHospitalModal] = useState(false);
+  const [addedHospitals, setAddedHospitals] = useState<InsertHospital[]>([]);
+  const [hospitalModalConfig, setHospitalModalConfig] = useState<{
+    isOpen: boolean;
+    mode: "add" | "edit";
+    data: any | null;
+    index: number | null;
+  }>({ isOpen: false, mode: "add", data: null, index: null });
+  const [viewHospital, setViewHospital] = useState<any | null>(null);
 
   const { data: specializations = [] } = useQuery<Specialization[]>({
     queryKey: ["/api/specializations"],
@@ -227,7 +237,6 @@ export default function DoctorRegisterPage() {
       consultationTypes: [ConsultationType.IN_PERSON],
       consultationFee: "",
       onlineConsultationFee: "",
-      clinic_locations: [],
     },
   });
 
@@ -304,7 +313,10 @@ export default function DoctorRegisterPage() {
         });
         if (!response.ok) {
           const error = await response.json();
-          throw new Error(error.error || "Registration failed");
+          const message = error.details?.length
+            ? error.details.map((d: any) => d.message).join(", ")
+            : error.error || "Registration failed";
+          throw new Error(message);
         }
         return response.json();
       }
@@ -319,7 +331,10 @@ export default function DoctorRegisterPage() {
       });
       if (!response.ok) {
         const error = await response.json();
-        throw new Error(error.error || "Registration failed");
+        const message = error.details?.length
+          ? error.details.map((d: any) => d.message).join(", ")
+          : error.error || "Registration failed";
+        throw new Error(message);
       }
       return response.json();
     },
@@ -415,7 +430,7 @@ export default function DoctorRegisterPage() {
     } catch (error: any) {
       toast({
         title: "Upload failed",
-        description: "Failed to upload documents. Please try again.",
+        description: error?.message || "Failed to upload documents. Please try again.",
         variant: "destructive",
       });
     } finally {
@@ -456,18 +471,67 @@ export default function DoctorRegisterPage() {
       setUploadToken(result.token);
       setPersonalInfo(data);
       setCurrentStep(2);
-    } catch (error) {
+    } catch (error: any) {
       toast({
         title: "Error",
-        description: "Failed to start registration. Please try again.",
+        description: error?.message || "Unable to connect to the server. Please check your internet connection and try again.",
         variant: "destructive",
       });
     }
   };
 
   const handleProfessionalSubmit = (data: ProfessionalInfo) => {
+    if (
+      data.consultationTypes.includes(ConsultationType.IN_PERSON) &&
+      addedHospitals.length === 0
+    ) {
+      toast({
+        title: "Location Required",
+        description:
+          "Please add at least one consultation location for In-Person visits",
+        variant: "destructive",
+      });
+      return;
+    }
     setProfessionalInfo(data);
     setCurrentStep(3);
+  };
+
+  const handleSaveLocalHospital = (data: InsertHospital) => {
+    if (
+      hospitalModalConfig.mode === "edit" &&
+      hospitalModalConfig.index !== null
+    ) {
+      const updated = [...addedHospitals];
+      updated[hospitalModalConfig.index] = data;
+      setAddedHospitals(updated);
+      professionalForm.setValue("newHospitals" as any, updated);
+    } else {
+      const updated = [...addedHospitals, data];
+      setAddedHospitals(updated);
+      professionalForm.setValue("newHospitals" as any, updated);
+    }
+    setHospitalModalConfig({
+      isOpen: false,
+      mode: "add",
+      data: null,
+      index: null,
+    });
+  };
+
+  const handleRemoveLocalLocation = (index: number) => {
+    if (!window.confirm("Are you sure you want to remove this location?")) {
+      return;
+    }
+    const updated = addedHospitals.filter((_, i) => i !== index);
+    setAddedHospitals(updated);
+    professionalForm.setValue("newHospitals" as any, updated);
+    setHospitalModalConfig({
+      isOpen: false,
+      mode: "add",
+      data: null,
+      index: null,
+    });
   };
 
   const handleDocumentsNext = () => {
@@ -511,7 +575,7 @@ export default function DoctorRegisterPage() {
       bankName: bankData.bankName,
       bankAccountNumber: bankData.bankAccountNumber,
       bankBranch: bankData.bankBranch,
-      clinic_locations: professionalInfo.clinic_locations,
+      newHospitals: addedHospitals,
     };
 
     registerMutation.mutate(registrationData);
@@ -585,8 +649,16 @@ export default function DoctorRegisterPage() {
         <div className="text-center mb-8">
           <Link href="/">
             <div className="flex items-center justify-center cursor-pointer">
-              <img src="/logo-light.png" alt="AyurPath" className="h-10 w-auto dark:hidden" />
-              <img src="/logo-dark.png" alt="AyurPath" className="h-10 w-auto hidden dark:block" />
+              <img
+                src="/logo-light.png"
+                alt="AyurPath"
+                className="h-10 w-auto dark:hidden"
+              />
+              <img
+                src="/logo-dark.png"
+                alt="AyurPath"
+                className="h-10 w-auto hidden dark:block"
+              />
             </div>
           </Link>
         </div>
@@ -707,6 +779,7 @@ export default function DoctorRegisterPage() {
                             <Input
                               placeholder="+94 77 123 4567"
                               data-testid="input-phone"
+                              maxLength={10}
                               {...field}
                             />
                           </FormControl>
@@ -1078,65 +1151,133 @@ export default function DoctorRegisterPage() {
                     )}
                   />
 
-                  {/* Multiple Locations Add */}
-                  {professionalForm.watch("consultationTypes").includes(ConsultationType.IN_PERSON) && (
-                    <div className="animate-in fade-in slide-in-from-top-2 duration-300">
-                      <FormField
-                        control={professionalForm.control}
-                        name="clinic_locations"
-                        render={({ field }) => (
-                          <FormItem>
-                            <FormLabel className="text-sm font-bold text-primary">In-Person Meeting Locations *</FormLabel>
-                            
-                            <div className="flex gap-2">
-                              <Input
-                                placeholder="Enter clinic, hospital, or city..."
-                                value={locationInput}
-                                onChange={(e) => setLocationInput(e.target.value)}
-                                onKeyDown={(e) => {
-                                  if (e.key === "Enter") {
-                                    e.preventDefault();
-                                    if (locationInput.trim() && !field.value?.includes(locationInput.trim())) {
-                                      field.onChange([...(field.value || []), locationInput.trim()]);
-                                      setLocationInput("");
-                                    }
-                                  }
-                                }}
-                              />
-                              <Button
-                                type="button"
-                                onClick={() => {
-                                  if (locationInput.trim() && !field.value?.includes(locationInput.trim())) {
-                                    field.onChange([...(field.value || []), locationInput.trim()]);
-                                    setLocationInput("");
-                                  }
-                                }}
-                              >
-                                Add
-                              </Button>
+                  {professionalForm
+                    .watch("consultationTypes")
+                    .includes(ConsultationType.IN_PERSON) && (
+                    <div className="animate-in fade-in slide-in-from-top-2 duration-300 border border-primary/20 rounded-xl p-4 bg-primary/5 mt-4">
+                      <FormLabel className="text-sm font-bold text-primary mb-3 block">
+                        In-Person Meeting Locations *
+                      </FormLabel>
+                      <p className="text-xs text-muted-foreground mb-4">
+                        Since you offer In-Person consultations, you must add at
+                        least one physical clinic or hospital location.
+                      </p>
+
+                      <div className="grid gap-3 mb-4">
+                        {addedHospitals.map((h, i) => (
+                          <div
+                            key={i}
+                            className="flex items-center justify-between bg-white dark:bg-background p-3 rounded-lg border border-border shadow-sm group"
+                          >
+                            <div
+                              className="flex items-center gap-2 cursor-pointer"
+                              onClick={() => setViewHospital(h)}
+                            >
+                              <MapPin className="h-4 w-4 text-primary shrink-0" />
+                              <div>
+                                <p className="font-bold text-sm">{h.name}</p>
+                                <p className="text-xs text-muted-foreground">
+                                  {h.city}
+                                </p>
+                              </div>
                             </div>
 
-                            {Array.isArray(field.value) && field.value.length > 0 && (
-                              <div className="flex flex-wrap gap-2 mt-3">
-                                {field.value.map((loc: string, index: number) => (
-                                  <div key={index} className="flex items-center bg-primary/10 text-primary px-3 py-1 rounded-full text-sm font-medium">
-                                    {loc}
-                                    <X
-                                      className="h-3.5 w-3.5 ml-2 cursor-pointer hover:text-destructive transition-colors"
-                                      onClick={() => {
-                                        field.onChange(field.value.filter((_, i) => i !== index));
-                                      }}
-                                    />
-                                  </div>
-                                ))}
-                              </div>
-                            )}
-                            <FormMessage />
-                          </FormItem>
-                        )}
-                      />
+                            <div className="flex gap-1">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setViewHospital(h);
+                                }}
+                                className="h-8 w-8 rounded-full flex items-center justify-center text-muted-foreground hover:text-primary hover:bg-primary/10 transition-colors"
+                              >
+                                <Eye className="h-4 w-4" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setHospitalModalConfig({
+                                    isOpen: true,
+                                    mode: "edit",
+                                    data: h,
+                                    index: i,
+                                  });
+                                }}
+                                className="h-8 w-8 rounded-full flex items-center justify-center text-muted-foreground hover:text-blue-600 hover:bg-blue-600/10 transition-colors"
+                              >
+                                <Edit2 className="h-4 w-4" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleRemoveLocalLocation(i);
+                                }}
+                                className="h-8 w-8 rounded-full flex items-center justify-center text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() =>
+                          setHospitalModalConfig({
+                            isOpen: true,
+                            mode: "add",
+                            data: null,
+                            index: null,
+                          })
+                        }
+                        className="w-full border-primary/50 text-primary hover:bg-primary/10 border-dashed"
+                      >
+                        <PlusCircle className="w-4 h-4 mr-2" /> Add Hospital /
+                        Clinic
+                      </Button>
+
+                      {(professionalForm.formState.errors as any)
+                        .newHospitals && (
+                        <p className="text-[0.8rem] font-medium text-destructive mt-2">
+                          {
+                            (professionalForm.formState.errors as any)
+                              .newHospitals.message
+                          }
+                        </p>
+                      )}
                     </div>
                   )}
+
+                  <HospitalViewModal
+                    isOpen={!!viewHospital}
+                    onClose={() => setViewHospital(null)}
+                    hospital={viewHospital}
+                  />
+
+                  <HospitalModal
+                    isOpen={hospitalModalConfig.isOpen}
+                    mode={hospitalModalConfig.mode}
+                    initialData={hospitalModalConfig.data}
+                    onClose={() =>
+                      setHospitalModalConfig({
+                        isOpen: false,
+                        mode: "add",
+                        data: null,
+                        index: null,
+                      })
+                    }
+                    isSaving={false}
+                    onSave={(data) => handleSaveLocalHospital(data)}
+                    onDelete={() => {
+                      if (hospitalModalConfig.index !== null) {
+                        handleRemoveLocalLocation(hospitalModalConfig.index);
+                      }
+                    }}
+                  />
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <FormField
