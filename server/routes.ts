@@ -2936,7 +2936,7 @@ export async function registerRoutes(
         const existingSlots = await storage.getAvailableSlots(profile.id, data.date);
         
         const isOverlap = (s1: string, e1: string, s2: string, e2: string) => {
-          return s1 < e2 && s2 < e1;
+          return s1 < e2 && s2 < e1; // This is actually correct. The problem is usually in the frontend UI state or buffer logic. Let's ensure this strictly checks exclusive bounds.
         };
 
         const hasOverlap = existingSlots.some((slot) => 
