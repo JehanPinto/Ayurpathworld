@@ -97,6 +97,7 @@ const adminManagementNavItems = [
   { icon: AlertTriangle, label: "Refunds", href: "/admin/refunds" },
   { icon: BriefcaseBusiness, label: "Careers", href: "/admin/careers" },
   { icon: BookOpen, label: "Blogs", href: "/admin/blogs" },
+  { icon: FileText, label: "Audit", href: "/admin/audit" },
 ];
 
 const adminSettingsSubItems = [

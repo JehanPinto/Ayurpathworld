@@ -67,6 +67,9 @@ import {
   refunds,
   type Refund,
   InsertRefund,
+  InsertAuditLog,
+  AuditLog,
+  auditLogs,
 } from "@shared/schema";
 import { and, desc, eq, gte, ilike, inArray, lte, sql, or } from "drizzle-orm";
 import { randomUUID } from "crypto";
@@ -944,7 +947,6 @@ export class DbStorage implements IStorage {
     } as Appointment;
   }
 
-  // server/storage.ts - DbStorage class එක ඇතුළට මේක මාරු කරන්න
   async cancelAppointment(
     id: string,
     reason: string,
@@ -973,6 +975,20 @@ export class DbStorage implements IStorage {
       .where(eq(appointmentSlots.id, updated.slotId));
 
     console.log(`[DB-STORAGE] ✅ Appointment cancelled & slot unlocked.`);
+
+    try {
+      await this.createAuditLog({
+         actorId: updated.patientId, 
+         actorRole: cancelledBy as any,
+         action: 'APPOINTMENT_CANCELLED',
+         status: 'success',
+         entityType: 'appointment',
+         entityId: id,
+         metadata: { reason: reason || "No reason", cancelledBy, appointmentDate: updated.appointmentDate }
+      });
+    } catch (e) {
+      console.error("[AUDIT LOG] Error saving cancel log:", e);
+    }
     
     // 3. Create Refund Request if Payment exists
     const payment = await this.getPaymentByAppointment(id);
@@ -989,7 +1005,6 @@ export class DbStorage implements IStorage {
           reason: reason || `Cancelled by ${cancelledBy}`,
           status: "pending"
         });
-        console.log(`[DB-STORAGE] 📝 Pending refund record created: LKR ${amountToRefund}`);
       }
     }
 
@@ -1048,7 +1063,29 @@ export class DbStorage implements IStorage {
       .set({ ...updates, updatedAt: new Date() })
       .where(eq(payments.id, id))
       .returning();
+    
     if (!result[0]) return undefined;
+
+    if (updates.status && ["completed", "failed", "refunded"].includes(updates.status)) {
+      try {
+        await this.createAuditLog({
+          actorId: result[0].patientId, 
+          actorRole: "system", // System/Webhook triggered
+          action: `PAYMENT_${updates.status.toUpperCase()}`,
+          status: updates.status === "failed" ? "failed" : "success",
+          entityType: "payment",
+          entityId: id,
+          metadata: {
+            totalAmount: result[0].totalAmount,
+            paymentMethod: result[0].method,
+            status: updates.status
+          }
+        });
+      } catch (e) {
+        console.error("[AUDIT LOG] Error saving payment log:", e);
+      }
+    }
+
     return {
       ...result[0],
       createdAt: toISOString(result[0].createdAt),
@@ -2383,33 +2420,21 @@ export class DbStorage implements IStorage {
     // 1. Check if this is a "virtual" (legacy) refund request
     if (refundId.startsWith('virtual-')) {
       const originalAptId = refundId.replace('virtual-', '');
-
-      // Fetch source data to create the permanent record
       const [apt] = await db.select().from(appointments).where(eq(appointments.id, originalAptId));
       const [pay] = await db.select().from(payments).where(eq(payments.appointmentId, originalAptId));
 
-      if (!apt || !pay) {
-        throw new Error("Could not find appointment or payment data for this virtual refund.");
-      }
+      if (!apt || !pay) throw new Error("Could not find appointment or payment data for this virtual refund.");
 
-      // Calculate the original amount
       const amount = pay.totalAmount - (pay.bookingCharges || 0) - (pay.tax || 0);
 
-      // Insert into DB
       const [inserted] = await db.insert(refunds).values({
-        paymentId: pay.id,
-        appointmentId: apt.id,
-        patientId: apt.patientId,
-        amount: amount,
-        reason: apt.cancelReason || "Legacy cancellation (Auto-processed)",
-        status: status, 
-        processedAt: new Date(),
-        updatedAt: new Date()
+        paymentId: pay.id, appointmentId: apt.id, patientId: apt.patientId,
+        amount: amount, reason: apt.cancelReason || "Legacy cancellation (Auto-processed)",
+        status: status, processedAt: new Date(), updatedAt: new Date()
       }).returning();
       
       refundRecord = inserted;
     } else {
-      // 2. Normal flow for existing DB records
       const [updated] = await db.update(refunds)
         .set({ status, processedAt: new Date(), updatedAt: new Date() })
         .where(eq(refunds.id, refundId))
@@ -2419,7 +2444,6 @@ export class DbStorage implements IStorage {
       
     // 3. Sync Payments table if status is completed
     if (refundRecord && status === 'completed') {
-      
       await db.update(payments)
         .set({ 
           status: PaymentStatus.REFUNDED, 
@@ -2429,8 +2453,205 @@ export class DbStorage implements IStorage {
         })
         .where(eq(payments.id, refundRecord.paymentId));
     }
+
+    // 🟢 AUTO AUDIT LOG FOR REFUNDS 🟢
+    if (refundRecord) {
+      try {
+        await this.createAuditLog({
+           actorId: refundRecord.patientId,
+           actorRole: 'admin',
+           action: `REFUND_${status.toUpperCase()}`,
+           status: status === 'rejected' ? 'failed' : 'success',
+           entityType: 'refund',
+           entityId: refundRecord.id,
+           metadata: { amount: refundRecord.amount, reason: refundRecord.reason }
+        });
+      } catch(e) {
+        console.error("Audit log failed:", e);
+      }
+    }
     
     return refundRecord;
+  }
+
+  async bookAppointmentWithPaymentAtomic(
+    appointment: InsertAppointment,
+    paymentData: InsertPayment,
+    slotId: string,
+  ): Promise<{ appointment: Appointment; payment: Payment } | null> {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+
+      // Step 1: ATOMICALLY lock the slot
+      const lockResult = await client.query(
+        `UPDATE appointment_slots 
+         SET is_booked = true, updated_at = NOW()
+         WHERE id = $1 AND is_booked = false AND is_blocked = false AND is_active = true
+         RETURNING id, date, start_time`,
+        [slotId],
+      );
+
+      if (lockResult.rowCount === 0) {
+        await client.query("ROLLBACK");
+        return null;
+      }
+
+      // Step 2: Create appointment record
+      const appointmentResult = await client.query(
+        `INSERT INTO appointments 
+         (id, patient_id, doctor_id, slot_id, hospital_id, appointment_date, 
+          appointment_time, consultation_type, symptoms, is_for_dependent, 
+          dependent_name, dependent_age, dependent_gender, dependent_contact, 
+          status, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW(), NOW())
+         RETURNING *`,
+        [
+          appointment.id, appointment.patientId, appointment.doctorId, appointment.slotId,
+          appointment.hospitalId, appointment.appointmentDate, appointment.appointmentTime,
+          appointment.consultationType, appointment.symptoms, appointment.isForDependent,
+          appointment.dependentName, appointment.dependentAge, appointment.dependentGender,
+          appointment.dependentContact, appointment.status,
+        ],
+      );
+      const createdAppointment = appointmentResult.rows[0];
+
+      // Step 3: Create payment record
+      const paymentResult = await client.query(
+        `INSERT INTO payments 
+         (id, appointment_id, patient_id, doctor_id, consultation_fee, booking_charges,
+          tax, platform_commission, doctor_earnings, total_amount, status, method, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), NOW())
+         RETURNING *`,
+        [
+          randomUUID(), paymentData.appointmentId, paymentData.patientId, paymentData.doctorId,
+          paymentData.consultationFee, paymentData.bookingCharges, paymentData.tax,
+          paymentData.platformCommission, paymentData.doctorEarnings, paymentData.totalAmount,
+          paymentData.status, paymentData.method,
+        ],
+      );
+      const createdPayment = paymentResult.rows[0];
+
+      const auditMetadata = {
+        appointmentDetails: createdAppointment,
+        paymentDetails: createdPayment,
+        bookedVia: "Patient Portal",
+      };
+
+      await client.query(
+        `INSERT INTO audit_logs 
+         (id, actor_id, actor_role, action, status, entity_type, entity_id, ip_address, device, location, session_id, metadata, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())`,
+        [
+          randomUUID(), 
+          appointment.patientId, 
+          'patient', 
+          'APPOINTMENT_BOOKED', 
+          'success',
+          'appointment', 
+          createdAppointment.id, 
+          'System IP',
+          'System/Webhook',
+          'Sri Lanka',
+          'SYS-AUTO',
+          JSON.stringify(auditMetadata)
+        ]
+      );
+
+      await client.query("COMMIT");
+
+      return {
+        appointment: {
+          ...createdAppointment,
+          createdAt: toISOString(createdAppointment.created_at),
+          updatedAt: toISOString(createdAppointment.updated_at),
+        } as Appointment,
+        payment: {
+          ...createdPayment,
+          createdAt: toISOString(createdPayment.created_at),
+          updatedAt: toISOString(createdPayment.updated_at),
+        } as Payment,
+      };
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async createAuditLog(data: InsertAuditLog): Promise<AuditLog> {
+    const result = await db.insert(auditLogs).values(data).returning();
+    return result[0] as AuditLog;
+  }
+
+  async getPaginatedAuditLogs(page: number, limit: number, filters?: { type?: string, search?: string, startDate?: string, endDate?: string }): Promise<any> {
+    const offset = (page - 1) * limit;
+    const conditions = [];
+
+    // 1. Filter by Audit Type (Tab)
+    if (filters?.type && filters.type !== "ALL") {
+      if (filters.type === "SYSTEM") {
+        conditions.push(sql`${auditLogs.metadata}->>'auditType' NOT IN ('AUTH', 'CAREER')`);
+      } else {
+        conditions.push(sql`${auditLogs.metadata}->>'auditType' = ${filters.type}`);
+      }
+    }
+
+    // 2. Filter by Exact Date & Time Range
+    if (filters?.startDate) {
+      conditions.push(gte(auditLogs.createdAt, new Date(filters.startDate)));
+    }
+    if (filters?.endDate) {
+      // අපි Frontend එකෙන් එවන End Date එක ඒ විදිහටම අල්ලනවා (Time එකත් එක්ක එවන නිසා)
+      conditions.push(lt(auditLogs.createdAt, new Date(filters.endDate)));
+    }
+
+    // 3. Search by User ID, Email, Name, Action or Event ID
+    if (filters?.search) {
+      const searchLower = `%${filters.search.toLowerCase()}%`;
+      conditions.push(
+        or(
+          ilike(users.fullName, searchLower),
+          ilike(users.email, searchLower),
+          ilike(auditLogs.actorId, searchLower),
+          ilike(auditLogs.action, searchLower),
+          // Event ID එක (UUID) Search කරන්න
+          sql`CAST(${auditLogs.id} AS TEXT) ILIKE ${searchLower}`
+        )
+      );
+    }
+
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
+    // Fetch the data
+    const rawData = await db
+      .select({
+        log: auditLogs,
+        actor: {
+          fullName: users.fullName,
+          email: users.email,
+        }
+      })
+      .from(auditLogs)
+      .leftJoin(users, eq(auditLogs.actorId, users.id))
+      .where(whereClause)
+      .orderBy(desc(auditLogs.createdAt))
+      .limit(limit)
+      .offset(offset);
+
+    // Count the total rows
+    const [{ count }] = await db.select({ count: sql`count(*)`.mapWith(Number) })
+      .from(auditLogs)
+      .leftJoin(users, eq(auditLogs.actorId, users.id))
+      .where(whereClause);
+
+    return {
+      data: rawData.map(r => ({ ...r.log, actorName: r.actor?.fullName, actorEmail: r.actor?.email })),
+      totalCount: count,
+      totalPages: Math.ceil(count / limit) || 1,
+      currentPage: page
+    };
   }
 }
 

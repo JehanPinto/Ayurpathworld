@@ -61,6 +61,7 @@ import AdminRefundsPage from "./pages/admin/refunds";
 import AdminReportsPage from "./pages/admin/reports";
 import FindDoctors from "./pages/patient/find-doctors";
 import DoctorDetailsPage from "./pages/doctor-details";
+import AdminAuditPage from "./pages/admin/AdminAudit";
 
 function ProtectedRoute({ 
   children, 
@@ -203,6 +204,7 @@ function Router() {
               <Route path="/admin/careers" component={AdminCareersPage} />
               <Route path="/admin/blogs" component={AdminBlogsPage} />
               <Route path="/admin/reports" component={AdminReportsPage} />
+              <Route path="/admin/audit" component={AdminAuditPage} />
               <Route path="/admin/settings" component={AdminSettingsPage} />
               <Route component={NotFound} />
             </Switch>

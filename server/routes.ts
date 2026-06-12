@@ -40,6 +40,27 @@ import { upload } from "../config/cloudinary";
 import jwt from "jsonwebtoken";
 import { createGoogleMeetEvent } from "./util/google-calendar";
 import { sendPatientBookingReceiptEmail, sendDoctorNewBookingEmail } from "./util/email";
+import { time } from "console";
+
+const getReqInfo = (req: Request, jti?: string) => {
+  let ipAddress = req.headers['x-forwarded-for'] || req.socket.remoteAddress || "127.0.0.1";
+  
+  if (Array.isArray(ipAddress)) {
+    ipAddress = ipAddress[0];
+  } else if (typeof ipAddress === 'string' && ipAddress.includes(',')) {
+    ipAddress = ipAddress.split(',')[0].trim();
+  }
+
+  if (ipAddress === "::1" || ipAddress === "::ffff:127.0.0.1") {
+    ipAddress = "127.0.0.1 (Localhost)";
+  }
+
+  const device = req.headers['user-agent'] || "Unknown Device";
+
+  const sessionId = jti ? `SES-${jti.substring(0, 8).toUpperCase()}` : "N/A";
+
+  return { ipAddress: String(ipAddress), device, location: "Sri Lanka", sessionId };
+};
 
 // Password strength validation utility
 function validatePasswordStrength(password: string): {
@@ -312,8 +333,10 @@ type JwtPayload = {
   exp?: number;
 };
 
-function generateToken(payload: object, ttlMs = 7 * 24 * 60 * 60 * 1000): string {
-  return jwt.sign(payload, JWT_SECRET, { expiresIn: Math.floor(ttlMs / 1000) });
+function generateToken(payload: object, ttlMs = 7 * 24 * 60 * 60 * 1000): { token: string; jti: string } {
+  const jti = randomUUID();
+  const token = jwt.sign({ ...payload, jti }, JWT_SECRET, { expiresIn: Math.floor(ttlMs / 1000) });
+  return { token, jti };
 }
 
 function verifyToken(token: string): { id: string; email: string; role: string; fullName: string } | null {
@@ -336,7 +359,7 @@ function verifyToken(token: string): { id: string; email: string; role: string; 
 
 function generateRegistrationToken(
   payload: Pick<JwtPayload, "id" | "email" | "provider">,
-) {
+): { token: string; jti: string } {
   return generateToken(
     { ...payload, purpose: "complete-registration" },
     REGISTRATION_TOKEN_TTL_MS,
@@ -471,26 +494,161 @@ export async function registerRoutes(
     done(null, user);
   });
 
+  // 🟢 Helper to safely get actor info (Resolves Foreign Key constraint issue natively)
+  const getActorInfo = async (req: Request) => {
+    // 1. User login වෙලා නම් (Authenticated)
+    const authUser = (req as AuthenticatedRequest).user;
+    if (authUser) {
+      return { actorId: authUser.id, actorRole: authUser.role };
+    }
+
+    // 2. Request එකේ Email එකක් එවලා තියෙනවද කියලා බලනවා (Login, Forgot PW, Register, Upload CV)
+    const providedEmail = req.body?.email || req.headers["x-registration-email"];
+    
+    if (providedEmail && typeof providedEmail === 'string') {
+      try {
+        const existingUser = await storage.getUserByEmail(providedEmail.toLowerCase().trim());
+        if (existingUser) {
+          // Email එකට අදාළ User කෙනෙක් DB එකේ ඉන්නවා නම්, එයාගේ ID එක යවනවා
+          // හැබැයි තවම ලොග් වෙලා නැති නිසා 'unverified' හෝ 'guest' විදිහට තියන්නත් පුළුවන්, 
+          // ඒත් වඩා හොඳයි එයාගේ ඇත්ත role එකම යවන එක.
+          return { actorId: existingUser.id, actorRole: existingUser.role };
+        }
+      } catch (e) {
+        console.error("Failed to fetch user by provided email in getActorInfo:", e);
+      }
+    }
+    
+    // 3. User login වෙලත් නැත්නම්, ගහපු Email එක DB එකේ ඇත්තෙත් නැත්නම් (හෝ Email එකක් ගැහුවේ නැත්නම්) - "System Guest" Pattern
+    const GUEST_EMAIL = "guest@ayurpath.system";
+    
+    try {
+      // Guest User කෙනෙක් කලින් හැදිලා තියෙනවද බලනවා
+      let guestUser = await storage.getUserByEmail(GUEST_EMAIL);
+      
+      // එහෙම කෙනෙක් නැත්නම්, පළවෙනි පාරට ඒ Dummy User ව හදනවා
+      if (!guestUser) {
+        // මේකෙන් ලොග් වෙන්න බැරි වෙන්න Random Password එකක් දෙනවා
+        const dummyPassword = await hashPassword(randomUUID() + randomUUID()); 
+        
+        guestUser = await storage.createUser({
+          fullName: "System Guest",
+          email: GUEST_EMAIL,
+          password: dummyPassword,
+          phone: "0000000000",
+          role: "patient", // DB Schema එකේ තියෙන Default Role එක
+        } as any);
+      }
+      
+      // 🟢 Database එකේ තියෙන ඇත්තම ID එක දෙනවා, හැබැයි Role එක 'guest' කියලා යවනවා
+      return { actorId: guestUser.id, actorRole: 'guest' };
+      
+    } catch (error) {
+      console.error("Failed to fetch/create guest user:", error);
+      
+      // මොකක් හරි වෙලා Guest User ව හදන්න බැරි වුණොත්, Admin ගේ ID එක පාවිච්චි කරනවා (Fallback)
+      const admins = await storage.getAllUsers("admin");
+      if (admins && admins.length > 0) {
+         return { actorId: admins[0].id, actorRole: 'guest' };
+      }
+      
+      return { actorId: 'system', actorRole: 'guest' };
+    }
+  };
+
   app.post(
     "/api/auth/register",
     registrationLimiter,
     async (req: Request, res: Response) => {
+
+      const tRequestReceived = new Date().toISOString();
+
       try {
         const data = insertUserSchema.parse(req.body);
 
         // Validate password strength
         const passwordValidation = validatePasswordStrength(data.password);
         if (!passwordValidation.valid) {
+
+          const tFailed = new Date().toISOString();
+
+            try {
+              const { ipAddress, device, location, sessionId } = getReqInfo(req);
+              const { actorId, actorRole } = await getActorInfo(req);
+              await storage.createAuditLog({
+                actorId, actorRole,
+                action: 'USER_REGISTRATION', status: 'failed',
+                entityType: 'user', entityId: 'N/A',
+                ipAddress, device, location, sessionId: 'N/A',
+                metadata: { 
+                  auditType: "AUTH",
+                  method: 'Password', reason: 'password validation failed',
+                  timeline: {
+                    requestReceivedAt: tRequestReceived,
+                    credentialsVerifiedAt: tFailed,
+                    completedAt: tFailed
+                  }
+                }
+              });
+            } catch (e) { console.error(e); }
+
           return res.status(400).json({
             error: "Password does not meet security requirements",
             details: passwordValidation.errors,
           });
         }
 
+        const credentialsVerified = new Date().toISOString();
         const existingUser = await storage.getUserByEmail(data.email);
         if (existingUser) {
+          
+          const tFailed = new Date().toISOString();
+
           if (existingUser.provider && existingUser.provider !== AuthProvider.LOCAL) {
             const providerName = existingUser.provider.charAt(0).toUpperCase() + existingUser.provider.slice(1);
+
+              try {
+                const { ipAddress, device, location, sessionId } = getReqInfo(req);
+                const { actorId, actorRole } = await getActorInfo(req);
+                await storage.createAuditLog({
+                  actorId, actorRole,
+                  action: 'USER_REGISTRATION', status: 'failed',
+                  entityType: 'user', entityId: 'N/A',
+                  ipAddress, device, location, sessionId: 'N/A',
+                  metadata: {
+                    method: 'Existing Email', reason: `Email already registered with ${providerName} provider`,
+                    timeline: {
+                      auditType: "AUTH",
+                      requestReceivedAt: tRequestReceived,
+                      credentialsVerifiedAt: credentialsVerified,
+                      providerIdentifiedAt: tFailed,
+                      completedAt: tFailed
+                    }
+                  }
+                });
+              } catch (e) { console.error(e); }
+
+            try {
+              const { ipAddress, device, location, sessionId } = getReqInfo(req);
+              const { actorId, actorRole } = await getActorInfo(req);
+              await storage.createAuditLog({
+                actorId, actorRole,
+                action: 'USER_REGISTRATION', status: 'failed',
+                entityType: 'user', entityId: existingUser.id,
+                ipAddress, device, location, sessionId: 'N/A',
+                metadata: {
+                  method: 'Existing Email', reason: `Email already registered with ${providerName} provider`,
+                  timeline: {
+                    auditType: "AUTH",
+                    requestReceivedAt: tRequestReceived,
+                    credentialsVerifiedAt: credentialsVerified,
+                    exitUserAt: tFailed,
+                    completedAt: tFailed
+                  }
+                }
+              });
+            } catch (e) { console.error(e); }
+
             return res.status(400).json({ 
               error: `This email is associated with a ${providerName} account. Please use a different email to register as a patient, or contact support.` 
             });
@@ -505,19 +663,101 @@ export async function registerRoutes(
           password: hashedPassword,
         });
 
-        const token = generateToken({
+        const { token, jti } = generateToken({
           id: user.id,
           email: user.email,
           role: user.role,
           fullName: user.fullName,
         });
 
+        const tAccountRegistered = new Date().toISOString();
+        const tSessionCreated = new Date().toISOString();
+        const tCompleted = new Date().toISOString();
+
+        try {
+          const { ipAddress, device, location, sessionId } = getReqInfo(req, jti);
+          const { actorId, actorRole } = await getActorInfo(req);
+          await storage.createAuditLog({
+            actorId, actorRole,
+            action: 'USER_REGISTERED', status: 'success',
+            entityType: 'user', entityId: user.id,
+            ipAddress, device, location, sessionId,
+            metadata: { 
+              auditType: "AUTH",
+              method: 'user registration',
+              tokenIssued: true,
+              timeline: {
+                requestReceivedAt: tRequestReceived,
+                credentialsVerifiedAt: credentialsVerified,
+                providerIdentifiedAt: tAccountRegistered,
+                sessionCreatedAt: tSessionCreated,
+                completedAt: tCompleted
+              }
+            }
+          });
+        } catch (e) { console.error("Audit log failed:", e); }
+
         const { password: _, ...userWithoutPassword } = user;
         res.status(201).json({ user: userWithoutPassword, token });
       } catch (error) {
+        const tFailed = new Date().toISOString();
+        const { ipAddress, device, location } = getReqInfo(req);
+
+        let tempActorId = "user-admin"; // Fallback ID
+        let tempRole = "system";
+        if (req.body && req.body.email) {
+          try {
+            const existingUser = await storage.getUserByEmail(req.body.email);
+            if (existingUser) {
+              tempActorId = existingUser.id;
+              tempRole = existingUser.role;
+            }
+          } catch (e) { }
+        }
+
         if (error instanceof z.ZodError) {
+          try {
+            const { actorId, actorRole } = await getActorInfo(req);
+            await storage.createAuditLog({
+              actorId, actorRole,
+              action: 'USER_REGISTRATION', status: 'failed',
+              entityType: 'user', entityId: 'N/A',
+              ipAddress, device, location, sessionId: 'N/A',
+              metadata: {
+                auditType: "AUTH",
+                method: 'user registration', reason: 'validation failed (400 Bad Request)',
+                providedEmail: req.body?.email || 'N/A',
+                validationErrors: error.errors,
+                timeline: {
+                  requestReceivedAt: tRequestReceived,
+                  credentialsVerifiedAt: tFailed,
+                  providerIdentifiedAt: tFailed,
+                  completedAt: tFailed
+                }
+              }
+            });
+          } catch (e) { console.error("Audit log failed:", e); }
           return res.status(400).json({ error: error.errors });
         }
+
+        try {
+          const { actorId, actorRole } = await getActorInfo(req);
+          await storage.createAuditLog({
+            actorId, actorRole,
+            action: 'USER_REGISTRATION', status: 'failed',
+            entityType: 'user', entityId: 'N/A',
+            ipAddress, device, location, sessionId: 'N/A',
+            metadata: {
+              auditType: "AUTH",
+              method: 'user registration', reason: 'server error (500)',
+              providedEmail: req.body?.email || 'N/A',
+              timeline: {
+                requestReceivedAt: tRequestReceived,
+                completedAt: tFailed
+              }
+            }
+          });
+        } catch (e) { console.error("Audit log failed:", e); }
         res.status(500).json({ error: "Registration failed" });
       }
     },
@@ -527,15 +767,15 @@ export async function registerRoutes(
     "/api/auth/register-doctor",
     registrationLimiter,
     async (req: Request, res: Response) => {
+      const tRequestReceived = new Date().toISOString();
+
       try {
         const registrationToken = req.headers["x-registration-token"] as string;
         let sessionFiles: string[] = [];
 
         if (registrationToken) {
           const files = consumeSession(registrationToken);
-          if (files) {
-            sessionFiles = files;
-          }
+          if (files) sessionFiles = files;
         }
 
         const userData = insertUserSchema.parse({
@@ -543,106 +783,198 @@ export async function registerRoutes(
           role: UserRole.DOCTOR,
         });
 
-        // Validate password strength
         const passwordValidation = validatePasswordStrength(userData.password);
         if (!passwordValidation.valid) {
-          return res.status(400).json({
-            error: "Password does not meet security requirements",
-            details: passwordValidation.errors,
-          });
+          const tFailed = new Date().toISOString();
+          try {
+            const { ipAddress, device, location, sessionId } = getReqInfo(req);
+            const { actorId, actorRole } = await getActorInfo(req);
+            await storage.createAuditLog({
+              actorId, actorRole,
+              action: 'DOCTOR_REGISTERED', status: 'failed',
+              entityType: 'user', entityId: 'N/A',
+              ipAddress, device, location, sessionId: 'N/A',
+              metadata: { 
+                auditType: "AUTH",
+                method: 'Password', reason: 'password validation failed',
+                timeline: { 
+                  requestReceivedAt: tRequestReceived, 
+                  credentialsVerifiedAt: tFailed,
+                  completedAt: tFailed 
+                }
+              }
+            });
+          } catch (e) {}
+          return res.status(400).json({ error: "Password does not meet security requirements", details: passwordValidation.errors });
         }
 
+        // 2. Validate Doctor Fees
         const feeError = validateDoctorFees({
           consultationFee: parseInt(req.body.consultationFee) || 0,
           onlineConsultationFee: req.body.onlineConsultationFee ? parseInt(req.body.onlineConsultationFee) : undefined,
           homeVisitFee: req.body.homeVisitFee ? parseInt(req.body.homeVisitFee) : undefined
         });
-        if (feeError) return res.status(400).json({ error: feeError });
+        if (feeError) {
+          const tFailed = new Date().toISOString();
+          try {
+            const { ipAddress, device, location, sessionId } = getReqInfo(req);
+            const { actorId, actorRole } = await getActorInfo(req);
+            await storage.createAuditLog({
+              actorId, actorRole, 
+              action: 'DOCTOR_REGISTERED', status: 'failed',
+              entityType: 'user', entityId: 'N/A', ipAddress, device, location, sessionId: 'N/A',
+              metadata: { 
+                auditType: "AUTH",
+                method: 'Validation', reason: 'Fee validation failed', 
+                timeline: { 
+                  requestReceivedAt: tRequestReceived, 
+                  credentialsVerifiedAt: tFailed,
+                  completedAt: tFailed 
+                } 
+              }
+            });
+          } catch (e) {}
+          return res.status(400).json({ error: feeError });
+        }
 
-        // Validate Bank Details
+        // 3. Validate Bank Details
         const bankError = validateBankDetails(req.body.bankAccountNumber, req.body.bankBranch);
         if (bankError) return res.status(400).json({ error: bankError });
 
+        // 4. Check Existing User
+        const credentialsVerified = new Date().toISOString();
         const existingUser = await storage.getUserByEmail(userData.email);
+        
         if (existingUser) {
+          const tFailed = new Date().toISOString();
           if (existingUser.provider && existingUser.provider !== AuthProvider.LOCAL) {
             const providerName = existingUser.provider.charAt(0).toUpperCase() + existingUser.provider.slice(1);
-            return res.status(400).json({ 
-              error: `This email is associated with a ${providerName} account. Please use a different email to register as a doctor, or contact support.` 
-            });
+            try {
+              const { ipAddress, device, location, sessionId } = getReqInfo(req);
+              const { actorId, actorRole } = await getActorInfo(req);
+              await storage.createAuditLog({
+                actorId, actorRole, 
+                action: 'DOCTOR_REGISTERED', status: 'failed',
+                entityType: 'user', entityId: 'N/A', ipAddress, device, location, sessionId: 'N/A',
+                metadata: { 
+                  auditType: "AUTH",
+                  method: 'Existing Email', 
+                  reason: `Email registered with ${providerName}`, 
+                  timeline: { 
+                    requestReceivedAt: tRequestReceived, 
+                    credentialsVerifiedAt: credentialsVerified, 
+                    completedAt: tFailed 
+                  } 
+                }
+              });
+            } catch (e) {}
+            return res.status(400).json({ error: `This email is associated with a ${providerName} account. Please use a different email or contact support.` });
           }
-          
           return res.status(400).json({ error: "Email already registered" });
         }
 
-        // VALIDATE DOCTOR DATA BEFORE CREATING USER
-        const verificationDocs =
-          sessionFiles.length > 0
-            ? sessionFiles
-            : req.body.verificationDocuments || [];
-
+        const verificationDocs = sessionFiles.length > 0 ? sessionFiles : req.body.verificationDocuments || [];
         const doctorData = insertDoctorProfileSchema.parse({
-          userId: "temp-id", // Placeholder, will be replaced with actual user ID
-          registrationNumber: req.body.registrationNumber,
-          qualifications: req.body.qualifications,
-          specializationIds: req.body.specializationIds || [],
-          languagesSpoken: req.body.languagesSpoken || ["english"],
-          consultationTypes: req.body.consultationTypes || ["in_person"],
-          clinic_locations: req.body.clinic_locations || [],
+          userId: "temp-id", registrationNumber: req.body.registrationNumber, qualifications: req.body.qualifications,
+          specializationIds: req.body.specializationIds || [], languagesSpoken: req.body.languagesSpoken || ["english"],
+          consultationTypes: req.body.consultationTypes || ["in_person"], clinic_locations: req.body.clinic_locations || [],
           consultationFee: parseInt(req.body.consultationFee) || 0,
-          onlineConsultationFee: req.body.onlineConsultationFee
-            ? parseInt(req.body.onlineConsultationFee)
-            : undefined,
-          homeVisitFee: req.body.homeVisitFee
-            ? parseInt(req.body.homeVisitFee)
-            : undefined,
-          verificationDocuments: verificationDocs,
-          bankName: req.body.bankName || null,
-          bankAccountNumber: req.body.bankAccountNumber || null,
-          bankBranch: req.body.bankBranch || null,
+          onlineConsultationFee: req.body.onlineConsultationFee ? parseInt(req.body.onlineConsultationFee) : undefined,
+          homeVisitFee: req.body.homeVisitFee ? parseInt(req.body.homeVisitFee) : undefined,
+          verificationDocuments: verificationDocs, bankName: req.body.bankName || null,
+          bankAccountNumber: req.body.bankAccountNumber || null, bankBranch: req.body.bankBranch || null,
           status: DoctorStatus.PENDING,
         });
 
-        // Now create the user (validation passed)
+        // 5. Create User & Profile
         const hashedPassword = await hashPassword(userData.password);
-        const user = await storage.createUser({
-          ...userData,
-          password: hashedPassword,
-        });
+        const user = await storage.createUser({ ...userData, password: hashedPassword });
 
         try {
-          // Try to create doctor profile with actual user ID
-          await storage.createDoctorProfile({
-            ...doctorData,
-            userId: user.id,
-          });
+          await storage.createDoctorProfile({ ...doctorData, userId: user.id });
         } catch (profileError) {
-          // ROLLBACK: Delete the user if doctor profile creation fails
-          try {
-            await storage.deleteUser(user.id);
-          } catch (deleteError) {
-            console.error("Failed to rollback user creation:", deleteError);
-          }
-          // Re-throw the original error to be handled by the outer catch block
+          try { await storage.deleteUser(user.id); } catch (e) {}
           throw profileError;
         }
 
-        const token = generateToken({
-          id: user.id,
-          email: user.email,
-          role: user.role,
-          fullName: user.fullName,
+        const { token, jti } = generateToken({
+          id: user.id, email: user.email, role: user.role, fullName: user.fullName,
         });
+
+        const tCompleted = new Date().toISOString();
+
+        // 6. SUCCESS LOG
+        try {
+          const { ipAddress, device, location, sessionId } = getReqInfo(req, jti);
+          const { actorId, actorRole } = await getActorInfo(req);
+          await storage.createAuditLog({
+            actorId, actorRole,
+            action: 'DOCTOR_REGISTERED', status: 'success',
+            entityType: 'user', entityId: user.id, 
+            ipAddress, device, location, sessionId,
+            metadata: { 
+              auditType: "AUTH",
+              registrationNumber: doctorData.registrationNumber, 
+              tokenIssued: true,
+              timeline: { 
+                requestReceivedAt: tRequestReceived, 
+                credentialsVerifiedAt: credentialsVerified, 
+                completedAt: tCompleted 
+              }
+            }
+          });
+        } catch (e) { console.error("Audit log failed:", e); }
 
         const { password: _, ...userWithoutPassword } = user;
         res.status(201).json({ user: userWithoutPassword, token });
+
       } catch (error) {
-        if (error instanceof z.ZodError) {
-          return res.status(400).json({
-            error: "Validation failed",
-            details: error.errors,
-          });
+        const tFailed = new Date().toISOString();
+        const { ipAddress, device, location, sessionId } = getReqInfo(req);
+        const { actorId, actorRole } = await getActorInfo(req);
+
+        let tempActorId = "user-admin"; let tempRole = "system";
+        if (req.body && req.body.email) {
+          try {
+            const existingUser = await storage.getUserByEmail(req.body.email);
+            if (existingUser) { tempActorId = existingUser.id; tempRole = existingUser.role; }
+          } catch (e) { }
         }
+
+        if (error instanceof z.ZodError) {
+          try {
+            await storage.createAuditLog({
+              actorId, actorRole, 
+              action: 'DOCTOR_REGISTERED', status: 'failed',
+              entityType: 'user', entityId: 'N/A', 
+              ipAddress, device, location, sessionId: 'N/A',
+              metadata: { 
+                auditType: "AUTH",
+                reason: 'validation failed (400 Bad Request)', 
+                validationErrors: error.errors, 
+                timeline: { 
+                  requestReceivedAt: tRequestReceived, 
+                  completedAt: tFailed 
+                } 
+              }
+            });
+          } catch (e) {}
+          return res.status(400).json({ error: "Validation failed", details: error.errors });
+        }
+
+        try {
+          await storage.createAuditLog({
+            actorId, actorRole, 
+            action: 'DOCTOR_REGISTERED', status: 'failed',
+            entityType: 'system', entityId: 'N/A', 
+            ipAddress, device, location, sessionId: 'N/A',
+            metadata: { 
+              auditType: "AUTH",
+              reason: 'server error (500)', 
+              timeline: { requestReceivedAt: tRequestReceived, completedAt: tFailed } 
+            }
+          });
+        } catch (e) {}
         res.status(500).json({ error: "Doctor registration failed" });
       }
     },
@@ -652,27 +984,107 @@ export async function registerRoutes(
     "/api/auth/login",
     loginLimiter,
     async (req: Request, res: Response) => {
+
+      const tRequestReceived = new Date().toISOString();
+
       try {
         const { email, password } = loginSchema.parse(req.body);
 
         const user = await storage.getUserByEmail(email);
 
         if (!user || !(await verifyPassword(password, user.password))) {
+
+          const tFailed = new Date().toISOString();
+
+          if (user) {
+            try {
+              const { ipAddress, device, location, sessionId } = getReqInfo(req);
+              const { actorId, actorRole } = await getActorInfo(req);
+              await storage.createAuditLog({
+                actorId, actorRole,
+                action: 'USER_LOGIN', status: 'failed',
+                entityType: 'user', entityId: user.id,
+                ipAddress, device, location, sessionId: sessionId,
+                metadata: { 
+                  auditType: "AUTH",
+                  method: 'Email & Password', reason: 'Invalid Password',
+                  timeline: {
+                    requestReceivedAt: tRequestReceived,
+                    credentialsVerifiedAt: tFailed,
+                    completedAt: tFailed
+                  }
+                }
+              });
+            } catch (e) { console.error(e); }
+          }
           return res.status(401).json({ error: "Invalid email or password" });
         }
 
+        const tCredentialsVerified = new Date().toISOString();
+
         if (user.provider && user.provider !== AuthProvider.LOCAL) {
           const providerName = user.provider.charAt(0).toUpperCase() + user.provider.slice(1);
+
+          const tFailed = new Date().toISOString();
+
+            try {
+              const { ipAddress, device, location, sessionId } = getReqInfo(req);
+              const { actorId, actorRole } = await getActorInfo(req);
+              await storage.createAuditLog({
+                actorId, actorRole,
+                action: 'USER_LOGIN', status: 'failed',
+                entityType: 'user', entityId: user.id,
+                ipAddress, device, location, sessionId: sessionId,
+                metadata: {
+                  auditType: "AUTH",
+                  method: 'Email & Password', reason: 'Account registered with social provider',
+                  timeline: {
+                    requestReceivedAt: tRequestReceived,
+                    credentialsVerifiedAt: tCredentialsVerified,
+                    providerIdentifiedAt: tFailed,
+                    completedAt: tFailed
+                  }
+                }
+              });
+            } catch (e) { console.error(e); }
+
           return res.status(400).json({ 
             error: "Already registered with a social account. Please login with " + providerName + " or reset your password to create a local account."
           });
         }
+
+        const tProviderIdentified = new Date().toISOString();
 
         if (user.role === UserRole.DOCTOR) {
           const doctorProfile = await storage.getDoctorProfileByUserId(user.id);
 
           if (doctorProfile) {
             if (doctorProfile.status === DoctorStatus.SUSPENDED) {
+
+              const tFailed = new Date().toISOString();
+
+              try {
+                const { ipAddress, device, location, sessionId } = getReqInfo(req);
+                const { actorId, actorRole } = await getActorInfo(req);
+                await storage.createAuditLog({
+                  actorId, actorRole,
+                  action: 'USER_LOGIN', status: 'failed',
+                  entityType: 'user', entityId: user.id,
+                  ipAddress, device, location, sessionId: sessionId,
+                  metadata: { 
+                    auditType: "AUTH",
+                    method: 'Doctor', reason: 'Suspended account',
+                    timeline: {
+                      requestReceivedAt: tRequestReceived,
+                      credentialsVerifiedAt: tCredentialsVerified,
+                      providerIdentifiedAt: tProviderIdentified,
+                      SuspendedIdentifiedAt: tFailed,
+                      completedAt: tFailed
+                    }
+                  }
+                });
+              } catch (e) { console.error(e); }
+
               return res
                 .status(403)
                 .json({
@@ -681,7 +1093,34 @@ export async function registerRoutes(
                 });
             }
 
+            const tDoctorStatusChecked = new Date().toISOString();
+
             if (doctorProfile.status === DoctorStatus.REJECTED) {
+
+              const tFailed = new Date().toISOString();
+              try {
+                const { ipAddress, device, location, sessionId } = getReqInfo(req);
+                const { actorId, actorRole } = await getActorInfo(req);
+                await storage.createAuditLog({
+                  actorId, actorRole,
+                  action: 'USER_LOGIN', status: 'failed',
+                  entityType: 'user', entityId: user.id,
+                  ipAddress, device, location, sessionId: sessionId,
+                  metadata: { 
+                    auditType: "AUTH",
+                    method: 'Doctor', reason: 'Doctor application rejected',
+                    timeline: {
+                      requestReceivedAt: tRequestReceived,
+                      credentialsVerifiedAt: tCredentialsVerified,
+                      providerIdentifiedAt: tProviderIdentified,
+                      DoctorStatusCheckedAt: tDoctorStatusChecked,
+                      RejectionIdentifiedAt: tFailed,
+                      completedAt: tFailed
+                    }
+                  }
+                });
+              } catch (e) { console.error(e); }
+
               return res
                 .status(403)
                 .json({
@@ -691,16 +1130,72 @@ export async function registerRoutes(
           }
         }
 
+        const tDoctorProfileChecked = new Date().toISOString();
+
         if (user.isActive === false) {
+
+          const tFailed = new Date().toISOString();
+
+            try {
+              const { ipAddress, device, location, sessionId } = getReqInfo(req);
+              const { actorId, actorRole } = await getActorInfo(req);
+              await storage.createAuditLog({
+                actorId, actorRole,
+                action: 'USER_LOGIN', status: 'failed',
+                entityType: 'user', entityId: user.id,
+                ipAddress, device, location, sessionId: sessionId,
+                metadata: {
+                  auditType: "AUTH",
+                  method: 'Account Status', reason: 'Account deactivated',
+                  timeline: {
+                    requestReceivedAt: tRequestReceived,
+                    credentialsVerifiedAt: tCredentialsVerified,
+                    providerIdentifiedAt: tProviderIdentified,
+                    doctorProfileCheckedAt: tDoctorProfileChecked,
+                    accountActiveAt: tFailed,
+                    completedAt: tFailed
+                  }
+                }
+              });
+            } catch (e) { console.error(e); }
+
           return res
             .status(403)
             .json({ error: "Your account has been deactivated." });
         }
 
+        const tAccountStatusChecked = new Date().toISOString();
+
         if (
           !user.registrationComplete &&
           user.provider !== AuthProvider.LOCAL
         ) {
+
+          const tFailed = new Date().toISOString();
+            try {
+              const { ipAddress, device, location, sessionId } = getReqInfo(req);
+              const { actorId, actorRole } = await getActorInfo(req);
+              await storage.createAuditLog({
+                actorId, actorRole,
+                action: 'USER_LOGIN', status: 'failed',
+                entityType: 'user', entityId: user.id,
+                ipAddress, device, location, sessionId: sessionId,
+                metadata: { 
+                  auditType: "AUTH",
+                  method: 'Registration Completion', reason: 'Social account registration incomplete',
+                  timeline: {
+                    requestReceivedAt: tRequestReceived,
+                    credentialsVerifiedAt: tCredentialsVerified,
+                    providerIdentifiedAt: tProviderIdentified,
+                    doctorProfileCheckedAt: tDoctorProfileChecked,
+                    accountActiveAt: tAccountStatusChecked,
+                    registrationCompleteAt: tFailed,
+                    completedAt: tFailed
+                  }
+                }
+              });
+            } catch (e) { console.error(e); }
+
           return res
             .status(400)
             .json({
@@ -709,19 +1204,101 @@ export async function registerRoutes(
             });
         }
 
-        const token = generateToken({
+        const { token, jti } = generateToken({
           id: user.id,
           email: user.email,
           role: user.role,
           fullName: user.fullName,
         });
 
+        const tAccountRegistered = new Date().toISOString();
+        const tSessionCreated = new Date().toISOString();
+        const tCompleted = new Date().toISOString();
+
+        try {
+          const { ipAddress, device, location, sessionId } = getReqInfo(req, jti);
+          const { actorId, actorRole } = await getActorInfo(req);
+          await storage.createAuditLog({
+            actorId, actorRole,
+            action: 'USER_LOGIN', status: 'success',
+            entityType: 'user', entityId: user.id,
+            ipAddress, device, location, sessionId,
+            metadata: { 
+              auditType: "AUTH",
+              method: 'Email & Password',
+              reason: 'Login successful',
+              timeline: {
+                requestReceivedAt: tRequestReceived,
+                credentialsVerifiedAt: tCredentialsVerified,
+                providerIdentifiedAt: tProviderIdentified,
+                doctorProfileCheckedAt: tDoctorProfileChecked,
+                accountActiveAt: tAccountStatusChecked,
+                registrationCompleteAt: tAccountRegistered,
+                sessionCreatedAt: tSessionCreated,
+                completedAt: tCompleted
+              }
+            }
+          });
+        } catch (e) { console.error("Audit log failed:", e); }
+
         const { password: _, ...userWithoutPassword } = user;
         res.cookie("token", token, cookieOptions).json({ user: userWithoutPassword, token });
+
       } catch (error) {
+        const tFailed = new Date().toISOString();
+        const { ipAddress, device, location } = getReqInfo(req);
+        const { actorId, actorRole } = await getActorInfo(req);
+
         if (error instanceof z.ZodError) {
+          try {
+            await storage.createAuditLog({
+              actorId, 
+              actorRole,
+              action: 'USER_LOGIN', 
+              status: 'failed',
+              entityType: 'user', 
+              entityId: 'N/A',
+              ipAddress, device, location, sessionId: 'N/A',
+              metadata: { 
+                auditType: "AUTH",
+                method: 'Email & Password',
+                reason: 'Validation Failed (400 Bad Request)',
+                providedEmail: req.body?.email || 'N/A',
+                validationErrors: error.errors,
+                timeline: {
+                  requestReceivedAt: tRequestReceived,
+                  credentialsVerifiedAt: tFailed,
+                  completedAt: tFailed
+                }
+              }
+            });
+          } catch (e) { console.error("Audit log failed (400):", e); }
+
           return res.status(400).json({ error: error.errors });
         }
+        
+        try {
+          await storage.createAuditLog({
+            actorId, 
+            actorRole,
+            action: 'USER_LOGIN', 
+            status: 'failed',
+            entityType: 'system', 
+            entityId: 'N/A',
+            ipAddress, device, location, sessionId: 'N/A',
+            metadata: { 
+              auditType: "AUTH",
+              method: 'Email & Password',
+              reason: 'Internal Server Error (500)',
+              providedEmail: req.body?.email || 'N/A',
+              timeline: {
+                requestReceivedAt: tRequestReceived,
+                completedAt: tFailed
+              }
+            }
+          });
+        } catch (e) { console.error("Audit log failed (500):", e); }
+
         res.status(500).json({ error: "Login failed" });
       }
     },
@@ -803,18 +1380,55 @@ export async function registerRoutes(
     "/api/auth/logout",
     authMiddleware,
     async (req: AuthenticatedRequest, res: Response) => {
+      const tRequestReceived = new Date().toISOString();
       try {
-        const token = req.cookies?.token;
+        const token = req.cookies?.token || req.headers.authorization?.slice(7);
+        let decodedJti = 'N/A';
 
         if (token) {
           const decoded = jwt.decode(token) as JwtPayload;
+          decodedJti = (decoded as any)?.jti || 'N/A';
           const exp = decoded?.exp ? decoded.exp * 1000 : Date.now() + 7 * 24 * 60 * 60 * 1000;
           tokenBlacklist.set(token, exp);
         }
 
+        const tCompleted = new Date().toISOString();
+
+        try {
+          const { ipAddress, device, location, sessionId } = getReqInfo(req, decodedJti !== 'N/A' ? decodedJti : undefined);
+          const { actorId, actorRole } = await getActorInfo(req);
+          await storage.createAuditLog({
+            actorId, actorRole,
+            action: 'USER_LOGOUT', status: 'success',
+            entityType: 'user', entityId: req.user!.id,
+            ipAddress, device, location, sessionId,
+            metadata: {
+              auditType: "AUTH",
+              method: 'manual_logout',
+              timeline: { requestReceivedAt: tRequestReceived, completedAt: tCompleted }
+            }
+          });
+        } catch (e) { console.error("Audit log failed:", e); }
+
         res.clearCookie("token", { httpOnly: true, sameSite: "strict" });
         res.json({ success: true, message: "Logged out successfully" });
       } catch (error) {
+        const tFailed = new Date().toISOString();
+        try {
+          const { ipAddress, device, location } = getReqInfo(req);
+          const { actorId, actorRole } = await getActorInfo(req);
+          await storage.createAuditLog({
+            actorId, actorRole,
+            action: 'USER_LOGOUT', status: 'failed',
+            entityType: 'system', entityId: req.user!.id,
+            ipAddress, device, location, sessionId: 'N/A',
+            metadata: {
+              auditType: "AUTH",
+              reason: 'server error (500)', 
+              timeline: { requestReceivedAt: tRequestReceived, completedAt: tFailed } 
+            }
+          });
+        } catch (e) {}
         res.status(500).json({ error: "Logout failed" });
       }
     }
@@ -823,10 +1437,25 @@ export async function registerRoutes(
   app.post(
     "/api/auth/complete-registration",
     async (req: Request, res: Response) => {
+
+      const tRequestReceived = new Date().toISOString();
+
       try {
         const payload = completeRegistrationSchema.parse(req.body);
+        const tCredentialsVerified = new Date().toISOString();
         const decoded = verifyRegistrationToken(payload.registrationToken);
+        
         if (!decoded?.id) {
+          const tFailed = new Date().toISOString();
+          try {
+            const { ipAddress, device, location } = getReqInfo(req);
+            const { actorId, actorRole } = await getActorInfo(req);
+            await storage.createAuditLog({
+              actorId, actorRole, action: 'COMPLETE_REGISTRATION', status: 'failed',
+              entityType: 'user', entityId: 'N/A', ipAddress, device, location, sessionId: 'N/A',
+              metadata: { auditType: 'AUTH', method: 'Social Auth Completion', reason: 'Invalid or expired registration token', timeline: { requestReceivedAt: tRequestReceived, credentialsVerifiedAt: tCredentialsVerified, completedAt: tFailed } }
+            });
+          } catch (e) {}
           return res
             .status(401)
             .json({ error: "Invalid or expired registration token" });
@@ -838,6 +1467,16 @@ export async function registerRoutes(
         }
 
         if (user.registrationComplete) {
+          const tFailed = new Date().toISOString();
+          try {
+            const { ipAddress, device, location } = getReqInfo(req);
+            const { actorId, actorRole } = await getActorInfo(req);
+            await storage.createAuditLog({
+              actorId, actorRole, action: 'COMPLETE_REGISTRATION', status: 'failed',
+              entityType: 'user', entityId: user.id, ipAddress, device, location, sessionId: 'N/A',
+              metadata: { auditType: 'AUTH', method: 'Social Auth Completion', reason: 'Registration already completed', timeline: { requestReceivedAt: tRequestReceived, credentialsVerifiedAt: tCredentialsVerified, registrationCompleteAt: tFailed, completedAt: tFailed } }
+            });
+          } catch (e) {}
           return res
             .status(400)
             .json({ error: "Registration already completed" });
@@ -908,54 +1547,55 @@ export async function registerRoutes(
           role: updatedUser.role,
           fullName: updatedUser.fullName,
         });
-        const { password: _, ...userWithoutPassword } = updatedUser;
 
-        res.cookie("token", token, cookieOptions).json({ user: userWithoutPassword, token });
-      } catch (error) {
-        if (error instanceof z.ZodError) {
-          return res.status(400).json({ error: error.errors });
-        }
-        res.status(500).json({ error: "Failed to complete registration" });
-      }
-    },
-  );
+        const tSessionCreated = new Date().toISOString();
+        const tCompleted = new Date().toISOString();
 
-  app.post(
-    "/api/auth/login",
-    loginLimiter,
-    async (req: Request, res: Response) => {
-      try {
-        const { email, password } = loginSchema.parse(req.body);
-
-        const user = await storage.getUserByEmail(email);
-        if (!user || !(await verifyPassword(password, user.password))) {
-          return res.status(401).json({ error: "Invalid email or password" });
-        }
-
-        if (
-          !user.registrationComplete &&
-          user.provider !== AuthProvider.LOCAL
-        ) {
-          return res.status(400).json({
-            error:
-              "Please finish signing up with your social account before logging in.",
+        try {
+          const { ipAddress, device, location, sessionId } = getReqInfo(req);
+          const { actorId, actorRole } = await getActorInfo(req);
+          await storage.createAuditLog({
+            actorId, actorRole, action: 'COMPLETE_REGISTRATION', status: 'success',
+            entityType: 'user', entityId: updatedUser.id, ipAddress, device, location, sessionId,
+            metadata: { 
+              auditType: 'AUTH', method: 'Social Auth Completion',
+              timeline: {
+                requestReceivedAt: tRequestReceived,
+                credentialsVerifiedAt: tCredentialsVerified,
+                registrationCompleteAt: tCompleted,
+                sessionCreatedAt: tSessionCreated,
+                completedAt: tCompleted
+              }
+            }
           });
-        }
+        } catch (e) { console.error("Audit log failed:", e); }
 
-        const token = generateToken({
-          id: user.id,
-          email: user.email,
-          role: user.role,
-          fullName: user.fullName,
-        });
-
-        const { password: _, ...userWithoutPassword } = user;
+        const { password: _, ...userWithoutPassword } = updatedUser;
         res.cookie("token", token, cookieOptions).json({ user: userWithoutPassword, token });
       } catch (error) {
+        const tFailed = new Date().toISOString();
         if (error instanceof z.ZodError) {
+          try {
+            const { ipAddress, device, location } = getReqInfo(req);
+            const { actorId, actorRole } = await getActorInfo(req);
+            await storage.createAuditLog({
+              actorId, actorRole, action: 'COMPLETE_REGISTRATION', status: 'failed',
+              entityType: 'user', entityId: 'N/A', ipAddress, device, location, sessionId: 'N/A',
+              metadata: { auditType: 'AUTH', method: 'Social Auth Completion', reason: 'Validation Failed (400)', validationErrors: error.errors, timeline: { requestReceivedAt: tRequestReceived, completedAt: tFailed } }
+            });
+          } catch (e) {}
           return res.status(400).json({ error: error.errors });
         }
-        res.status(500).json({ error: "Login failed" });
+        try {
+          const { ipAddress, device, location } = getReqInfo(req);
+          const { actorId, actorRole } = await getActorInfo(req);
+          await storage.createAuditLog({
+            actorId, actorRole, action: 'COMPLETE_REGISTRATION', status: 'failed',
+            entityType: 'system', entityId: 'N/A', ipAddress, device, location, sessionId: 'N/A',
+            metadata: { auditType: 'AUTH', method: 'Social Auth Completion', reason: 'Internal Server Error (500)', timeline: { requestReceivedAt: tRequestReceived, completedAt: tFailed } }
+          });
+        } catch (e) {}
+        res.status(500).json({ error: "Failed to complete registration" });
       }
     },
   );
@@ -1030,60 +1670,146 @@ export async function registerRoutes(
       }),
     );
 
-    app.get(
-      "/api/auth/google/callback",
-      passport.authenticate("google", {
-        failureRedirect: "/login?error=google_auth_failed",
-        session: false,
-      }),
-      (req: Request, res: Response) => {
-        const user = req.user as any;
-        if (!user) {
+    app.get("/api/auth/google/callback", async (req: Request, res: Response, next: NextFunction) => {
+
+      const tRequestReceived = new Date().toISOString();
+
+      passport.authenticate("google", { session: false }, async (err: any, user: any, info: any) => {
+        const tProviderVerified = new Date().toISOString();
+
+        if (err || !user) {
+          const tFailed = new Date().toISOString();
+          try {
+            const { ipAddress, device, location } = getReqInfo(req);
+            const { actorId, actorRole } = await getActorInfo(req);
+            await storage.createAuditLog({
+              actorId, actorRole,
+              action: 'USER_GOOGLE', status: 'failed',
+              entityType: 'system', entityId: 'N/A', 
+              ipAddress, device, location, sessionId: 'N/A',
+              metadata: { 
+                method: 'Google OAuth', reason: err?.message || 'Google Auth Failed / Cancelled', 
+                timeline: { requestReceivedAt: tRequestReceived, 
+                  providerIdentifiedAt: tProviderVerified, 
+                  completedAt: tFailed 
+                } 
+              }
+            });
+          } catch (e) {}
           return res.redirect("/login?error=google_auth_failed");
         }
 
         const { password: _, ...userWithoutPassword } = user;
 
         if (!user.registrationComplete || !user.phone) {
-          const registrationToken = generateRegistrationToken({
-            id: user.id,
-            email: user.email,
-            provider: user.provider || AuthProvider.GOOGLE,
+          const regData = generateRegistrationToken({
+            id: user.id, email: user.email, provider: user.provider || AuthProvider.GOOGLE,
           });
-          const userJson = encodeURIComponent(
-            JSON.stringify({
-              ...userWithoutPassword,
-              registrationComplete: false,
-            }),
-          );
-          return res.redirect(
-            `/auth/callback?status=incomplete&registrationToken=${registrationToken}&provider=google&user=${userJson}`,
-          );
+          const tCompleted = new Date().toISOString();
+
+          try {
+            const { ipAddress, device, location, sessionId } = getReqInfo(req, regData.jti);
+            const { actorId, actorRole } = await getActorInfo(req);
+            await storage.createAuditLog({
+              actorId, actorRole,
+              action: 'USER_REGISTER_GOOGLE', status: 'success',
+              entityType: 'user', entityId: user.id, 
+              ipAddress, device, location, sessionId,
+              metadata: { 
+                method: 'Google OAuth', reason: 'Redirected to complete registration', 
+                timeline: { 
+                  requestReceivedAt: tRequestReceived, 
+                  credentialsVerifiedAt: tProviderVerified, 
+                  completedAt: tCompleted 
+                } 
+              }
+            });
+          } catch (e) {}
+
+          const userJson = encodeURIComponent(JSON.stringify({ ...userWithoutPassword, registrationComplete: false }));
+          return res.redirect(`/auth/callback?status=incomplete&registrationToken=${regData.token}&provider=google&user=${userJson}`);
         }
-
-        const token = generateToken({
-          id: user.id,
-          email: user.email,
-          role: user.role,
-          fullName: user.fullName,
+      const { token, jti } = generateToken({
+          id: user.id, email: user.email, role: user.role, fullName: user.fullName,
         });
+        
+        const tSessionCreated = new Date().toISOString();
+        const tCompleted = new Date().toISOString();
 
-        const userJson = encodeURIComponent(
-          JSON.stringify(userWithoutPassword),
-        );
+        try {
+          const { ipAddress, device, location, sessionId } = getReqInfo(req, jti);
+          const { actorId, actorRole } = await getActorInfo(req);
+          await storage.createAuditLog({
+            actorId, actorRole,
+            action: 'USER_LOGIN_GOOGLE', status: 'success',
+            entityType: 'user', entityId: user.id, 
+            ipAddress, device, location, sessionId,
+            metadata: { 
+              method: 'Google OAuth', reason: 'Login successful',
+              timeline: { 
+                requestReceivedAt: tRequestReceived, 
+                credentialsVerifiedAt: tProviderVerified, 
+                sessionCreatedAt: tSessionCreated, 
+                completedAt: tCompleted 
+              } 
+            }
+          });
+        } catch (e) {}
+
+        const userJson = encodeURIComponent(JSON.stringify(userWithoutPassword));
         res.cookie("token", token, cookieOptions);
-        res.redirect(
-          `/auth/callback?status=ok&token=${token}&user=${userJson}`,
-        );
-      },
-    );
+        res.redirect(`/auth/callback?status=ok&token=${token}&user=${userJson}`);
+      })(req, res, next);
+    });
   } else {
-    app.get("/api/auth/google", (_req: Request, res: Response) => {
+    const tRequestReceived = new Date().toISOString();
+
+    app.get("/api/auth/google", async (_req: Request, res: Response) => {
+
+      const tFailed = new Date().toISOString();
+
+      try {
+        const { ipAddress, device, location } = getReqInfo(_req);
+        const { actorId, actorRole } = await getActorInfo(_req);
+        storage.createAuditLog({
+          actorId, actorRole,
+          action: 'USER_GOOGLE', status: 'failed',
+          entityType: 'system', entityId: 'N/A',
+          ipAddress, device, location, sessionId: 'N/A',
+          metadata: { 
+            method: 'Google OAuth', reason: 'Google OAuth not configured',
+            timeline: { 
+              requestReceivedAt: tRequestReceived,
+              completedAt: tFailed
+             }
+          }
+        });
+      } catch (e) {}
       res
         .status(503)
         .json({ error: "Google OAuth is not configured on the server." });
     });
-    app.get("/api/auth/google/callback", (_req: Request, res: Response) => {
+    app.get("/api/auth/google/callback", async (_req: Request, res: Response) => {
+
+      const tFailed = new Date().toISOString();
+
+      try {
+        const { ipAddress, device, location } = getReqInfo(_req);
+        const { actorId, actorRole } = await getActorInfo(_req);
+        storage.createAuditLog({
+        actorId, actorRole,
+        action: 'USER_GOOGLE', status: 'failed',
+        entityType: 'system', entityId: 'N/A',
+        ipAddress, device, location, sessionId: 'N/A',
+        metadata: { 
+          method: 'Google OAuth Callback', reason: 'Google OAuth not configured server-side',
+          timeline: {
+            requestReceivedAt: tRequestReceived,
+            completedAt: tFailed
+          }
+        }
+      });
+      } catch (e) {}
       res
         .status(503)
         .json({ error: "Google OAuth is not configured on the server." });
@@ -1115,6 +1841,9 @@ export async function registerRoutes(
   );
 
   app.post("/api/registration/session", async (req: Request, res: Response) => {
+
+    const tRequestReceived = new Date().toISOString();
+
     try {
       const { email } = req.body;
 
@@ -1127,19 +1856,86 @@ export async function registerRoutes(
       const clientIp = req.ip || req.socket.remoteAddress || "unknown";
 
       if (!checkSessionCreationLimit(clientIp)) {
+
+        const tFailed = new Date().toISOString();
+
+        try {
+          const { ipAddress, device, location } = getReqInfo(req);
+          const { actorId, actorRole } = await getActorInfo(req);
+          await storage.createAuditLog({
+            actorId, actorRole,
+            action: 'REGISTRATION_SESSION', status: 'failed',
+            entityType: 'system', entityId: 'N/A', 
+            ipAddress, device, location, sessionId: 'N/A',
+            metadata: { 
+              providedEmail: email, reason: 'Rate limit exceeded', 
+              timeline: { 
+                requestReceivedAt: tRequestReceived, 
+                completedAt: tFailed 
+              } 
+            }
+          });
+        } catch (e) {}
         return res.status(429).json({
           error: "Too many registration attempts from this device. Please wait 1 hour before trying again.",
         });
       }
 
+      const tLimitationchekedAt = new Date().toISOString();
+
       const existingUser = await storage.getUserByEmail(email);
+
       if (existingUser) {
+        const tFailed = new Date().toISOString();
+
+        try {
+          const { ipAddress, device, location } = getReqInfo(req);
+          const { actorId, actorRole } = await getActorInfo(req);
+          await storage.createAuditLog({
+            actorId, actorRole,
+            action: 'REGISTRATION_SESSION', status: 'failed',
+            entityType: 'user', entityId: existingUser.id,
+            ipAddress, device, location, sessionId: 'N/A',
+            metadata: {
+              providedEmail: email, reason: 'Email already registered',
+              timeline: {
+                requestReceivedAt: tRequestReceived,
+                limitationchekedAt: tLimitationchekedAt,
+                userCheckedAt: tFailed,
+                completedAt: tFailed
+              }
+            }
+          });
+        } catch (e) {}
         return res.status(400).json({
           error: "This email is already registered. Please login instead.",
         });
       }
 
+      const tUserChecked = new Date().toISOString();
+
       const token = createRegistrationSession(email);
+
+      const tCompleted = new Date().toISOString();
+
+      try {
+        const { ipAddress, device, location } = getReqInfo(req);
+        const { actorId, actorRole } = await getActorInfo(req);
+        await storage.createAuditLog({
+          actorId, actorRole,
+          action: 'REGISTRATION_SESSION', status: 'success',
+          entityType: 'system', entityId: 'N/A', 
+          ipAddress, device, location, sessionId: `SES-${token.substring(0, 5).toUpperCase()}`,
+          metadata: { providedEmail: email, reason: 'Registration session created successfully',
+            timeline: { 
+              requestReceivedAt: tRequestReceived, 
+              userCheckedAt: tUserChecked,
+              completedAt: tCompleted 
+            } 
+          }
+        });
+      } catch (e) {}
+
       res.json({ token, email });
     } catch (error) {
       res.status(500).json({ error: "Failed to create registration session" });
@@ -1282,10 +2078,50 @@ export async function registerRoutes(
     authMiddleware,
     roleMiddleware(UserRole.ADMIN),
     async (req: Request, res: Response) => {
+      const tRequestReceived = new Date().toISOString();
       try {
         const blog = await storage.createBlog(req.body);
+        try {
+          const tCompleted = new Date().toISOString();
+          const { ipAddress, device, location, sessionId } = getReqInfo(req);
+          const { actorId, actorRole } = await getActorInfo(req);
+          await storage.createAuditLog({
+            actorId, actorRole,
+            action: 'CREATE_BLOG', status: 'success',
+            entityType: 'blog', entityId: blog.id,
+            ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: {
+              auditType: 'BLOGS',
+              method: 'Create Blog',
+              timeline: {
+                requestReceivedAt: tRequestReceived,
+                completedAt: tCompleted
+              }
+            }
+          });
+        } catch (e) {}
         res.status(201).json(blog);
       } catch (error) {
+        const tFailed = new Date().toISOString();
+        try {
+          const { ipAddress, device, location, sessionId } = getReqInfo(req);
+          const { actorId, actorRole } = await getActorInfo(req);
+          await storage.createAuditLog({
+            actorId, actorRole,
+            action: 'CREATE_BLOG', status: 'failed',
+            entityType: 'system', entityId: 'N/A',
+            ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: {
+              auditType: 'BLOGS',
+              method: 'Create Blog',
+              reason: 'Server error (500)',
+              timeline: {
+                requestReceivedAt: tRequestReceived,
+                completedAt: tFailed
+              }
+            }
+          });
+        } catch (e) {}
         res.status(500).json({ error: "Failed to create blog" });
       }
     },
@@ -1315,10 +2151,51 @@ export async function registerRoutes(
     authMiddleware,
     roleMiddleware(UserRole.ADMIN),
     async (req: Request, res: Response) => {
+      const tRequestReceived = new Date().toISOString();
       try {
         await storage.deleteBlog(req.params.id);
+        try {
+          const tCompleted = new Date().toISOString();
+          const { ipAddress, device, location, sessionId } = getReqInfo(req);
+          const { actorId, actorRole } = await getActorInfo(req);
+          await storage.createAuditLog({
+            actorId, actorRole,
+            action: 'DELETE_BLOG', status: 'success',
+            entityType: 'blog', entityId: req.params.id,
+            ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: {
+              auditType: 'BLOGS',
+              method: 'Delete Blog',
+              timeline: {
+                requestReceivedAt: tRequestReceived,
+                completedAt: tCompleted
+              }
+            }
+          });
+        } catch (e) {}
+
         res.json({ success: true });
       } catch (error) {
+        const tFailed = new Date().toISOString();
+        try {
+          const { ipAddress, device, location, sessionId } = getReqInfo(req);
+          const { actorId, actorRole } = await getActorInfo(req);
+          await storage.createAuditLog({
+            actorId, actorRole,
+            action: 'DELETE_BLOG', status: 'failed',
+            entityType: 'system', entityId: 'N/A',
+            ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: {
+              auditType: 'BLOGS',
+              method: 'Delete Blog',
+              reason: 'Server error (500)',
+              timeline: {
+                requestReceivedAt: tRequestReceived,
+                completedAt: tFailed
+              }
+            }
+          });
+        } catch (e) {}
         res.status(500).json({ error: "Failed to delete blog" });
       }
     },
@@ -1326,9 +2203,30 @@ export async function registerRoutes(
 
   // ================== BLOG SUBMISSION ROUTES ==================
   app.post("/api/blog-submissions", async (req: Request, res: Response) => {
+    const tRequestReceived = new Date().toISOString();
     try {
       const { submittedByName, submittedByEmail, ...rest } = req.body;
       if (!submittedByName || !submittedByEmail) {
+        try {
+          const tFailed = new Date().toISOString();
+          const { ipAddress, device, location, sessionId } = getReqInfo(req);
+          const { actorId, actorRole } = await getActorInfo(req);
+          await storage.createAuditLog({
+            actorId, actorRole,
+            action: 'BLOG_SUBMISSION', status: 'failed',
+            entityType: 'system', entityId: 'N/A',
+            ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: {
+              auditType: 'BLOGS',
+              method: 'Submit Blog',
+              reason: 'Validation failed - Name and email required',
+              timeline: {
+                requestReceivedAt: tRequestReceived,
+                completedAt: tFailed
+              }
+            }
+          });
+        } catch (e) {}
         return res.status(400).json({ error: "Name and email are required" });
       }
       const submission = await storage.createBlogSubmission({
@@ -1337,8 +2235,49 @@ export async function registerRoutes(
         submittedByName,
         submittedByEmail,
       });
+      
+      try {
+        const tCompleted = new Date().toISOString();
+        const { ipAddress, device, location, sessionId } = getReqInfo(req);
+        const { actorId, actorRole } = await getActorInfo(req);
+        await storage.createAuditLog({
+          actorId, actorRole,
+          action: 'BLOG_SUBMISSION', status: 'success',
+          entityType: 'blog_submission', entityId: submission.id,
+          ipAddress, device, location, sessionId: sessionId || 'N/A',
+          metadata: {
+            auditType: 'BLOGS',
+            method: 'Submit Blog',
+            reason: 'Blog submission created successfully',
+            timeline: {
+              requestReceivedAt: tRequestReceived,
+              completedAt: tCompleted
+            }
+          }
+        });
+      } catch (e) {}
       res.status(201).json(submission);
     } catch (error) {
+      const tFailed = new Date().toISOString();
+      try {
+        const { ipAddress, device, location, sessionId } = getReqInfo(req);
+        const { actorId, actorRole } = await getActorInfo(req);
+        await storage.createAuditLog({
+          actorId, actorRole,
+          action: 'BLOG_SUBMISSION', status: 'failed',
+          entityType: 'system', entityId: 'N/A',
+          ipAddress, device, location, sessionId: sessionId || 'N/A',
+          metadata: {
+            auditType: 'BLOGS',
+            method: 'Submit Blog',
+            reason: 'Server error (500)',
+            timeline: {
+              requestReceivedAt: tRequestReceived,
+              completedAt: tFailed
+            }
+          }
+        });
+      } catch (e) {}
       res.status(500).json({ error: "Failed to submit blog" });
     }
   });
@@ -1378,12 +2317,76 @@ export async function registerRoutes(
     authMiddleware,
     roleMiddleware(UserRole.ADMIN),
     async (req: Request, res: Response) => {
+      const tRequestReceived = new Date().toISOString();
       try {
         const submission = await storage.approveBlogSubmission(req.params.id);
-        if (!submission)
+        if (!submission) {
+          try {
+            const tFailed = new Date().toISOString();
+            const { ipAddress, device, location, sessionId } = getReqInfo(req);
+            const { actorId, actorRole } = await getActorInfo(req);
+            await storage.createAuditLog({
+              actorId, actorRole,
+              action: 'APPROVE_BLOG_SUBMISSION', status: 'failed',
+              entityType: 'blog_submission', entityId: req.params.id,
+              ipAddress, device, location, sessionId: sessionId || 'N/A',
+              metadata: {
+                auditType: 'BLOGS',
+                method: 'Approve Blog Submission',
+                reason: 'Submission not found',
+                timeline: {
+                  requestReceivedAt: tRequestReceived,
+                  completedAt: tFailed
+                }
+              }
+            });
+          } catch (e) {}
           return res.status(404).json({ error: "Submission not found" });
+        }
+        
+        try {
+          const tCompleted = new Date().toISOString();
+          const { ipAddress, device, location, sessionId } = getReqInfo(req);
+          const { actorId, actorRole } = await getActorInfo(req);
+          await storage.createAuditLog({
+            actorId, actorRole,
+            action: 'APPROVE_BLOG_SUBMISSION', status: 'success',
+            entityType: 'blog_submission', entityId: submission.id,
+            ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: {
+              auditType: 'BLOGS',
+              method: 'Approve Blog Submission',
+              reason: 'Blog submission approved and published',
+              timeline: {
+                requestReceivedAt: tRequestReceived,
+                completedAt: tCompleted
+              }
+            }
+          });
+        } catch (e) {}
+
         res.json(submission);
       } catch (error) {
+        try {
+          const tFailed = new Date().toISOString();
+          const { ipAddress, device, location, sessionId } = getReqInfo(req);
+          const { actorId, actorRole } = await getActorInfo(req);
+          await storage.createAuditLog({
+            actorId, actorRole,
+            action: 'APPROVE_BLOG_SUBMISSION', status: 'failed',
+            entityType: 'system', entityId: 'N/A',
+            ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: {
+              auditType: 'BLOGS',
+              method: 'Approve Blog Submission',
+              reason: 'Server error (500)',
+              timeline: {
+                requestReceivedAt: tRequestReceived,
+                completedAt: tFailed
+              }
+            }
+          });
+        } catch (e) {}
         res.status(500).json({ error: "Failed to approve submission" });
       }
     },
@@ -1394,20 +2397,104 @@ export async function registerRoutes(
     authMiddleware,
     roleMiddleware(UserRole.ADMIN),
     async (req: Request, res: Response) => {
+      const tRequestReceived = new Date().toISOString();
       try {
         const { rejectionReason } = req.body;
-        if (!rejectionReason)
+        if (!rejectionReason) {
+          try {
+            const tFailed = new Date().toISOString();
+            const { ipAddress, device, location, sessionId } = getReqInfo(req);
+            const { actorId, actorRole } = await getActorInfo(req);
+            await storage.createAuditLog({
+              actorId, actorRole,
+              action: 'REJECT_BLOG_SUBMISSION', status: 'failed',
+              entityType: 'system', entityId: 'N/A',
+              ipAddress, device, location, sessionId: sessionId || 'N/A',
+              metadata: {
+                auditType: 'BLOGS',
+                method: 'Reject Blog Submission',
+                reason: 'Rejection reason is required',
+                timeline: {
+                  requestReceivedAt: tRequestReceived,
+                  completedAt: tFailed
+                }
+              }
+            });
+          } catch (e) {}
           return res
             .status(400)
             .json({ error: "Rejection reason is required" });
+        }
         const submission = await storage.rejectBlogSubmission(
           req.params.id,
           rejectionReason,
         );
-        if (!submission)
+        if (!submission) {
+          try {
+            const tFailed = new Date().toISOString();
+            const { ipAddress, device, location, sessionId } = getReqInfo(req);
+            const { actorId, actorRole } = await getActorInfo(req);
+            await storage.createAuditLog({
+              actorId, actorRole,
+              action: 'REJECT_BLOG_SUBMISSION', status: 'failed',
+              entityType: 'blog_submission', entityId: req.params.id,
+              ipAddress, device, location, sessionId: sessionId || 'N/A',
+              metadata: {
+                auditType: 'BLOGS',
+                method: 'Reject Blog Submission',
+                reason: 'Submission not found',
+                timeline: {
+                  requestReceivedAt: tRequestReceived,
+                  completedAt: tFailed
+                }
+              }
+            });
+          } catch (e) {}
           return res.status(404).json({ error: "Submission not found" });
+        }
+
+        try {
+          const tCompleted = new Date().toISOString();
+          const { ipAddress, device, location, sessionId } = getReqInfo(req);
+          const { actorId, actorRole } = await getActorInfo(req);
+          await storage.createAuditLog({
+            actorId, actorRole,
+            action: 'REJECT_BLOG_SUBMISSION', status: 'success',
+            entityType: 'blog_submission', entityId: submission.id,
+            ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: {
+              auditType: 'BLOGS',
+              method: 'Reject Blog Submission',
+              reason: 'Blog submission rejected',
+              timeline: {
+                requestReceivedAt: tRequestReceived,
+                completedAt: tCompleted
+              }
+            }
+          });
+        } catch (e) {}
         res.json(submission);
       } catch (error) {
+        try {
+          const tFailed = new Date().toISOString();
+          const { ipAddress, device, location, sessionId } = getReqInfo(req);
+          const { actorId, actorRole } = await getActorInfo(req);
+          await storage.createAuditLog({
+            actorId, actorRole,
+            action: 'REJECT_BLOG_SUBMISSION', status: 'failed',
+            entityType: 'system', entityId: 'N/A',
+            ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: {
+              auditType: 'BLOGS',
+              method: 'Reject Blog Submission',
+              reason: 'Server error (500)',
+              timeline: {
+                requestReceivedAt: tRequestReceived,
+                completedAt: tFailed
+              }
+            }
+          });
+        } catch (e) {}
         res.status(500).json({ error: "Failed to reject submission" });
       }
     },
@@ -1814,9 +2901,27 @@ export async function registerRoutes(
     authMiddleware,
     roleMiddleware(UserRole.DOCTOR),
     async (req: AuthenticatedRequest, res: Response) => {
+      const tRequestReceived = new Date().toISOString();
+      const { ipAddress, device, location, sessionId } = getReqInfo(req);
+      const { actorId, actorRole } = await getActorInfo(req);
+
       try {
         const profile = await storage.getDoctorProfileByUserId(req.user!.id);
         if (!profile) {
+          const tFailed = new Date().toISOString();
+          try {
+            await storage.createAuditLog({
+              actorId, actorRole,
+              action: 'SLOT_CREATED', status: 'failed',
+              entityType: 'appointment_slots', entityId: req.params.id,
+              ipAddress, device, location, sessionId: sessionId || 'N/A',
+              metadata: {
+                auditType: 'APPOINTMENT',
+                reason: 'Doctor profile not found',
+                timeline: { requestReceivedAt: tRequestReceived, completedAt: tFailed }
+              }
+            });
+          } catch (e) {}
           return res.status(404).json({ error: "Doctor profile not found" });
         }
 
@@ -1838,16 +2943,30 @@ export async function registerRoutes(
         );
 
         if (hasOverlap) {
+          const tFailed = new Date().toISOString();
+          try {
+            await storage.createAuditLog({
+              actorId, actorRole,
+              action: 'SLOT_CREATED', status: 'failed',
+              entityType: 'appointment_slots', entityId: 'N/A',
+              ipAddress, device, location, sessionId: sessionId || 'N/A',
+              metadata: {
+                auditType: 'APPOINTMENT',
+                date: data.date,
+                time: `${data.startTime} - ${data.endTime}`,
+                type: data.consultationType,
+                reason: 'Overlapping slot exists',
+                timeline: { requestReceivedAt: tRequestReceived, completedAt: tFailed }
+              }
+            });
+          } catch (e) {}
           return res.status(400).json({ error: "A slot already exists during this time period on the selected date." });
         }
 
-        // 🟢 අලුතෙන් ADD කරපු කෑල්ල (Online නම් විතරක් Google Meet Link එක හදනවා)
         let meetLink: string | undefined = undefined;
         if (data.consultationType === "online") {
-          // ලංකාවේ Timezone එකට අදාලව ISO Date string එකක් හදාගන්නවා
           const startDateTime = new Date(`${data.date}T${data.startTime}:00+05:30`).toISOString();
           
-          // Slot එක හදද්දී patient කෙනෙක් නැති නිසා null යවනවා
           const meetData = await createGoogleMeetEvent(req.user!.email, null, startDateTime);
           
           if (meetData && meetData.meetingLink) {
@@ -1855,13 +2974,58 @@ export async function registerRoutes(
           }
         }
 
-        // meetLink එකත් එක්කම DB එකට save කරනවා
         const slot = await storage.createAppointmentSlot({ ...data, meetLink });
+
+        const tCompleted = new Date().toISOString();
+        try {
+          await storage.createAuditLog({
+            actorId, actorRole,
+            action: 'SLOT_CREATED', status: 'success',
+            entityType: 'appointment_slots', entityId: req.params.id,
+            ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: {
+              auditType: 'APPOINTMENT',
+              date: data.date,
+              time: `${data.startTime} - ${data.endTime}`,
+              type: data.consultationType,
+              hasGoogleMeet: !!meetLink,
+              timeline: { requestReceivedAt: tRequestReceived, completedAt: tCompleted }
+            }
+          });
+        } catch (e) {}
         res.status(201).json(slot);
       } catch (error) {
+        const tFailed = new Date().toISOString();
         if (error instanceof z.ZodError) {
+          try {
+            await storage.createAuditLog({
+              actorId, actorRole,
+              action: 'SLOT_CREATED', status: 'failed',
+              entityType: 'appointment_slots', entityId: req.params.id,
+              ipAddress, device, location, sessionId: sessionId || 'N/A',
+              metadata: {
+                auditType: 'APPOINTMENT',
+                reason: 'Validation failed',
+                details: error.errors,
+                timeline: { requestReceivedAt: tRequestReceived, completedAt: tFailed }
+              }
+            });
+          } catch (e) {}
           return res.status(400).json({ error: error.errors });
         }
+        try {
+          await storage.createAuditLog({
+            actorId, actorRole,
+            action: 'SLOT_CREATED', status: 'failed',
+            entityType: 'system', entityId: 'N/A',
+            ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: {
+              auditType: 'APPOINTMENT',
+              reason: 'Server error (500)',
+              timeline: { requestReceivedAt: tRequestReceived, completedAt: tFailed }
+            }
+          });
+        } catch (e) {}
         res.status(500).json({ error: "Failed to create slot" });
       }
     },
@@ -2385,6 +3549,9 @@ export async function registerRoutes(
     "/api/payments/:id/fail",
     authMiddleware,
     async (req: AuthenticatedRequest, res: Response) => {
+      const tRequestReceived = new Date().toISOString();
+      const { ipAddress, device, location, sessionId } = getReqInfo(req);
+      const { actorId, actorRole } = await getActorInfo(req);
       try {
         const { lastFourDigits } = req.body;
 
@@ -2432,8 +3599,40 @@ export async function registerRoutes(
           ),
         );
 
+        const tCompleted = new Date().toISOString();
+        try {
+          await storage.createAuditLog({
+            actorId, actorRole,
+            action: 'PAYMENT_MARKED_FAILED', status: 'success',
+            entityType: 'payment', entityId: payment.id,
+            ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: {
+              auditType: 'PAYMENT',
+              amount: payment.totalAmount,
+              lastFourDigits: last4,
+              patientId: payment.patientId,
+              reason: 'Payment manually marked as failed.',
+              timeline: { requestReceivedAt: tRequestReceived, completedAt: tCompleted }
+            }
+          });
+        } catch (e) {}
+
         res.json(updated);
       } catch (error) {
+        const tFailed = new Date().toISOString();
+        try {
+          await storage.createAuditLog({
+            actorId, actorRole,
+            action: 'PAYMENT_MARKED_FAILED', status: 'error',
+            entityType: 'payment', entityId: req.params.id,
+            ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: {
+              auditType: 'PAYMENT',
+              reason: 'Internal Server Error (500)',
+              timeline: { requestReceivedAt: tRequestReceived, failedAt: tFailed }
+            }
+          });
+        } catch (e) {}
         res.status(500).json({ error: "Failed to update payment status" });
       }
     },
@@ -2538,9 +3737,24 @@ export async function registerRoutes(
     authMiddleware,
     roleMiddleware(UserRole.DOCTOR),
     async (req: AuthenticatedRequest, res: Response) => {
+      const tRequestReceived = new Date().toISOString();
+      const { ipAddress, device, location, sessionId } = getReqInfo(req);
+      const { actorId, actorRole } = await getActorInfo(req);
       try {
         const profile = await storage.getDoctorProfileByUserId(req.user!.id);
         if (!profile) {
+          await storage.createAuditLog({
+            actorId, actorRole,
+            action: 'DOCTOR_SETTLE_EARNINGS', status: 'error',
+            entityType: 'doctor', entityId: req.user!.id,
+            ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: {
+              method: 'Money deducted from doctor for cancellation charges',
+              reason: "Doctor profile not found",
+              auditType: 'PAYMENT',
+              timeline: { requestReceivedAt: tRequestReceived, failedAt: new Date().toISOString() }
+            }
+          });
           return res.status(404).json({ error: "Doctor profile not found" });
         }
 
@@ -2550,8 +3764,39 @@ export async function registerRoutes(
         }
 
         await storage.settleDoctorCharges(profile.id);
+
+        const tCompleted = new Date().toISOString();
+        try {
+          await storage.createAuditLog({
+            actorId, actorRole,
+            action: 'EARNINGS_SETTLED', status: 'success',
+            entityType: 'doctor_profile', entityId: profile.id,
+            ipAddress, device, location, sessionId: 'N/A',
+            metadata: {
+              auditType: 'PAYMENT',
+              settledAmount: unsettled.totalOwed,
+              reason: 'Doctor settled their outstanding cancellation charges with the platform.',
+              timeline: { requestReceivedAt: tRequestReceived, completedAt: tCompleted }
+            }
+          });
+        } catch (e) {}
+        
         res.json({ settled: true, amountDeducted: unsettled.totalOwed });
       } catch (error) {
+        const tFailed = new Date().toISOString();
+        try {
+          await storage.createAuditLog({
+            actorId, actorRole,
+            action: 'EARNINGS_SETTLEMENT_FAILED', status: 'error',
+            entityType: 'doctor_profile', entityId: req.user!.id,
+            ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: {
+              auditType: 'PAYMENT',
+              reason: 'Internal Server Error (500) during settlement of doctor charges.',
+              timeline: { requestReceivedAt: tRequestReceived, failedAt: tFailed }
+            }
+          });
+        } catch (e) {}
         res.status(500).json({ error: "Failed to settle charges" });
       }
     },
@@ -3267,15 +4512,48 @@ export async function registerRoutes(
     authMiddleware,
     roleMiddleware(UserRole.ADMIN),
     async (req: Request, res: Response) => {
+      const tRequestReceived = new Date().toISOString();
+      const { ipAddress, device, location, sessionId } = getReqInfo(req);
+      const { actorId, actorRole } = await getActorInfo(req);
       try {
         const { refundAmount, refundReason } = req.body;
         
         const payment = await storage.getPayment(req.params.id);
         if (!payment) {
+          const tFailed = new Date().toISOString();
+          try {
+            await storage.createAuditLog({
+              actorId, actorRole,
+              action: 'PAYMENT_REFUND_ATTEMPT', status: 'error',
+              entityType: 'payment', entityId: req.params.id,
+              ipAddress, device, location, sessionId: sessionId || 'N/A',
+              metadata: {
+                auditType: 'PAYMENT',
+                reason: 'Payment not found',
+                timeline: { requestReceivedAt: tRequestReceived, failedAt: tFailed }
+              }
+            });
+          } catch (e) {}
           return res.status(404).json({ error: "Payment not found" });
         }
 
         if (refundAmount !== undefined && refundAmount > payment.totalAmount) {
+          const tFailed = new Date().toISOString();
+          try {
+            await storage.createAuditLog({
+              actorId, actorRole,
+              action: 'PAYMENT_REFUND_ATTEMPT', status: 'error',
+              entityType: 'payment', entityId: req.params.id,
+              ipAddress, device, location, sessionId: sessionId || 'N/A',
+              metadata: {
+                auditType: 'PAYMENT',
+                reason: 'Refund amount exceeds original payment',
+                originalAmount: payment.totalAmount,
+                attemptedRefundAmount: refundAmount,
+                timeline: { requestReceivedAt: tRequestReceived, failedAt: tFailed }
+              }
+            });
+          } catch (e) {}
           return res.status(400).json({ error: "Refund amount cannot exceed the original payment amount" });
         }
 
@@ -3285,8 +4563,40 @@ export async function registerRoutes(
           refundReason,
           refundDate: new Date().toISOString().split("T")[0],
         });
+
+        const tCompleted = new Date().toISOString();
+        try {
+          await storage.createAuditLog({
+            actorId, actorRole,
+            action: 'PAYMENT_REFUNDED', status: 'success',
+            entityType: 'payment', entityId: payment.id,
+            ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: {
+              auditType: 'PAYMENT',
+              originalAmount: payment.totalAmount,
+              refundedAmount: refundAmount,
+              reason: refundReason || 'No reason provided',
+              patientId: payment.patientId,
+              timeline: { requestReceivedAt: tRequestReceived, completedAt: tCompleted }
+            }
+          });
+        } catch (e) {}
         res.json(updatedPayment);
       } catch (error) {
+        const tFailed = new Date().toISOString();
+        try {
+          await storage.createAuditLog({
+            actorId, actorRole,
+            action: 'PAYMENT_REFUND_ATTEMPT', status: 'error',
+            entityType: 'payment', entityId: req.params.id,
+            ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: {
+              auditType: 'PAYMENT',
+              reason: error instanceof Error ? error.message : 'Unknown error',
+              timeline: { requestReceivedAt: tRequestReceived, failedAt: tFailed }
+            }
+          });
+        } catch (e) {}
         res.status(500).json({ error: "Failed to refund payment" });
       }
     },
@@ -3778,16 +5088,65 @@ export async function registerRoutes(
     uploadLimiter,
     upload.single("cv"),
     async (req: RequestWithFile, res: Response) => {
+
+      const tRequestReceived = new Date().toISOString();
+      
       try {
         if (!req.file) {
+          const tFailed = new Date().toISOString();
+          try {
+            const { ipAddress, device, location, sessionId } = getReqInfo(req);
+            const { actorId, actorRole } = await getActorInfo(req);
+            const auditLogData = {
+              actorId, actorRole, 
+              action: 'JOB_APPLICATION', status: 'failure',
+              entityType: 'job_applications', entityId: req.body?.jobId || 'N/A',
+              ipAddress, device, location, sessionId: sessionId || 'N/A',
+              metadata: { 
+                auditType: 'CAREER', 
+                reason: 'CV file missing', 
+                timeline: { 
+                  requestReceivedAt: tRequestReceived,
+                  fileMissingAt: tFailed,
+                  completedAt: tFailed
+                } 
+              }
+            };
+            await storage.createAuditLog(auditLogData);
+          } catch (e) { }
           return res.status(400).json({ error: "CV file is required" });
         }
-        // Cloudinary එකෙන් එන URL එක
+
+        const cvFileSuccessAt = new Date().toISOString();
         const cvUrl = req.file.path;
         const { jobId, jobTitle, fullName, email } = req.body;
         if (!jobId || !jobTitle || !fullName || !email) {
+          try {
+            const tFailed = new Date().toISOString();
+            const { ipAddress, device, location, sessionId } = getReqInfo(req);
+            const { actorId, actorRole } = await getActorInfo(req);
+            const auditLogData = {
+              actorId, actorRole,
+              action: 'JOB_APPLICATION', status: 'failure',
+              entityType: 'career', entityId: req.body?.jobId || 'N/A',
+              ipAddress, device, location, sessionId: sessionId || 'N/A',
+              metadata: {
+                auditType: 'CAREER',
+                reason: 'Missing required fields',
+                timeline: {
+                  requestReceivedAt: tRequestReceived,
+                  fileMissingAt: cvFileSuccessAt,
+                  fieldsMissingAt: tFailed,
+                  completedAt: tFailed
+                }
+              }
+            };
+            await storage.createAuditLog(auditLogData);
+          } catch (e) { }
           return res.status(400).json({ error: "Missing required fields" });
         }
+
+        const fieldValidationAt = new Date().toISOString();
         const applicationData = {
           jobId,
           jobTitle,
@@ -3795,11 +5154,62 @@ export async function registerRoutes(
           email,
           cvUrl,
         };
-        const savedApplication =
-          await storage.createJobApplication(applicationData);
+        const savedApplication = await storage.createJobApplication(applicationData);
+        
+        const tCompleted = new Date().toISOString();
+
+        try {
+          const { ipAddress, device, location, sessionId } = getReqInfo(req);
+          const { actorId, actorRole } = await getActorInfo(req);
+          const auditLogData = {
+            actorId, 
+            actorRole, 
+            action: 'JOB_APPLICATION', 
+            status: 'success',
+            entityType: 'career', 
+            entityId: savedApplication.id, 
+            ipAddress, 
+            device, 
+            location, 
+            sessionId: sessionId || 'N/A',
+            metadata: { 
+              auditType: 'CAREER', 
+              applicantEmail: email, 
+              jobTitle: jobTitle,
+              timeline: { 
+                requestReceivedAt: tRequestReceived, 
+                fileMissingAt: cvFileSuccessAt,
+                fieldsMissingAt: fieldValidationAt,
+                completedAt: tCompleted 
+              } 
+            }
+          };
+            await storage.createAuditLog(auditLogData);
+        } catch (e) {
+          console.error("Audit log failed:", e);
+        }
+
         res.status(201).json(savedApplication);
       } catch (error) {
-        console.error("Career application error:", error);
+        try {
+          const { ipAddress, device, location } = getReqInfo(req);
+          const { actorId, actorRole } = await getActorInfo(req);
+          const tFailed = new Date().toISOString();
+          await storage.createAuditLog({
+            actorId, actorRole, 
+            action: 'JOB_APPLICATION', status: 'failed',
+            entityType: 'system', entityId: 'N/A', 
+            ipAddress, device, location, sessionId: 'N/A',
+            metadata: { 
+              auditType: 'CAREER', 
+              reason: 'Internal Server Error (500)',
+              timeline: {
+                requestReceivedAt: tRequestReceived,
+                completedAt: tFailed,
+              }
+            }
+          });
+        } catch (e) {}
         res
           .status(500)
           .json({ error: "Failed to submit application. Please try again." });
@@ -3865,17 +5275,79 @@ export async function registerRoutes(
     authMiddleware,
     roleMiddleware(UserRole.ADMIN),
     async (req: Request, res: Response) => {
+
+      const tRequestReceived = new Date().toISOString();
       try {
         const data = insertCareerSchema.parse(req.body);
         const newCareer = await storage.createCareer(data);
 
-        console.log("Career Saved:", newCareer.careerTitle);
+        const tCompleted = new Date().toISOString();
+        try {
+          const { ipAddress, device, location, sessionId } = getReqInfo(req);
+          const { actorId, actorRole } = await getActorInfo(req);
+          const auditLogData = {
+            actorId, actorRole,
+            action: 'CREATE_CAREER', status: 'success',
+            entityType: 'career', entityId: newCareer.id,
+            ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: {
+              auditType: 'CAREER',
+              reason: 'Created new career.',
+              timeline: {
+                requestReceivedAt: tRequestReceived,
+                completedAt: tCompleted
+              }
+            }
+          };
+          await storage.createAuditLog(auditLogData);
+        } catch (e) { }
         res.status(201).json(newCareer);
       } catch (error) {
-        console.error("Create career error:", error);
         if (error instanceof z.ZodError) {
+          try {
+            const { ipAddress, device, location } = getReqInfo(req);
+            const { actorId, actorRole } = await getActorInfo(req);
+            const tFailed = new Date().toISOString();
+            const auditLogData = {
+              actorId, actorRole,
+              action: 'CREATE_CAREER', status: 'failure',
+              entityType: 'career', entityId: 'N/A',
+              ipAddress, device, location, sessionId: 'N/A',
+              metadata: {
+                auditType: 'CAREER',
+                reason: 'Validation failed when creating career.',
+                timeline: {
+                  requestReceivedAt: tRequestReceived,
+                  validationFailedAt: tFailed,
+                  completedAt: tFailed,
+                }
+              }
+            };
+            await storage.createAuditLog(auditLogData);
+          } catch (e) {}
           return res.status(400).json({ error: error.errors });
         }
+
+        try {
+          const { ipAddress, device, location } = getReqInfo(req);
+          const { actorId, actorRole } = await getActorInfo(req);
+          const tFailed = new Date().toISOString();
+          const auditLogData = {
+            actorId, actorRole,
+            action: 'CREATE_CAREER', status: 'failed',
+            entityType: 'system', entityId: 'N/A',
+            ipAddress, device, location, sessionId: 'N/A',
+            metadata: {
+              auditType: 'CAREER',
+              reason: 'Internal Server Error (500) when creating career.',
+              timeline: {
+                requestReceivedAt: tRequestReceived,
+                completedAt: tFailed,
+              }
+            }
+          };
+          await storage.createAuditLog(auditLogData);
+        } catch (e) {}
         res.status(500).json({ error: "Failed to create new career" });
       }
     },
@@ -3887,18 +5359,81 @@ export async function registerRoutes(
     authMiddleware,
     roleMiddleware(UserRole.ADMIN),
     async (req: Request, res: Response) => {
+      const tRequestReceived = new Date().toISOString();
       try {
         const careerId = req.params.id;
         const data = insertCareerSchema.partial().parse(req.body);
         const updatedCareer = await storage.updateCareer(careerId, data);
 
         if (!updatedCareer) {
+          const tFailed = new Date().toISOString();
+          try {
+            const { ipAddress, device, location, sessionId } = getReqInfo(req);
+            const { actorId, actorRole } = await getActorInfo(req);
+            const auditLogData = {
+              actorId, actorRole,
+              action: 'CAREER_UPDATE', status: 'failure',
+              entityType: 'career', entityId: careerId,
+              ipAddress, device, location, sessionId: sessionId || 'N/A',
+              metadata: {
+                auditType: 'CAREER',
+                reason: 'Career not found for update.',
+                timeline: {
+                  requestReceivedAt: tRequestReceived,
+                  careerNotFoundAt: tFailed,
+                  completedAt: tFailed,
+                }
+              }
+            };
+            await storage.createAuditLog(auditLogData);
+          } catch (e) {}
           return res.status(404).json({ error: "Career not found" });
         }
 
+        const tValidationSuccess = new Date().toISOString();
+        const tCompleted = new Date().toISOString();
+        try {
+          const { ipAddress, device, location, sessionId } = getReqInfo(req);
+          const { actorId, actorRole } = await getActorInfo(req);
+          const auditLogData = {
+            actorId, actorRole,
+            action: 'CAREER_UPDATE', status: 'success',
+            entityType: 'career', entityId: careerId,
+            ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: {
+              auditType: 'CAREER',
+              reason: 'Career updated successfully.',
+              timeline: {
+                requestReceivedAt: tRequestReceived,
+                validationSuccessAt: tValidationSuccess,
+                completedAt: tCompleted,
+              }
+            }
+          };
+          await storage.createAuditLog(auditLogData);
+        } catch (e) {}
         res.json(updatedCareer);
       } catch (error) {
-        console.error("Update career error:", error);
+        try {
+          const { ipAddress, device, location, sessionId } = getReqInfo(req);
+          const { actorId, actorRole } = await getActorInfo(req);
+          const tFailed = new Date().toISOString();
+          const auditLogData = {
+            actorId, actorRole,
+            action: 'CAREER_UPDATE', status: 'failed',
+            entityType: 'system', entityId: 'N/A',
+            ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: {
+              auditType: 'CAREER',
+              reason: 'Internal Server Error (500) when updating career.',
+              timeline: {
+                requestReceivedAt: tRequestReceived,
+                completedAt: tFailed,
+              }
+            }
+          };
+          await storage.createAuditLog(auditLogData);
+        } catch (e) {}
         res.status(500).json({ error: "Failed to update career" });
       }
     },
@@ -3910,6 +5445,7 @@ export async function registerRoutes(
     authMiddleware,
     roleMiddleware(UserRole.ADMIN),
     async (req: Request, res: Response) => {
+      const tRequestReceived = new Date().toISOString();
       try {
         const careerId = req.params.id;
 
@@ -3918,12 +5454,76 @@ export async function registerRoutes(
         });
 
         if (!updatedCareer) {
+          const tFailed = new Date().toISOString();
+          try {
+            const { ipAddress, device, location, sessionId } = getReqInfo(req);
+            const { actorId, actorRole } = await getActorInfo(req);
+            const auditLogData = {
+              actorId, actorRole,
+              action: 'CAREER_DEACTIVATE', status: 'failure',
+              entityType: 'career', entityId: careerId,
+              ipAddress, device, location, sessionId: sessionId || 'N/A',
+              metadata: {
+                auditType: 'CAREER',
+                reason: 'Career not found for deactivation.',
+                timeline: {
+                  requestReceivedAt: tRequestReceived,
+                  careerNotFoundAt: tFailed,
+                  completedAt: tFailed,
+                }
+              }
+            };
+            await storage.createAuditLog(auditLogData);
+          } catch (e) {}
           return res.status(404).json({ error: "Career not found" });
         }
 
+        const tDeactivationSuccess = new Date().toISOString();
+        const tCompleted = new Date().toISOString();
+
+        try {
+          const { ipAddress, device, location, sessionId } = getReqInfo(req);
+          const { actorId, actorRole } = await getActorInfo(req);
+          const auditLogData = {
+            actorId, actorRole,
+            action: 'CAREER_DEACTIVATE', status: 'success',
+            entityType: 'career', entityId: careerId,
+            ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: {
+              auditType: 'CAREER',
+              reason: 'Career deactivated successfully.',
+              timeline: {
+                requestReceivedAt: tRequestReceived,
+                deactivationSuccessAt: tDeactivationSuccess,
+                completedAt: tCompleted,
+              }
+            }
+          };
+          await storage.createAuditLog(auditLogData);
+        } catch (e) {}
+
         res.json({ message: "Career deactivated successfully" });
       } catch (error) {
-        console.error("Deactivate career error:", error);
+        try {
+          const { ipAddress, device, location, sessionId } = getReqInfo(req);
+          const { actorId, actorRole } = await getActorInfo(req);
+          const tFailed = new Date().toISOString();
+          const auditLogData = {
+            actorId, actorRole,
+            action: 'CAREER_DEACTIVATE', status: 'failed',
+            entityType: 'system', entityId: 'N/A',
+            ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: {
+              auditType: 'CAREER',
+              reason: 'Internal Server Error (500) when deactivating career.',
+              timeline: {
+                requestReceivedAt: tRequestReceived,
+                completedAt: tFailed,
+              }
+            }
+          };
+          await storage.createAuditLog(auditLogData);
+        } catch (e) {}
         res.status(500).json({ error: "Failed to deactivate career" });
       }
     },
@@ -3935,25 +5535,69 @@ export async function registerRoutes(
     authMiddleware,
     roleMiddleware(UserRole.ADMIN),
     async (req: Request, res: Response) => {
+      const tRequestReceived = new Date().toISOString();
       try {
         const { status, message } = req.body;
         const applicationId = req.params.id;
 
         if (!status || !["ACCEPTED", "REJECTED"].includes(status)) {
+          try {
+            const { ipAddress, device, location, sessionId } = getReqInfo(req);
+            const { actorId, actorRole } = await getActorInfo(req);
+            const tFailed = new Date().toISOString();
+            const auditLogData = {
+              actorId, actorRole,
+              action: 'APPLICATION_STATUS_UPDATE', status: 'failure',
+              entityType: 'career_application', entityId: applicationId,
+              ipAddress, device, location, sessionId: sessionId || 'N/A',
+              metadata: {
+                auditType: 'CAREER',
+                reason: 'Invalid status provided for application update.',
+                timeline: {
+                  requestReceivedAt: tRequestReceived,
+                  validationFailedAt: tFailed,
+                  completedAt: tFailed,
+                }
+              }
+            };
+            await storage.createAuditLog(auditLogData);
+          } catch (e) {}
           return res.status(400).json({ error: "Invalid status" });
         }
 
-        // 1. Database Status Update
         const updatedApplication = await storage.updateApplicationStatus(
           applicationId,
           status,
         );
 
+        const tValidationSuccessAt = new Date().toISOString();
+
         if (!updatedApplication) {
+          try {
+            const { ipAddress, device, location, sessionId } = getReqInfo(req);
+            const { actorId, actorRole } = await getActorInfo(req);
+            const tFailed = new Date().toISOString();
+            const auditLogData = {
+              actorId, actorRole,
+              action: 'APPLICATION_STATUS_UPDATE', status: 'failure',
+              entityType: 'career_application', entityId: applicationId,
+              ipAddress, device, location, sessionId: sessionId || 'N/A',
+              metadata: {
+                auditType: 'CAREER',
+                reason: 'Application not found for status update.',
+                timeline: {
+                  requestReceivedAt: tRequestReceived,
+                  validationSuccessAt: tValidationSuccessAt,
+                  applicationNotFoundAt: tFailed,
+                  completedAt: tFailed,
+                }
+              }
+            };
+            await storage.createAuditLog(auditLogData);
+          } catch (e) {}
           return res.status(404).json({ error: "Application not found" });
         }
 
-        // 2. Email send (මෙතන තමයි අපි Result එක අල්ලගන්නේ)
         const emailResult = await sendApplicationEmail(
           updatedApplication.email,
           updatedApplication.fullName,
@@ -3962,7 +5606,30 @@ export async function registerRoutes(
           message || "No additional comments provided.",
         );
 
-        // 🟢 Frontend එකට emailSuccess එකයි emailError එකයි යවනවා
+        const tEmailSentAt = new Date().toISOString();
+        try {
+          const { ipAddress, device, location, sessionId } = getReqInfo(req);
+          const { actorId, actorRole } = await getActorInfo(req);
+          const auditLogData = {
+            actorId, actorRole,
+            action: 'APPLICATION_STATUS_UPDATE',
+            status: emailResult.success ? 'success' : 'failure',
+            entityType: 'career_application',
+            entityId: applicationId,
+            ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: {
+              auditType: 'CAREER',
+              reason: emailResult.success ? 'Application status updated and email sent successfully.' : `Application status updated but failed to send email: ${emailResult.error}`,
+              timeline: {
+                requestReceivedAt: tRequestReceived,
+                validationSuccessAt: tValidationSuccessAt,
+                emailSentAt: tEmailSentAt,
+                completedAt: tEmailSentAt,
+              }
+            }
+          };
+          await storage.createAuditLog(auditLogData);
+        } catch (e) {}
         res.json({
           ...updatedApplication,
           emailSuccess: emailResult.success,
@@ -3970,7 +5637,26 @@ export async function registerRoutes(
         });
 
       } catch (error) {
-        console.error("Failed to update application status:", error);
+        const tFailed = new Date().toISOString();
+        try {
+          const { ipAddress, device, location, sessionId } = getReqInfo(req);
+          const { actorId, actorRole } = await getActorInfo(req);
+          const auditLogData = {
+            actorId, actorRole,
+            action: 'APPLICATION_STATUS_UPDATE', status: 'failed',
+            entityType: 'system', entityId: 'N/A',
+            ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: {
+              auditType: 'CAREER',
+              reason: 'Internal Server Error (500) when updating application status.',
+              timeline: {
+                requestReceivedAt: tRequestReceived,
+                completedAt: tFailed,
+              }
+            }
+          };
+          await storage.createAuditLog(auditLogData);
+        } catch (e) {}
         res.status(500).json({ error: "Failed to update application status" });
       }
     },
@@ -3978,22 +5664,87 @@ export async function registerRoutes(
 
   // Forgot Password: Send OTP to email (unauthenticated)
   app.post("/api/auth/forgot-password", async (req: Request, res: Response) => {
+    const tRequestReceived = new Date().toISOString();
     try {
       const { email } = req.body;
       if (!email || typeof email !== "string") {
+        const tFailed = new Date().toISOString();
+        try {
+          const { ipAddress, device, location, sessionId } = getReqInfo(req);
+          const { actorId, actorRole } = await getActorInfo(req);
+          const auditLogData = {
+            actorId, actorRole,
+            action: 'FORGOT_PASSWORD', status: 'failed',
+            entityType: 'user', entityId: 'N/A',
+            ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: {
+              auditType: 'AUTH',
+              reason: 'Invalid email format provided.',
+              timeline: {
+                requestReceivedAt: tRequestReceived,
+                emailValidationFailedAt: tFailed,
+                completedAt: tFailed,
+              }
+            }
+          };
+          await storage.createAuditLog(auditLogData);
+        } catch (e) {}
         return res.status(400).json({ error: "Email is required" });
       }
 
       const user = await storage.getUserByEmail(email.toLowerCase().trim());
       
       if (user && user.provider && user.provider !== AuthProvider.LOCAL) {
-         const providerName = user.provider.charAt(0).toUpperCase() + user.provider.slice(1);
-         return res.status(400).json({ 
-           error: `Your account is linked with ${providerName}. Please use "Continue with ${providerName}" to log in. Password reset is not required.` 
-         });
+        const providerName = user.provider.charAt(0).toUpperCase() + user.provider.slice(1);
+
+        const tFailed = new Date().toISOString();
+        try {
+          const { ipAddress, device, location, sessionId } = getReqInfo(req);
+          const { actorId, actorRole } = await getActorInfo(req);
+          const auditLogData = {
+            actorId, actorRole,
+            action: 'FORGOT_PASSWORD', status: 'failed',
+            entityType: 'user', entityId: user.id,
+            ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: {
+              auditType: 'AUTH',
+              reason: `Password reset attempted for ${providerName} account.`,
+              timeline: {
+                requestReceivedAt: tRequestReceived,
+                providerCheckFailedAt: tFailed,
+                completedAt: tFailed,
+              }
+            }
+          };
+          await storage.createAuditLog(auditLogData);
+        } catch (e) {}
+        return res.status(400).json({ 
+          error: `Your account is linked with ${providerName}. Please use "Continue with ${providerName}" to log in. Password reset is not required.` 
+        });
       }
 
       if (!user) {
+        const tFailed = new Date().toISOString();
+        try {
+          const { ipAddress, device, location, sessionId } = getReqInfo(req);
+          const { actorId, actorRole } = await getActorInfo(req);
+          const auditLogData = {
+            actorId, actorRole,
+            action: 'FORGOT_PASSWORD', status: 'failed',
+            entityType: 'user', entityId: 'N/A',
+            ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: {
+              auditType: 'AUTH',
+              reason: 'Email not found for password reset.',
+              timeline: {
+                requestReceivedAt: tRequestReceived,
+                emailNotFoundAt: tFailed,
+                completedAt: tFailed,
+              }
+            }
+          };
+          await storage.createAuditLog(auditLogData);
+        } catch (e) {}
         return res.json({ message: "If that email is registered, an OTP has been sent." });
       }
 
@@ -4001,25 +5752,113 @@ export async function registerRoutes(
       const expiry = new Date(Date.now() + 10 * 60 * 1000);
 
       await storage.setPasswordResetOtp(user.id, otp, expiry);
+      const tSetOtpAt = new Date().toISOString();
       await sendPasswordResetOtpEmail(user.email, otp);
+      const tEmailSentAt = new Date().toISOString();
+
+      try {
+        const { ipAddress, device, location, sessionId } = getReqInfo(req);
+        const { actorId, actorRole } = await getActorInfo(req);
+        const auditLogData = {
+          actorId, actorRole,
+          action: 'FORGOT_PASSWORD', status: 'success',
+          entityType: 'user', entityId: user.id,
+          ipAddress, device, location, sessionId: sessionId || 'N/A',
+          metadata: {
+            auditType: 'AUTH',
+            reason: 'OTP sent for password reset.',
+            timeline: {
+              requestReceivedAt: tRequestReceived,
+              otpSetAt: tSetOtpAt,
+              emailSentAt: tEmailSentAt,
+              completedAt: tEmailSentAt,
+            }
+          }
+        };
+        await storage.createAuditLog(auditLogData);
+      } catch (e) {}
 
       res.json({ message: "If that email is registered, an OTP has been sent." });
     } catch (error) {
-      console.error("Forgot password error:", error);
+      const tFailed = new Date().toISOString();
+      try {
+        const { ipAddress, device, location, sessionId } = getReqInfo(req);
+        const { actorId, actorRole } = await getActorInfo(req);
+        const auditLogData = {
+          actorId, actorRole,
+          action: 'FORGOT_PASSWORD', status: 'failed',
+          entityType: 'system', entityId: 'N/A',
+          ipAddress, device, location, sessionId: sessionId || 'N/A',
+          metadata: {
+            auditType: 'AUTH',
+            reason: 'Internal Server Error (500) when processing forgot password request.',
+            timeline: {
+              requestReceivedAt: tRequestReceived,
+              completedAt: tFailed,
+            }
+          }
+        };
+        await storage.createAuditLog(auditLogData);
+      } catch (e) {}
       res.status(500).json({ error: "Failed to send OTP" });
     }
   });
 
   // Add password strength validation to unauthenticated password reset route
   app.post("/api/auth/reset-password", async (req: Request, res: Response) => {
+    
+    const tRequestReceived = new Date().toISOString();
+
     try {
       const { email, otp, newPassword } = req.body;
       if (!email || !otp || !newPassword) {
+        const tFailed = new Date().toISOString();
+        try {
+          const { ipAddress, device, location, sessionId } = getReqInfo(req);
+          const { actorId, actorRole } = await getActorInfo(req);
+          const auditLogData = {
+            actorId, actorRole,
+            action: 'RESET_PASSWORD_WITH_OTP', status: 'failure',
+            entityType: 'user', entityId: 'N/A',
+            ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: {
+              auditType: 'AUTH',
+              reason: 'Missing required fields for password reset with OTP.',
+              timeline: {
+                requestReceivedAt: tRequestReceived,
+                validationFailedAt: tFailed,
+                completedAt: tFailed,
+              }
+            }
+          };
+          await storage.createAuditLog(auditLogData);
+        } catch (e) {}
         return res.status(400).json({ error: "Email, OTP, and new password are required" });
       }
 
       const passwordValidation = validatePasswordStrength(newPassword);
       if (!passwordValidation.valid) {
+        const tFailed = new Date().toISOString();
+        try {
+          const { ipAddress, device, location, sessionId } = getReqInfo(req);
+          const { actorId, actorRole } = await getActorInfo(req);
+          const auditLogData = {
+            actorId, actorRole,
+            action: 'RESET_PASSWORD_WITH_OTP', status: 'failure',
+            entityType: 'user', entityId: 'N/A',
+            ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: {
+              auditType: 'AUTH',
+              reason: 'Password does not meet security requirements.',
+              timeline: {
+                requestReceivedAt: tRequestReceived,
+                validationPasswordAt: tFailed,
+                completedAt: tFailed,
+              }
+            }
+          };
+          await storage.createAuditLog(auditLogData);
+        } catch (e) {}
         return res.status(400).json({
           error: "Password does not meet security requirements",
           details: passwordValidation.errors,
@@ -4028,26 +5867,113 @@ export async function registerRoutes(
 
       const user = await storage.getUserByEmail(email.toLowerCase().trim());
       if (!user) {
+        const tFailed = new Date().toISOString();
+        try {
+          const { ipAddress, device, location, sessionId } = getReqInfo(req);
+          const { actorId, actorRole } = await getActorInfo(req);
+          const auditLogData = {
+            actorId, actorRole,
+            action: 'RESET_PASSWORD_WITH_OTP', status: 'failure',
+            entityType: 'user', entityId: 'N/A',
+            ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: {
+              auditType: 'AUTH',
+              reason: 'User not found for password reset.',
+              timeline: {
+                requestReceivedAt: tRequestReceived,
+                validationFailedAt: tFailed,
+                completedAt: tFailed,
+              }
+            }
+          };
+          await storage.createAuditLog(auditLogData);
+        } catch (e) {}
         return res.status(400).json({ error: "Invalid OTP or email" });
       }
 
       const isValid = await storage.verifyPasswordResetOtp(user.id, otp);
       if (!isValid) {
+        const tFailed = new Date().toISOString();
+        try {
+          const { ipAddress, device, location, sessionId } = getReqInfo(req);
+          const { actorId, actorRole } = await getActorInfo(req);
+          const auditLogData = {
+            actorId, actorRole,
+            action: 'RESET_PASSWORD_WITH_OTP', status: 'failure',
+            entityType: 'user', entityId: user.id,
+            ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: {
+              auditType: 'AUTH',
+              reason: 'Invalid or expired OTP provided for password reset.',
+              timeline: {
+                requestReceivedAt: tRequestReceived,
+                otpVerificationFailedAt: tFailed,
+                completedAt: tFailed,
+              }
+            }
+          };
+          await storage.createAuditLog(auditLogData);
+        } catch (e) {}
         return res.status(400).json({ error: "Invalid or expired OTP" });
       }
 
       const hashedPassword = await hashPassword(newPassword);
       await storage.updateUser(user.id, { password: hashedPassword });
 
+      const tPasswordResetAt = new Date().toISOString();
+      try {
+        const { ipAddress, device, location, sessionId } = getReqInfo(req);
+        const { actorId, actorRole } = await getActorInfo(req);
+        const auditLogData = {
+          actorId, actorRole,
+          action: 'RESET_PASSWORD_WITH_OTP', status: 'success',
+          entityType: 'user', entityId: user.id,
+          ipAddress, device, location, sessionId: sessionId || 'N/A',
+          metadata: {
+            auditType: 'AUTH',
+            reason: 'Password reset successfully with OTP.',
+            timeline: {
+              requestReceivedAt: tRequestReceived,
+              passwordResetAt: tPasswordResetAt,
+              completedAt: tPasswordResetAt,
+            }
+          }
+        };
+        await storage.createAuditLog(auditLogData);
+      } catch (e) {}
+
       res.json({ message: "Password reset successfully" });
     } catch (error) {
-      console.error("Reset password error:", error);
+      const tFailed = new Date().toISOString();
+      try {
+        const { ipAddress, device, location, sessionId } = getReqInfo(req);
+        const { actorId, actorRole } = await getActorInfo(req);
+        const auditLogData = {
+          actorId, actorRole,
+          action: 'RESET_PASSWORD_WITH_OTP', status: 'failed',
+          entityType: 'system', entityId: 'N/A',
+          ipAddress, device, location, sessionId: sessionId || 'N/A',
+          metadata: {
+            auditType: 'AUTH',
+            reason: 'Failed to reset password.',
+            timeline: {
+              requestReceivedAt: tRequestReceived,
+              failedAt: tFailed,
+              completedAt: tFailed,
+            }
+          }
+        };
+        await storage.createAuditLog(auditLogData);
+      } catch (e) {}
       res.status(500).json({ error: "Failed to reset password" });
     }
   });
 
   // 1. Send OTP to Email
   app.post("/api/users/send-password-otp", authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
+    
+    const tRequestReceived = new Date().toISOString();
+
     try {
       const otp = randomInt(100000, 999999).toString();
       const expiry = new Date(Date.now() + 10 * 60 * 1000); // 10 mins
@@ -4057,12 +5983,53 @@ export async function registerRoutes(
       const emailResult = await sendPasswordResetOtpEmail(req.user!.email, otp);
 
       if (!emailResult.success) {
+        const tFailed = new Date().toISOString();
+        try {
+          const { ipAddress, device, location, sessionId } = getReqInfo(req);
+          const { actorId, actorRole } = await getActorInfo(req);
+          const auditLogData = {
+            actorId, actorRole,
+            action: 'SEND_PASSWORD_RESET_OTP', status: 'failure',
+            entityType: 'user', entityId: req.user!.id,
+            ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: {
+              auditType: 'AUTH',
+              reason: `Failed to send OTP email: ${emailResult.error}`,
+              timeline: {
+                requestReceivedAt: tRequestReceived,
+                emailSendFailedAt: tFailed,
+                completedAt: tFailed,
+              }
+            }
+          };
+          await storage.createAuditLog(auditLogData);
+        } catch (e) {}
         throw new Error("Failed to send email via Nodemailer");
       }
 
       res.json({ message: "OTP sent successfully" });
     } catch (error) {
-      console.error("❌ OTP Send Error:", error);
+      const tFailed = new Date().toISOString();
+      try {
+        const { ipAddress, device, location, sessionId } = getReqInfo(req);
+        const { actorId, actorRole } = await getActorInfo(req);
+        const auditLogData = {
+          actorId, actorRole,
+          action: 'SEND_PASSWORD_RESET_OTP', status: 'failure',
+          entityType: 'user', entityId: req.user!.id,
+          ipAddress, device, location, sessionId: sessionId || 'N/A',
+          metadata: {
+            auditType: 'AUTH',
+            reason: `Failed to send OTP email: ${error instanceof Error ? error.message : String(error)}`,
+            timeline: {
+              requestReceivedAt: tRequestReceived,
+              emailSendFailedAt: tFailed,
+              completedAt: tFailed,
+            }
+          }
+        };
+        await storage.createAuditLog(auditLogData);
+      } catch (e) {}
       res.status(500).json({ error: "Failed to send OTP email" });
     }
   });
@@ -4072,11 +6039,35 @@ export async function registerRoutes(
     "/api/users/reset-password-with-otp", 
     authMiddleware, 
     async (req: AuthenticatedRequest, res: Response) => {
+
+      const tRequestReceived = new Date().toISOString();
+
       try {
         const { otp, newPassword } = req.body;
 
         const passwordValidation = validatePasswordStrength(newPassword);
         if (!passwordValidation.valid) {
+          const tFailed = new Date().toISOString();
+          try {
+            const { ipAddress, device, location, sessionId } = getReqInfo(req);
+            const { actorId, actorRole } = await getActorInfo(req);
+            const auditLogData = {
+              actorId, actorRole,
+              action: 'RESET_PASSWORD_WITH_OTP', status: 'failure',
+              entityType: 'user', entityId: req.user!.id,
+              ipAddress, device, location, sessionId: sessionId || 'N/A',
+              metadata: {
+                auditType: 'AUTH',
+                reason: 'Password does not meet security requirements.',
+                timeline: {
+                  requestReceivedAt: tRequestReceived,
+                  validationFailedAt: tFailed,
+                  completedAt: tFailed,
+                }
+              }
+            };
+            await storage.createAuditLog(auditLogData);
+          } catch (e) {}
           return res.status(400).json({
             error: "Password does not meet security requirements",
             details: passwordValidation.errors,
@@ -4085,14 +6076,78 @@ export async function registerRoutes(
 
         const isValid = await storage.verifyPasswordResetOtp(req.user!.id, otp);
         if (!isValid) {
+          const tFailed = new Date().toISOString();
+          try {
+            const { ipAddress, device, location, sessionId } = getReqInfo(req);
+            const { actorId, actorRole } = await getActorInfo(req);
+            const auditLogData = {
+              actorId, actorRole,
+              action: 'RESET_PASSWORD_WITH_OTP', status: 'failure',
+              entityType: 'user', entityId: req.user!.id,
+              ipAddress, device, location, sessionId: sessionId || 'N/A',
+              metadata: {
+                auditType: 'AUTH',
+                reason: 'Invalid or expired OTP provided for password reset.',
+                timeline: {
+                  requestReceivedAt: tRequestReceived,
+                  validationFailedAt: tFailed,
+                  completedAt: tFailed,
+                }
+              }
+            };
+            await storage.createAuditLog(auditLogData);
+          } catch (e) {}
           return res.status(400).json({ error: "Invalid or expired OTP." });
         }
 
         const hashedPassword = await hashPassword(newPassword);
         await storage.updateUser(req.user!.id, { password: hashedPassword });
 
+        try {
+          const { ipAddress, device, location, sessionId } = getReqInfo(req);
+          const { actorId, actorRole } = await getActorInfo(req);
+          const tPasswordResetAt = new Date().toISOString();
+          const auditLogData = {
+            actorId, actorRole,
+            action: 'RESET_PASSWORD_WITH_OTP', status: 'success',
+            entityType: 'user', entityId: req.user!.id,
+            ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: {
+              auditType: 'AUTH',
+              reason: 'Password reset successfully with OTP.',
+              timeline: {
+                requestReceivedAt: tRequestReceived,
+                passwordResetAt: tPasswordResetAt,
+                completedAt: tPasswordResetAt,
+              }
+            }
+          };
+          await storage.createAuditLog(auditLogData);
+        } catch (e) {}
+
         res.json({ message: "Password updated successfully" });
       } catch (error) {
+        try {
+          const tFailed = new Date().toISOString();
+          const { ipAddress, device, location, sessionId } = getReqInfo(req);
+          const { actorId, actorRole } = await getActorInfo(req);
+          const auditLogData = {
+            actorId, actorRole,
+            action: 'RESET_PASSWORD_WITH_OTP', status: 'failure',
+            entityType: 'user', entityId: req.user!.id,
+            ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: {
+              auditType: 'AUTH',
+              reason: 'Failed to reset password.',
+              timeline: {
+                requestReceivedAt: tRequestReceived,
+                validationFailedAt: tFailed,
+                completedAt: new Date().toISOString(),
+              }
+            }
+          };
+          await storage.createAuditLog(auditLogData);
+        } catch (e) {}
         res.status(500).json({ error: "Failed to reset password" });
       }
     }
@@ -4358,133 +6413,211 @@ export async function registerRoutes(
   app.post(
     "/api/payhere/notify",
     async (req: Request, res: Response) => {
-      console.log("\n[PAYHERE WEBHOOK] 📥 Received notification:", req.body);
+
+      const tRequestReceived = new Date().toISOString();
+      const { ipAddress, device, location, sessionId } = getReqInfo(req);
+      const { actorId, actorRole } = await getActorInfo(req);
       
       try {
         const {
-          merchant_id, order_id, payhere_amount, payhere_currency, status_code, md5sig
+          merchant_id, order_id, payhere_amount, payhere_currency, status_code, md5sig, method, status_message
         } = req.body;
 
         const merchant_secret = process.env.PAYHERE_SECRET;
-        
-        // 1. Verify the signature
+        const appointmentId = order_id ? order_id.replace('booking-', '') : 'N/A';
+        const paymentMethodUsed = method || 'PayHere Gateway';
+
+        let payment = null;
+        let appt = null;
+        let slot = null;
+
+        if (appointmentId !== 'N/A') {
+           payment = await storage.getPaymentByAppointment(appointmentId);
+           appt = await storage.getAppointment(appointmentId);
+           slot = appt ? await storage.getAppointmentSlot(appt.slotId) : null;
+        }
+
+        const richMetadata = {
+          auditType: 'PAYMENT',
+          method: paymentMethodUsed,
+          paymentDetails: {
+            payhereOrderId: order_id,
+            gatewayAmount: payhere_amount,
+            gatewayCurrency: payhere_currency,
+            statusCode: status_code,
+            statusMessage: status_message || 'N/A',
+            internalPaymentId: payment?.id || 'N/A',
+            dbTotalAmount: payment?.totalAmount || 'N/A',
+            platformCommission: payment?.platformCommission || 'N/A',
+            doctorEarnings: payment?.doctorEarnings || 'N/A'
+          },
+          appointmentDetails: appt ? {
+            appointmentId: appt.id,
+            patientId: appt.patientId,
+            doctorId: appt.doctorId,
+            consultationType: appt.consultationType,
+            statusBeforeWebhook: appt.status
+          } : 'N/A',
+          slotDetails: slot ? {
+            slotId: slot.id,
+            date: slot.date,
+            startTime: slot.startTime,
+            endTime: slot.endTime,
+            isOnline: !!slot.meetLink
+          } : 'N/A'
+        };
+
         const hashedSecret = createHash('md5').update(merchant_secret!).digest('hex').toUpperCase();
         const hashString = merchant_id + order_id + payhere_amount + payhere_currency + status_code + hashedSecret;
         const generatedSig = createHash('md5').update(hashString).digest('hex').toUpperCase();
 
         if (generatedSig !== md5sig) {
-          console.error("[PAYHERE WEBHOOK] ❌ Security Alert: Invalid Signature!");
+          const tFailed = new Date().toISOString();
+          
+          try {
+            const auditLogData = {
+              actorId, actorRole,
+              action: 'PAYHERE_WEBHOOK', status: 'failed',
+              entityType: 'payment', entityId: payment?.id || 'N/A', // Add ID if we found it
+              ipAddress, device, location, sessionId: sessionId || 'N/A',
+              metadata: {
+                ...richMetadata,
+                reason: 'Security Alert: Invalid signature in PayHere webhook. Possible spoofing.',
+                receivedPayload: { order_id, payhere_amount, payhere_currency, status_code },
+                timeline: {
+                  requestReceivedAt: tRequestReceived,
+                  signatureVerificationFailedAt: tFailed,
+                  completedAt: tFailed,
+                }
+              }
+            };
+            await storage.createAuditLog(auditLogData);
+          } catch (e) { console.error("Audit log failed:", e); }
           return res.status(400).send("Invalid Signature");
         }
 
-        console.log(`[PAYHERE WEBHOOK] ✅ Signature Valid. Status Code: ${status_code}`);
-
-        const appointmentId = order_id.replace('booking-', '');
-
-        if (status_code === "2") {
-          console.log(`[PAYHERE WEBHOOK] 💰 Payment Success for Appointment: ${appointmentId}`);
-          
-          // Payment record
-          const payment = await storage.getPaymentByAppointment(appointmentId);
-          
-          if (payment) {
-            // 1. Payment status එක 'COMPLETED'
+        if (status_code === "2") {          
+          if (payment && appt && slot) {
             await storage.updatePayment(payment.id, { status: PaymentStatus.COMPLETED });
-            
-            // 2. Appointment status එක 'CONFIRMED'
             await storage.updateAppointment(appointmentId, { status: AppointmentStatus.CONFIRMED });
-            
-            // 3. Slot එක 'is_booked = true'
             await pool.query(
               `UPDATE appointment_slots SET is_booked = true WHERE id = $1`,
               [(payment as any).slotId]
             );
             
-            console.log(`[PAYHERE WEBHOOK] ✅ DB Updated & Slot Locked Successfully.`);
-            
-            // Send Success Notifications
-            const appt = await storage.getAppointment(appointmentId);
-            if(appt){
-              const docProfile = await storage.getDoctorProfile(appt.doctorId);
-              const slot = await storage.getAppointmentSlot(appt.slotId);
-              if(docProfile && slot) {
-                const docUser = await storage.getUser(docProfile.userId);
-                const ptUser = await storage.getUser(appt.patientId);
-                if(docUser && ptUser) {
-                  await storage.createNotification({
-                    userId: ptUser.id, title: "Payment Successful",
-                    message: `Your payment of LKR ${payhere_amount} for appointment with Dr. ${docUser.fullName} was successful.`,
-                    type: "payment", isRead: false, relatedId: payment.id,
-                  });
-                  await storage.createNotification({
-                    userId: docUser.id, title: "New Online Payment",
-                    message: `${ptUser.fullName} has paid for their upcoming appointment.`,
-                    type: "payment", isRead: false, relatedId: payment.id,
-                  });
+            // Send Notifications & Emails
+            const docProfile = await storage.getDoctorProfile(appt.doctorId);
+            if(docProfile) {
+              const docUser = await storage.getUser(docProfile.userId);
+              const ptUser = await storage.getUser(appt.patientId);
+              if(docUser && ptUser) {
+                await storage.createNotification({
+                  userId: ptUser.id, title: "Payment Successful",
+                  message: `Your payment of LKR ${payhere_amount} for appointment with Dr. ${docUser.fullName} was successful.`,
+                  type: "payment", isRead: false, relatedId: payment.id,
+                });
+                await storage.createNotification({
+                  userId: docUser.id, title: "New Online Payment",
+                  message: `${ptUser.fullName} has paid for their upcoming appointment.`,
+                  type: "payment", isRead: false, relatedId: payment.id,
+                });
 
-                  console.log(`[PAYHERE WEBHOOK] 📧 Triggering Resend Emails...`);
-
-                  await sendPatientBookingReceiptEmail(
-                    ptUser.email,
-                    ptUser.fullName,
-                    docUser.fullName,
-                    slot.date as unknown as string,
-                    slot.startTime,
-                    payment.totalAmount,
-                    slot.consultationType,
-                    slot.meetLink || "unavailable for online consultations without video, please check your notifications for details",
-                    "online"
-                  );
-
-                  await sendDoctorNewBookingEmail(
-                    docUser.email,
-                    docUser.fullName,
-                    ptUser.fullName,
-                    appt.symptoms,
-                    slot.date as unknown as string,
-                    slot.startTime,
-                    slot.consultationType,
-                    slot.meetLink || "unavailable for online consultations without video, please check your notifications for details"
-                  ); 
-                  console.log(`[PAYHERE WEBHOOK] ✅ Email sending process completed.`);
-                }
+                await sendPatientBookingReceiptEmail(
+                  ptUser.email, ptUser.fullName, docUser.fullName, String(slot.date),
+                  slot.startTime, payment.totalAmount, slot.consultationType,
+                  slot.meetLink || "unavailable", "online"
+                );
+                await sendDoctorNewBookingEmail(
+                  docUser.email, docUser.fullName, ptUser.fullName, appt.symptoms,
+                  String(slot.date), slot.startTime, slot.consultationType,
+                  slot.meetLink || "unavailable"
+                ); 
               }
             }
-          } else {
-             console.error(`[PAYHERE WEBHOOK] ❌ Payment record not found for Appointment: ${appointmentId}`);
-          }
+
+            // SUCCESS AUDIT LOG
+            const tCompleted = new Date().toISOString();
+            try {
+              await storage.createAuditLog({
+                actorId, actorRole,
+                action: 'PAYHERE_WEBHOOK_SUCCESS', status: 'success',
+                entityType: 'payment', entityId: payment.id,
+                ipAddress, device, location, sessionId: sessionId || 'N/A',
+                metadata: {
+                  ...richMetadata,
+                  reason: 'Payment completed successfully via PayHere.',
+                  timeline: { requestReceivedAt: tRequestReceived, dbUpdatesAt: tCompleted, completedAt: tCompleted }
+                }
+              });
+            } catch (auditErr) {}
+
+          } else {          }
+          
+        // PAYMENT FAILED/CANCELED
         } else if (status_code === "-2" || status_code === "-1" || status_code === "0") {
-          // Canceled or Failed Payment
           console.log(`[PAYHERE WEBHOOK] ⚠️ Payment Failed/Canceled for Appointment: ${appointmentId}`);
-          const payment = await storage.getPaymentByAppointment(appointmentId);
-          if (payment) {
+          if (payment && appt) {
             await storage.updatePayment(payment.id, { status: PaymentStatus.FAILED });
             await storage.updateAppointment(appointmentId, { 
                 status: AppointmentStatus.CANCELLED, 
-                cancelReason: "Payment Failed or Canceled by User" 
+                cancelReason: `PayHere Payment Failed (Code: ${status_code})` 
             });
-            await pool.query(
-              `UPDATE appointment_slots SET is_booked = false WHERE id = $1`,
-              [(payment as any).slotId]
-            );
+            await pool.query(`UPDATE appointment_slots SET is_booked = false WHERE id = $1`, [(payment as any).slotId]);
+
+            // FAILED AUDIT LOG
+            const tCompleted = new Date().toISOString();
+            try {
+              await storage.createAuditLog({
+                actorId, actorRole,
+                action: 'PAYHERE_WEBHOOK_FAILED', status: 'failed',
+                entityType: 'payment', entityId: payment.id,
+                ipAddress, device, location, sessionId: sessionId || 'N/A',
+                metadata: {
+                  ...richMetadata,
+                  reason: `Payment failed or canceled. Status Code: ${status_code}`,
+                  timeline: { requestReceivedAt: tRequestReceived, dbRevertAt: tCompleted, completedAt: tCompleted }
+                }
+              });
+            } catch (auditErr) {}
           }
         }
         
         res.status(200).send("OK");
       } catch (error) {
-        console.error("[PAYHERE WEBHOOK] ❌ Processing error:", error);
+        
+        // CATCH BLOCK AUDIT LOG
+        const tFailed = new Date().toISOString();
+        try {
+          await storage.createAuditLog({
+            actorId, actorRole,
+            action: 'PAYHERE_WEBHOOK_ERROR', status: 'failed',
+            entityType: 'system', entityId: 'N/A',
+            ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: {
+              auditType: 'PAYMENT',
+              method: 'PayHere Webhook',
+              reason: 'Internal Server Error (500) while processing webhook.',
+              errorDetail: String(error),
+              timeline: { requestReceivedAt: tRequestReceived, completedAt: tFailed }
+            }
+          });
+        } catch (e) {}
+
         res.status(500).send("Internal Server Error");
       }
     }
   );
 
-  //  =========================================
+  // ==========================================
   // EXPLICIT FAIL ROUTE
   // ==========================================
   app.patch(
     "/api/appointments/:id/payment-failed",
     authMiddleware,
     async (req: AuthenticatedRequest, res: Response) => {
+      const tRequestReceived = new Date().toISOString();
+      const { ipAddress, device, location, sessionId } = getReqInfo(req);
+      const { actorId, actorRole } = await getActorInfo(req);
       try {
         const appointmentId = req.params.id;
         
@@ -4512,9 +6645,34 @@ export async function registerRoutes(
           [appointment.slotId]
         );
 
+        const tCompleted = new Date().toISOString();
+        try {
+          await storage.createAuditLog({
+            actorId, actorRole,
+            action: 'EXPLICIT_PAYMENT_FAILED', status: 'success',
+            entityType: 'appointment', entityId: appointmentId,
+            ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: {
+              auditType: 'PAYMENT',
+              paymentId: payment?.id || 'N/A',
+              slotId: appointment.slotId,
+              reason: 'User explicitly cancelled the payment or gateway timeout occurred.',
+              actionTaken: 'Appointment cancelled and slot released to the public.',
+              timeline: { requestReceivedAt: tRequestReceived, completedAt: tCompleted }
+            }
+          });
+        } catch (e) {}
+
         res.json({ success: true, message: "Slot released successfully" });
       } catch (error) {
-        console.error("Payment Fail Error:", error);
+        const tFailed = new Date().toISOString();
+        try {
+          await storage.createAuditLog({
+            actorId, actorRole, action: 'EXPLICIT_PAYMENT_FAILED', status: 'failed',
+            entityType: 'system', entityId: req.params.id, ipAddress, device, location, sessionId: 'N/A',
+            metadata: { auditType: 'PAYMENT', reason: 'Internal Server Error (500)', timeline: { requestReceivedAt: tRequestReceived, completedAt: tFailed } }
+          });
+        } catch (e) {}
         res.status(500).json({ error: "Failed to release slot" });
       }
     }
@@ -4563,6 +6721,29 @@ export async function registerRoutes(
   //     console.error("[CLEANUP JOB ERROR]:", err);
   //   }
   // }, 5 * 60 * 1000); // 5 * 60 * 1000 = 5 minutes
+
+  app.get(
+    "/api/admin/audit-logs",
+    authMiddleware,
+    roleMiddleware(UserRole.ADMIN),
+    async (req: Request, res: Response) => {
+      try {
+        const page = parseInt(req.query.page as string) || 1;
+        const limit = parseInt(req.query.limit as string) || 50; // එක පාර ගොඩක් පෙන්නන්න 50ක් දැම්මා
+        
+        const type = req.query.type as string;
+        const search = req.query.search as string;
+        const startDate = req.query.startDate as string;
+        const endDate = req.query.endDate as string;
+
+        const result = await storage.getPaginatedAuditLogs(page, limit, { type, search, startDate, endDate });
+        res.json(result);
+      } catch (error) {
+        console.error("Failed to fetch audit logs:", error);
+        res.status(500).json({ error: "Failed to fetch audit logs" });
+      }
+    }
+  );
 
   return httpServer;
 }
