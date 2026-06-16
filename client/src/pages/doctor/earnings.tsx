@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   DollarSign,
@@ -13,7 +13,9 @@ import {
   Download,
   Filter,
   ArrowUpRight,
-  ArrowDownRight
+  ArrowDownRight,
+  ArrowUp,
+  ArrowDown
 } from "lucide-react";
 import { format, parseISO } from "date-fns";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -56,6 +58,21 @@ interface EarningsData {
 export default function DoctorEarnings() {
   const [filterStatus, setFilterStatus] = useState<string>("all");
   const [filterPeriod, setFilterPeriod] = useState<string>("all");
+  const [showScrollBtn, setShowScrollBtn] = useState(false);
+  const [atBottom, setAtBottom] = useState(false);
+
+  useEffect(() => {
+    const container = document.querySelector("main");
+    if (!container) return;
+    const onScroll = () => {
+      const scrolled = container.scrollTop;
+      const total = container.scrollHeight - container.clientHeight;
+      setShowScrollBtn(scrolled > 300);
+      setAtBottom(total > 0 && scrolled >= total - 50);
+    };
+    container.addEventListener("scroll", onScroll);
+    return () => container.removeEventListener("scroll", onScroll);
+  }, []);
 
   const { data, isLoading, isError } = useQuery<EarningsData>({
     queryKey: ["/api/doctor/earnings"],
@@ -327,8 +344,8 @@ export default function DoctorEarnings() {
                       <TableCell className="font-semibold text-green-600">
                         {formatFee(payment.doctorEarnings)}
                       </TableCell>
-                      <TableCell>
-                        <StatusBadge status={payment.status} type="payment" />
+                      <TableCell className="align-middle">
+                        <StatusBadge status={payment.status} type="payment" className="inline-flex items-center justify-center h-6 w-20" />
                       </TableCell>
                     </TableRow>
                   ))}
@@ -420,6 +437,20 @@ export default function DoctorEarnings() {
           </CardContent>
         </Card>
       </div>
+
+      {showScrollBtn && (
+        <button
+          onClick={() => {
+            const container = document.querySelector("main");
+            if (!container) return;
+            container.scrollTo({ top: atBottom ? 0 : container.scrollHeight, behavior: "smooth" });
+          }}
+          className="fixed bottom-6 right-6 z-50 h-12 w-12 rounded-full bg-green-500 hover:bg-green-600 text-white shadow-lg flex items-center justify-center transition-all"
+          aria-label={atBottom ? "Scroll to top" : "Scroll to bottom"}
+        >
+          {atBottom ? <ArrowUp className="h-5 w-5" /> : <ArrowDown className="h-5 w-5" />}
+        </button>
+      )}
     </div>
   );
 }
