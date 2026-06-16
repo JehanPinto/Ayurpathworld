@@ -152,7 +152,6 @@ export default function DoctorSettings() {
     staleTime: 5 * 60 * 1000,
   });
 
-  const [newCityInput, setNewCityInput] = useState("");
 
   const profileForm = useForm<ProfileFormData>({
     resolver: zodResolver(profileSchema),
@@ -681,50 +680,22 @@ export default function DoctorSettings() {
                     render={({ field }) => (
                       <FormItem>
                         <FormLabel>City</FormLabel>
-                        <Select
-                          onValueChange={(val) => {
-                            if (val === "__new__") return;
-                            field.onChange(val);
-                            setNewCityInput("");
-                          }}
-                          value={field.value}
-                        >
-                          <FormControl>
-                            <SelectTrigger className="bg-white dark:bg-background rounded-lg">
-                              <SelectValue placeholder="Select city" />
-                            </SelectTrigger>
-                          </FormControl>
-                          <SelectContent>
-                            {availableCities.map((city) => (
-                              <SelectItem key={city} value={city}>{city}</SelectItem>
-                            ))}
-                            <SelectItem value="__new__">+ Add new city</SelectItem>
-                          </SelectContent>
-                        </Select>
-                        {(field.value === "__new__" || newCityInput !== "") && (
-                          <div className="flex gap-2 mt-2">
+                        <FormControl>
+                          <div>
+                            <datalist id="city-suggestions">
+                              {availableCities.map((city) => (
+                                <option key={city} value={city} />
+                              ))}
+                            </datalist>
                             <input
-                              type="text"
-                              placeholder="Enter city name"
-                              value={newCityInput}
-                              onChange={(e) => setNewCityInput(e.target.value)}
-                              className="flex-1 h-9 px-3 rounded-md border border-input bg-white dark:bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                              list="city-suggestions"
+                              placeholder="Type or select your city"
+                              value={field.value || ""}
+                              onChange={(e) => field.onChange(e.target.value)}
+                              className="w-full h-10 px-3 rounded-lg border border-input bg-white dark:bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                             />
-                            <button
-                              type="button"
-                              onClick={() => {
-                                const trimmed = newCityInput.trim();
-                                if (trimmed) {
-                                  field.onChange(trimmed);
-                                  setNewCityInput("");
-                                }
-                              }}
-                              className="px-3 h-9 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90"
-                            >
-                              Set
-                            </button>
                           </div>
-                        )}
+                        </FormControl>
                         <FormMessage />
                       </FormItem>
                     )}
