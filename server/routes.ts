@@ -2515,6 +2515,15 @@ export async function registerRoutes(
     },
   );
 
+  app.get("/api/cities", publicApiLimiter, async (_req: Request, res: Response) => {
+    try {
+      const cities = await storage.getActiveCities();
+      res.json(cities);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to get cities" });
+    }
+  });
+
   app.get("/api/specializations", publicApiLimiter, async (_req: Request, res: Response) => {
     try {
       const specializations = await storage.getAllSpecializations();
