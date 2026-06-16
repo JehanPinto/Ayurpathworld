@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import {
   DollarSign,
   TrendingUp,
@@ -56,24 +56,10 @@ interface EarningsData {
 export default function DoctorEarnings() {
   const [filterStatus, setFilterStatus] = useState<string>("all");
   const [filterPeriod, setFilterPeriod] = useState<string>("all");
-  const [showSettleConfirm, setShowSettleConfirm] = useState(false);
-  const queryClient = useQueryClient();
 
   const { data, isLoading, isError } = useQuery<EarningsData>({
     queryKey: ["/api/doctor/earnings"],
     staleTime: 2 * 60 * 1000,
-  });
-
-  const settleMutation = useMutation({
-    mutationFn: async () => {
-      const res = await fetch("/api/doctor/earnings/settle", { method: "POST", credentials: "include" });
-      if (!res.ok) throw new Error("Failed to settle");
-      return res.json();
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/doctor/earnings"] });
-      setShowSettleConfirm(false);
-    },
   });
 
   const formatFee = (fee: number) => {
@@ -163,7 +149,7 @@ export default function DoctorEarnings() {
         <AlertTriangle className={`h-5 w-5 mt-0.5 shrink-0 ${cancellationCharges.totalOwed > 0 ? "text-red-500" : "text-green-500"}`} />
         <div className="flex-1 min-w-0">
           <p className={`font-semibold ${cancellationCharges.totalOwed > 0 ? "text-red-700 dark:text-red-400" : "text-green-700 dark:text-green-400"}`}>
-            Owed to System Admin
+            Owed to AyurPath
           </p>
           <p className={`text-sm mt-0.5 ${cancellationCharges.totalOwed > 0 ? "text-red-600 dark:text-red-500" : "text-green-600 dark:text-green-500"}`}>
             {cancellationCharges.count > 0
@@ -171,37 +157,10 @@ export default function DoctorEarnings() {
               : "No outstanding cancellation charges. All patients have been settled."}
           </p>
         </div>
-        <div className="flex items-center gap-3 shrink-0">
-          <span className={`font-bold ${cancellationCharges.totalOwed > 0 ? "text-red-600 dark:text-red-400" : "text-green-600 dark:text-green-400"}`}>
+        <div className="shrink-0">
+          <span className={`font-bold text-lg ${cancellationCharges.totalOwed > 0 ? "text-red-600 dark:text-red-400" : "text-green-600 dark:text-green-400"}`}>
             {formatFee(cancellationCharges.totalOwed)}
           </span>
-          {cancellationCharges.totalOwed > 0 && !showSettleConfirm && (
-            <Button size="sm" className="bg-red-600 hover:bg-red-700 text-white" onClick={() => setShowSettleConfirm(true)}>
-              Settle now
-            </Button>
-          )}
-          {showSettleConfirm && (
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-red-700 font-medium">Deduct {formatFee(cancellationCharges.totalOwed)} from earnings?</span>
-              <Button
-                size="sm"
-                className="bg-red-600 hover:bg-red-700 text-white h-7 px-2 text-xs"
-                onClick={() => settleMutation.mutate()}
-                disabled={settleMutation.isPending}
-              >
-                {settleMutation.isPending ? "Settling…" : "Confirm"}
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-7 px-2 text-xs"
-                onClick={() => setShowSettleConfirm(false)}
-                disabled={settleMutation.isPending}
-              >
-                Cancel
-              </Button>
-            </div>
-          )}
         </div>
       </div>
 
