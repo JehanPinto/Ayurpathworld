@@ -6,7 +6,7 @@ import { type Server } from "http";
 import path from "path";
 import { pool } from "./db";
 import { storage } from "./storage";
-import { sendApplicationEmail, sendPasswordResetOtpEmail } from "./util/email";
+import { sendApplicationEmail, sendDoctorVerifiedEmail, sendPasswordResetOtpEmail } from "./util/email";
 
 import {
   AppointmentStatus,
@@ -1139,6 +1139,39 @@ export async function registerRoutes(
                 .status(403)
                 .json({
                   error: "Your doctor account application was rejected.",
+                });
+            }
+
+            if (doctorProfile.status === DoctorStatus.PENDING) {
+              const tFailed = new Date().toISOString();
+              try {
+                const { ipAddress, device, location, sessionId } = getReqInfo(req);
+                const { actorId, actorRole } = await getActorInfo(req);
+                await storage.createAuditLog({
+                  actorId, actorRole,
+                  action: 'USER_LOGIN', status: 'failed',
+                  entityType: 'user', entityId: user.id,
+                  ipAddress, device, location, sessionId: sessionId,
+                  metadata: { 
+                    auditType: "AUTH",
+                    method: 'Doctor', reason: 'Doctor application pending',
+                    timeline: {
+                      requestReceivedAt: tRequestReceived,
+                      credentialsVerifiedAt: tCredentialsVerified,
+                      providerIdentifiedAt: tProviderIdentified,
+                      DoctorStatusCheckedAt: tDoctorStatusChecked,
+                      PendingIdentifiedAt: tFailed,
+                      completedAt: tFailed
+                    }
+                  }
+                });
+              } catch (e) { console.error(e); }
+
+              return res
+                .status(403)
+                .json({
+                  error: "verification_pending",
+                  message: "Your account is pending verification."
                 });
             }
           }
@@ -4314,13 +4347,21 @@ export async function registerRoutes(
         );
 
         if (doctor) {
+          // 1. Send internal system notification
           await storage.createNotification({
             userId: doctor.userId,
             title: "Account Verified",
-            message:
-              "Congratulations! Your doctor account has been verified. You can now accept appointments.",
+            message: "Congratulations! Your doctor account has been verified. You can now accept appointments.",
             type: "verification",
           });
+
+          // 2. NEW: Send Email Notification to the Doctor
+          const doctorUser = await storage.getUser(doctor.userId);
+          if (doctorUser) {
+            // Fire and forget email (Doesn't block the API response to the admin)
+            sendDoctorVerifiedEmail(doctorUser.email, doctorUser.fullName)
+              .catch(err => console.error("Email send error:", err));
+          }
         }
 
         res.json(doctor);

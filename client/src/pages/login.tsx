@@ -65,6 +65,13 @@ export default function LoginPage() {
       }, 100);
     },
     onError: (error: Error) => {
+      if (
+        error.message === "verification_pending" || 
+        error.message.includes("pending verification")
+      ) {
+        setLocation("/doctor/verification-pending");
+        return;
+      }
       toast({
         title: "Login failed",
         description: error.message || "Invalid email or password",
