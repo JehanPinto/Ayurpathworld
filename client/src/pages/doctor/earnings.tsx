@@ -141,26 +141,37 @@ export default function DoctorEarnings() {
         </Button>
       </div>
 
-      <div className={`flex items-start gap-4 rounded-xl border p-4 ${
+      <div className={`flex items-center gap-6 rounded-xl border p-4 ${
         cancellationCharges.totalOwed > 0
           ? "border-red-200 bg-red-50 dark:border-red-900 dark:bg-red-950/20"
           : "border-green-200 bg-green-50 dark:border-green-900 dark:bg-green-950/20"
       }`}>
-        <AlertTriangle className={`h-5 w-5 mt-0.5 shrink-0 ${cancellationCharges.totalOwed > 0 ? "text-red-500" : "text-green-500"}`} />
+        <AlertTriangle className={`h-5 w-5 shrink-0 ${cancellationCharges.totalOwed > 0 ? "text-red-500" : "text-green-500"}`} />
         <div className="flex-1 min-w-0">
           <p className={`font-semibold ${cancellationCharges.totalOwed > 0 ? "text-red-700 dark:text-red-400" : "text-green-700 dark:text-green-400"}`}>
             Owed to AyurPath
           </p>
           <p className={`text-sm mt-0.5 ${cancellationCharges.totalOwed > 0 ? "text-red-600 dark:text-red-500" : "text-green-600 dark:text-green-500"}`}>
             {cancellationCharges.count > 0
-              ? `When you cancel an appointment, the cancellation charge is billed back to you. ${cancellationCharges.count} cancellation${cancellationCharges.count > 1 ? "s" : ""} this period — patients fully refunded.`
+              ? "When you cancel an appointment, the cancellation charge is billed back to you."
               : "No outstanding cancellation charges. All patients have been settled."}
           </p>
         </div>
-        <div className="shrink-0">
-          <span className={`font-bold text-lg ${cancellationCharges.totalOwed > 0 ? "text-red-600 dark:text-red-400" : "text-green-600 dark:text-green-400"}`}>
+        {cancellationCharges.count > 0 && (
+          <div className="text-center shrink-0">
+            <p className="text-2xl font-bold text-foreground">
+              {String(cancellationCharges.count).padStart(2, "0")}
+            </p>
+            <p className="text-sm text-muted-foreground">Cancellations</p>
+          </div>
+        )}
+        <div className="text-right shrink-0">
+          <p className={`text-2xl font-bold ${cancellationCharges.totalOwed > 0 ? "text-red-600 dark:text-red-400" : "text-green-600 dark:text-green-400"}`}>
             {formatFee(cancellationCharges.totalOwed)}
-          </span>
+          </p>
+          <p className={`text-sm ${cancellationCharges.totalOwed > 0 ? "text-red-500 dark:text-red-500" : "text-green-500 dark:text-green-500"}`}>
+            {cancellationCharges.totalOwed > 0 ? "Deducted" : ""}
+          </p>
         </div>
       </div>
 
