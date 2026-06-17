@@ -977,6 +977,14 @@ export class DbStorage implements IStorage {
       .where(eq(appointments.id, id))
       .returning();
     if (!result[0]) return undefined;
+
+    if (updates.status === AppointmentStatus.COMPLETED) {
+      await db
+        .update(doctorProfiles)
+        .set({ totalAppointments: sql`${doctorProfiles.totalAppointments} + 1` })
+        .where(eq(doctorProfiles.id, result[0].doctorId));
+    }
+
     return {
       ...result[0],
       createdAt: toISOString(result[0].createdAt),

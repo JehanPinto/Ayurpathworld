@@ -39,7 +39,7 @@ interface ReportsData {
     payoutsPct: number;
     netFeesPct: number;
   };
-  weeklyAppointments: { week: string; completed: number; cancelled: number }[];
+  weeklyAppointments: { week: string; dateLabel: string; completed: number; cancelled: number }[];
   specializationBookings: { name: string; value: number }[];
   patientRegistrations: { week: string; patients: number }[];
   registrationGrowth: number;
@@ -126,6 +126,16 @@ function exportToCSV(data: ReportsData) {
   link.click();
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
+}
+
+function WeekTick({ x, y, payload }: { x?: number; y?: number; payload?: { value: string } }) {
+  const [week, date] = (payload?.value ?? "").split("|");
+  return (
+    <g transform={`translate(${x},${y})`}>
+      <text x={0} y={0} dy={14} textAnchor="middle" fill="#888" fontSize={12}>{week}</text>
+      <text x={0} y={0} dy={27} textAnchor="middle" fill="#aaa" fontSize={10}>{date}</text>
+    </g>
+  );
 }
 
 export default function AdminReportsPage() {
@@ -249,10 +259,10 @@ export default function AdminReportsPage() {
                 <p className="text-xs text-muted-foreground">Monthly appointments across the selected window</p>
               </CardHeader>
               <CardContent>
-                <ResponsiveContainer width="100%" height={260}>
-                  <BarChart data={weeklyAppointments} barCategoryGap="30%">
+                <ResponsiveContainer width="100%" height={300}>
+                  <BarChart data={weeklyAppointments.map(w => ({ ...w, weekKey: `${w.week}|${w.dateLabel}` }))} barCategoryGap="30%" margin={{ bottom: 8 }}>
                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f0f0f0" />
-                    <XAxis dataKey="week" axisLine={false} tickLine={false} tick={{ fontSize: 12 }} />
+                    <XAxis dataKey="weekKey" axisLine={false} tickLine={false} tick={(props: any) => <WeekTick {...props} />} height={48} interval={0} />
                     <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12 }} />
                     <Tooltip contentStyle={{ borderRadius: 8, fontSize: 12 }} cursor={{ fill: "rgba(0,0,0,0.04)" }} />
                     <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 12 }} />
@@ -367,7 +377,7 @@ export default function AdminReportsPage() {
                       <tr className="border-b bg-muted/40">
                         <th className="text-left px-4 py-3 font-medium text-muted-foreground text-xs">Doctor</th>
                         <th className="text-left px-4 py-3 font-medium text-muted-foreground text-xs">Status</th>
-                        <th className="text-right px-4 py-3 font-medium text-muted-foreground text-xs">Appts</th>
+                        <th className="text-right px-4 py-3 font-medium text-muted-foreground text-xs">N.O.A</th>
                         <th className="text-right px-4 py-3 font-medium text-muted-foreground text-xs">Rating</th>
                       </tr>
                     </thead>
