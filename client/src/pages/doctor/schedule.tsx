@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import {
   Calendar as CalendarIcon,
@@ -12,7 +12,7 @@ import {
   CalendarPlus,
   User,
 } from "lucide-react";
-import { format, parseISO, isToday } from "date-fns";
+import { format, parseISO, isToday, addHours, isBefore } from "date-fns";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -39,11 +39,14 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { AppointmentSlot, DoctorWithDetails } from "@shared/schema";
 import { Modal } from "@/components/ui/modal";
 
-// Generate 24h time slots
+// Generate 24/7h time slots
 const timeSlots = [
+  "00:00", "00:30", "01:00", "01:30", "02:00", "02:30", "03:00", "03:30",
+  "04:00", "04:30", "05:00", "05:30", "06:00", "06:30", "07:00", "07:30",
   "08:00", "08:30", "09:00", "09:30", "10:00", "10:30", "11:00", "11:30",
   "12:00", "12:30", "13:00", "13:30", "14:00", "14:30", "15:00", "15:30",
-  "16:00", "16:30", "17:00", "17:30", "18:00", "18:30", "19:00", "19:30", "20:00"
+  "16:00", "16:30", "17:00", "17:30", "18:00", "18:30", "19:00", "19:30", 
+  "20:00", "20:30", "21:00", "21:30", "22:00", "22:30", "23:00", "23:30", "24:00"
 ];
 
 // Helper to compare times
@@ -51,18 +54,28 @@ const isTimeOverlap = (start1: string, end1: string, start2: string, end2: strin
   return start1 < end2 && start2 < end1;
 };
 
-// Helper to format time (e.g. "13:00" -> "1:00 PM")
 const formatTimeAMPM = (time24: string) => {
+  if (time24 === "24:00") return "12:00 AM";
+  
   const [hourStr, min] = time24.split(":");
   let hour = parseInt(hourStr, 10);
-  const ampm = hour >= 12 ? "PM" : "AM";
-  hour = hour % 12 || 12; // Convert 0 or 12 to 12
+  
+  // Determine AM or PM
+  const ampm = hour >= 12 && hour < 24 ? "PM" : "AM";
+  
+  // Convert to 12-hour format
+  hour = hour % 12 || 12; 
+  
   return `${hour.toString()}:${min} ${ampm}`;
 };
 
 export default function DoctorSchedule() {
   const { toast } = useToast();
   const todayDateStr = format(new Date(), "yyyy-MM-dd");
+
+  const { data: profile } = useQuery<DoctorWithDetails>({
+    queryKey: ["/api/doctor/profile"],
+  });
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [newSlot, setNewSlot] = useState({
@@ -75,14 +88,40 @@ export default function DoctorSchedule() {
   });
 
   const maxDate = useMemo(() => {
+    if (!profile) return todayDateStr;
+    const allowedDays = Math.min(profile.maxAdvanceBookingDays || 10, 10); // 🟢 Strict Cap at 10 days
     const d = new Date();
-    d.setDate(d.getDate() + 5);
+    d.setDate(d.getDate() + allowedDays);
     return format(d, "yyyy-MM-dd");
-  }, []);
+  }, [profile, todayDateStr]);
 
-  const { data: profile } = useQuery<DoctorWithDetails>({
-    queryKey: ["/api/doctor/profile"],
-  });
+  const getAvailableStartTimes = (selectedDateStr: string) => {
+    if (selectedDateStr !== todayDateStr) {
+      return timeSlots;
+    }
+
+    const threeHoursFromNow = addHours(new Date(), 3);
+    return timeSlots.filter(time => {
+      const [hours, minutes] = time.split(':');
+      const slotDate = new Date();
+      slotDate.setHours(parseInt(hours, 10), parseInt(minutes, 10), 0, 0);
+      return !isBefore(slotDate, threeHoursFromNow);
+    });
+  };
+
+  const currentAvailableStartTimes = getAvailableStartTimes(newSlot.date);
+
+  useEffect(() => {
+    const availableForDate = getAvailableStartTimes(newSlot.date);
+    if (!availableForDate.includes(newSlot.startTime)) {
+      const firstAvailable = availableForDate[0] || "";
+      setNewSlot(prev => ({
+        ...prev,
+        startTime: firstAvailable,
+        endTime: firstAvailable ? timeSlots[timeSlots.indexOf(firstAvailable) + 1] || firstAvailable : ""
+      }));
+    }
+  }, [newSlot.date]);
 
   const {
     data: slots = [],
@@ -128,7 +167,7 @@ export default function DoctorSchedule() {
     },
   });
 
-  // 🟢 Changed to Deactivate instead of Delete
+  // Changed to Deactivate instead of Delete
   const deactivateSlotMutation = useMutation({
     mutationFn: async (slotId: string) => {
       return apiRequest("PATCH", `/api/slots/${slotId}/deactivate`);
@@ -149,10 +188,21 @@ export default function DoctorSchedule() {
       return;
     }
 
-    // 2. Time Logic Validation
-    if (newSlot.endTime <= newSlot.startTime) {
-      toast({ title: "End time must be after start time", variant: "destructive" });
-      return;
+    // Time Logic Validation
+    if (newSlot.date === todayDateStr) {
+      const [hours, minutes] = newSlot.startTime.split(':');
+      const slotDate = new Date();
+      slotDate.setHours(parseInt(hours, 10), parseInt(minutes, 10), 0, 0);
+      const threeHoursFromNow = addHours(new Date(), 3);
+      
+      if (isBefore(slotDate, threeHoursFromNow)) {
+        toast({ 
+          title: "Too early for today", 
+          description: "Appointments for today must be scheduled at least 3 hours in advance.", 
+          variant: "destructive" 
+        });
+        return;
+      }
     }
 
     // 3. Overlap Validation
@@ -396,7 +446,6 @@ export default function DoctorSchedule() {
           <div className="space-y-2">
             <Label>Date</Label>
             <div className="relative flex items-center">
-                            
               <Input
                 type="date"
                 min={todayDateStr}
@@ -406,49 +455,58 @@ export default function DoctorSchedule() {
                   const val = e.target.value;
                   if (val >= todayDateStr && val <= maxDate) {
                     setNewSlot({ ...newSlot, date: val });
-                  } else {
-                    toast({ title: "Invalid Date", description: "You can only schedule up to 5 days ahead.", variant: "destructive" });
+                  } else if (val > maxDate) {
+                    toast({ title: "Booking Limit Reached", description: `You can only schedule up to ${Math.min(profile?.maxAdvanceBookingDays || 10, 10)} days ahead.`, variant: "destructive" });
                   }
                 }}
               />
             </div>
+            <p className="text-xs text-muted-foreground flex justify-end">
+              Max advance limit: {format(parseISO(maxDate), "MMM dd, yyyy")}
+            </p>
           </div>
 
           {/* Time Pickers */}
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <Label>Start Time</Label>
-              <Select 
-                value={newSlot.startTime} 
-                onValueChange={(v) => {
-                  setNewSlot(prev => ({ 
-                    ...prev, 
-                    startTime: v,
-                    endTime: prev.endTime <= v ? timeSlots[timeSlots.indexOf(v) + 1] || v : prev.endTime 
-                  }));
-                }}
-              >
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent className="max-h-[200px]">
-                  {timeSlots.map((time) => (
-                    <SelectItem key={time} value={time}>{formatTimeAMPM(time)}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+          {currentAvailableStartTimes.length === 0 ? (
+            <div className="p-4 bg-red-50 border border-red-100 rounded-lg text-red-600 text-sm text-center">
+              No available time slots left for today. Please choose a future date.
             </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>Start Time</Label>
+                <Select 
+                  value={newSlot.startTime} 
+                  onValueChange={(v) => {
+                    setNewSlot(prev => ({ 
+                      ...prev, 
+                      startTime: v,
+                      endTime: prev.endTime <= v ? timeSlots[timeSlots.indexOf(v) + 1] || v : prev.endTime 
+                    }));
+                  }}
+                >
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent className="max-h-[200px]">
+                    {currentAvailableStartTimes.map((time) => (
+                      <SelectItem key={time} value={time}>{formatTimeAMPM(time)}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
 
-            <div className="space-y-2">
-              <Label>End Time</Label>
-              <Select value={newSlot.endTime} onValueChange={(v) => setNewSlot({ ...newSlot, endTime: v })}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent className="max-h-[200px]">
-                  {validEndTimes.map((time) => (
-                    <SelectItem key={time} value={time}>{formatTimeAMPM(time)}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <div className="space-y-2">
+                <Label>End Time</Label>
+                <Select value={newSlot.endTime} onValueChange={(v) => setNewSlot({ ...newSlot, endTime: v })}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent className="max-h-[200px]">
+                    {validEndTimes.map((time) => (
+                      <SelectItem key={time} value={time}>{formatTimeAMPM(time)}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
-          </div>
+          )}
 
           {/* Mode Picker */}
           <div className="space-y-2">
