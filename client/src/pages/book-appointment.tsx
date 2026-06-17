@@ -355,7 +355,7 @@ export default function BookAppointmentPage() {
 
   if (doctorLoading || slotLoading) {
     return (
-      <PublicLayout showHeader={false}>
+      <PublicLayout showHeader={false} showFooter={false}>
         <LoadingPage message="Loading booking details..." />
       </PublicLayout>
     );
@@ -363,7 +363,7 @@ export default function BookAppointmentPage() {
 
   if (!doctor || !slot || slotError) {
     return (
-      <PublicLayout showHeader={false}>
+      <PublicLayout showHeader={false} showFooter={false}>
         <div className="container mx-auto px-4 py-16 text-center">
           <h1 className="text-2xl font-bold mb-4">Booking not found</h1>
           <Link href="/patient/find-doctors"><Button>Find Doctors</Button></Link>

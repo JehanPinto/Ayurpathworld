@@ -121,7 +121,7 @@ export default function DoctorProfilePage() {
 
   if (doctorLoading) {
     return (
-      <PublicLayout showHeader={false}>
+      <PublicLayout showHeader={false} showFooter={false}>
         <LoadingPage message="Loading doctor profile..." />
       </PublicLayout>
     );
@@ -129,7 +129,7 @@ export default function DoctorProfilePage() {
 
   if (!doctor) {
     return (
-      <PublicLayout showHeader={false}>
+      <PublicLayout showHeader={false} showFooter={false}>
         <div className="container mx-auto px-4 py-16 text-center">
           <h1 className="text-2xl font-bold mb-4">Doctor not found</h1>
           <Link href="/patient/doctors"><button className="px-4 py-2 bg-primary text-primary-foreground rounded-lg">Back to Doctors</button></Link>
