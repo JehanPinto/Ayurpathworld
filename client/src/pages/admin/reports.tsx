@@ -74,7 +74,7 @@ function PctBadge({ pct }: { pct: number }) {
 
 function StarRating({ rating }: { rating: number }) {
   return (
-    <span className="flex items-center gap-1 text-sm">
+    <span className="flex items-center justify-center gap-1 text-sm">
       <Star className="h-3.5 w-3.5 fill-yellow-400 text-yellow-400" />
       {rating.toFixed(1)}
     </span>
@@ -377,8 +377,8 @@ export default function AdminReportsPage() {
                       <tr className="border-b bg-muted/40">
                         <th className="text-left px-4 py-3 font-medium text-muted-foreground text-xs">Doctor</th>
                         <th className="text-left px-4 py-3 font-medium text-muted-foreground text-xs">Status</th>
-                        <th className="text-right px-4 py-3 font-medium text-muted-foreground text-xs">N.O.A</th>
-                        <th className="text-right px-4 py-3 font-medium text-muted-foreground text-xs">Rating</th>
+                        <th className="text-center px-4 py-3 font-medium text-muted-foreground text-xs">N.O.A</th>
+                        <th className="text-center px-4 py-3 font-medium text-muted-foreground text-xs">Rating</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -401,8 +401,8 @@ export default function AdminReportsPage() {
                                 {doc.status === "verified" ? "Verified" : "Pending"}
                               </Badge>
                             </td>
-                            <td className="px-4 py-3 text-right font-medium">{doc.appointments}</td>
-                            <td className="px-4 py-3 text-right"><StarRating rating={doc.rating} /></td>
+                            <td className="px-4 py-3 text-center font-medium">{doc.appointments}</td>
+                            <td className="px-4 py-3 text-center"><StarRating rating={doc.rating} /></td>
                           </tr>
                         ))
                       )}
