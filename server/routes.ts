@@ -6304,7 +6304,8 @@ export async function registerRoutes(
              FROM appointments WHERE created_at >= $1 AND created_at < $2`,
             [weekStart, weekEnd]
           );
-          const lastDay = new Date(weekEnd.getTime() - 24 * 60 * 60 * 1000);
+          // For current week (w=0) weekEnd=now so today IS included; past weeks use exclusive upper bound - 1
+          const lastDay = w === 0 ? now : new Date(weekEnd.getTime() - 24 * 60 * 60 * 1000);
           const sDay = weekStart.getDate(), sMon = MON[weekStart.getMonth()];
           const eDay = lastDay.getDate(), eMon = MON[lastDay.getMonth()];
           const dateLabel = sMon === eMon ? `${sDay}-${eDay} ${sMon}` : `${sDay} ${sMon}-${eDay} ${eMon}`;
