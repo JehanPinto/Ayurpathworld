@@ -18,6 +18,8 @@ import { LoadingPage } from "@/components/ui/loading-spinner";
 import type { DoctorWithDetails, AppointmentSlot } from "@shared/schema";
 import { apiRequest } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
+import { useAuth } from "@/lib/auth-context";
+import { UserRole } from "@shared/schema";
 
 // ─── Step icons ───────────────────────────────────────────────────────────────
 const STEP_ICONS = [
@@ -64,6 +66,8 @@ const VISIBLE_COUNT = 9;
 export default function DoctorProfilePage() {
   const { id } = useParams();
   const [, navigate] = useLocation();
+  const { user } = useAuth();
+  const isPatient = user?.role === UserRole.PATIENT;
   const [selectedDate, setSelectedDate] = useState(startOfToday());
   const [selectedConsultationType, setSelectedConsultationType] = useState<"all" | "in_person" | "online">("all");
   const [dateOffset, setDateOffset] = useState(0);
@@ -121,7 +125,7 @@ export default function DoctorProfilePage() {
 
   if (doctorLoading) {
     return (
-      <PublicLayout showHeader={false} showFooter={false}>
+      <PublicLayout showHeader={false} showFooter={!isPatient}>
         <LoadingPage message="Loading doctor profile..." />
       </PublicLayout>
     );
@@ -129,7 +133,7 @@ export default function DoctorProfilePage() {
 
   if (!doctor) {
     return (
-      <PublicLayout showHeader={false} showFooter={false}>
+      <PublicLayout showHeader={false} showFooter={!isPatient}>
         <div className="container mx-auto px-4 py-16 text-center">
           <h1 className="text-2xl font-bold mb-4">Doctor not found</h1>
           <Link href="/patient/doctors"><button className="px-4 py-2 bg-primary text-primary-foreground rounded-lg">Back to Doctors</button></Link>
@@ -141,7 +145,7 @@ export default function DoctorProfilePage() {
   const consultationTypes = doctor.consultationTypes ?? [];
 
   return (
-    <PublicLayout showHeader={false}>
+    <PublicLayout showHeader={false} showFooter={!isPatient}>
       <div className="min-h-screen bg-background">
         <div className="max-w-5xl mx-auto px-4 py-6">
           <div className="flex items-center justify-between mb-8">
