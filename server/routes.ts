@@ -6,6 +6,7 @@ import { type Server } from "http";
 import path from "path";
 import { pool } from "./db";
 import { storage } from "./storage";
+import { getMaintenanceStatus, updateMaintenanceCache } from "./maintenance";
 import { sendApplicationEmail, sendPasswordResetOtpEmail } from "./util/email";
 
 import {
@@ -486,6 +487,11 @@ export async function registerRoutes(
   httpServer: Server,
   app: Express,
 ): Promise<Server> {
+  // Public — no auth required, used by maintenance page to poll status
+  app.get("/api/maintenance-status", (_req: Request, res: Response) => {
+    res.json(getMaintenanceStatus());
+  });
+
   app.use(passport.initialize());
   passport.serializeUser((user: any, done) => {
     done(null, user);
@@ -4746,6 +4752,12 @@ export async function registerRoutes(
             ),
           );
         }
+
+        // Sync in-memory maintenance cache
+        updateMaintenanceCache(
+          settings.maintenanceMode,
+          settings.maintenanceEndTime ?? null,
+        );
 
         console.log("Settings updated successfully:", settings);
 

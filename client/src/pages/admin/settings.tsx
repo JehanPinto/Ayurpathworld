@@ -19,6 +19,13 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { LoadingPage } from "@/components/ui/loading-spinner";
 import type { PlatformSettings, TaxEntry } from "@shared/schema";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
 
 function SpinnerBox({
   label,
@@ -75,6 +82,15 @@ function SpinnerBox({
 export default function AdminSettingsPage() {
   const { toast } = useToast();
   const { tab: activeTab } = useSettingsTab();
+
+  const toLocalDatetimeValue = (date: Date) => {
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  };
+
+  const [maintenanceDialog, setMaintenanceDialog] = useState(false);
+  const [maintStartTime, setMaintStartTime] = useState(toLocalDatetimeValue(new Date()));
+  const [maintEndTime, setMaintEndTime] = useState("");
 
   const [settings, setSettings] = useState({
     platformCommissionRate: "10",
@@ -216,6 +232,37 @@ export default function AdminSettingsPage() {
     });
   };
 
+  const handleMaintenanceToggle = (value: boolean) => {
+    if (value) {
+      // Show confirmation popup — don't activate yet
+      setMaintStartTime(toLocalDatetimeValue(new Date()));
+      setMaintEndTime("");
+      setMaintenanceDialog(true);
+    } else {
+      // Turn off immediately — no popup needed
+      update("maintenanceMode", false);
+      saveMutation.mutate({
+        maintenanceMode: false,
+        maintenanceStartTime: null,
+        maintenanceEndTime: null,
+      });
+    }
+  };
+
+  const handleMaintenanceConfirm = () => {
+    if (!maintEndTime) {
+      toast({ title: "End time required", description: "Please set an expected end time.", variant: "destructive" });
+      return;
+    }
+    setMaintenanceDialog(false);
+    update("maintenanceMode", true);
+    saveMutation.mutate({
+      maintenanceMode: true,
+      maintenanceStartTime: new Date(maintStartTime).toISOString(),
+      maintenanceEndTime: new Date(maintEndTime).toISOString(),
+    });
+  };
+
   const handleAddTax = () => {
     const title = newTaxTitle.trim();
     const rate = parseFloat(newTaxRate);
@@ -245,6 +292,7 @@ export default function AdminSettingsPage() {
   }
 
   return (
+    <>
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl md:text-3xl font-heading font-bold">Platform Settings</h1>
@@ -607,18 +655,53 @@ export default function AdminSettingsPage() {
               <p className="text-sm text-muted-foreground mt-1">These settings can affect platform availability</p>
             </div>
 
-            <div className="flex items-center justify-between py-1">
-              <div>
-                <p className="font-medium">Maintenance Mode</p>
-                <p className="text-sm text-muted-foreground mt-0.5">
-                  Temporarily disable the platform for maintenance. Users will see a maintenance page.
-                </p>
+            <div className="space-y-3">
+              <div className="flex items-center justify-between py-1">
+                <div>
+                  <p className="font-medium">Maintenance Mode</p>
+                  <p className="text-sm text-muted-foreground mt-0.5">
+                    Temporarily disable the platform for maintenance. Users will see a maintenance page.
+                  </p>
+                </div>
+                <Switch
+                  checked={settings.maintenanceMode}
+                  onCheckedChange={handleMaintenanceToggle}
+                  data-testid="switch-maintenance"
+                />
               </div>
-              <Switch
-                checked={settings.maintenanceMode}
-                onCheckedChange={(v) => update("maintenanceMode", v)}
-                data-testid="switch-maintenance"
-              />
+              {settings.maintenanceMode && (
+                <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg p-4 space-y-3">
+                  <p className="text-sm font-medium text-amber-800 dark:text-amber-300">Maintenance is currently active</p>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <Label className="text-xs">End Time</Label>
+                      <input
+                        type="datetime-local"
+                        value={maintEndTime}
+                        onChange={(e) => setMaintEndTime(e.target.value)}
+                        className="w-full text-sm rounded-md border border-input bg-background px-3 py-1.5 text-foreground"
+                      />
+                    </div>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="border-amber-400 text-amber-800 dark:text-amber-300 hover:bg-amber-100"
+                    onClick={() => {
+                      if (!maintEndTime) {
+                        toast({ title: "End time required", variant: "destructive" });
+                        return;
+                      }
+                      saveMutation.mutate({
+                        maintenanceMode: true,
+                        maintenanceEndTime: new Date(maintEndTime).toISOString(),
+                      });
+                    }}
+                  >
+                    Update End Time
+                  </Button>
+                </div>
+              )}
             </div>
           </div>
 
@@ -638,5 +721,50 @@ export default function AdminSettingsPage() {
         </>
       )}
     </div>
+
+    {/* Maintenance Mode Confirmation Dialog */}
+    <Dialog open={maintenanceDialog} onOpenChange={setMaintenanceDialog}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2 text-destructive">
+            <AlertTriangle className="h-5 w-5" />
+            Enable Maintenance Mode?
+          </DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4 py-2">
+          <p className="text-sm text-muted-foreground">
+            This will disable the platform for <strong>all users</strong>. They will see a maintenance page until you turn this off manually.
+          </p>
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <Label className="text-xs font-medium">Start Date &amp; Time</Label>
+              <input
+                type="datetime-local"
+                value={maintStartTime}
+                onChange={(e) => setMaintStartTime(e.target.value)}
+                className="w-full text-sm rounded-md border border-input bg-background px-3 py-2 text-foreground"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs font-medium">Expected End Date &amp; Time <span className="text-destructive">*</span></Label>
+              <input
+                type="datetime-local"
+                value={maintEndTime}
+                onChange={(e) => setMaintEndTime(e.target.value)}
+                className="w-full text-sm rounded-md border border-input bg-background px-3 py-2 text-foreground"
+              />
+              <p className="text-xs text-muted-foreground">Shown to users on the maintenance page. You must turn off maintenance manually.</p>
+            </div>
+          </div>
+        </div>
+        <DialogFooter className="gap-2">
+          <Button variant="outline" onClick={() => setMaintenanceDialog(false)}>Cancel</Button>
+          <Button variant="destructive" onClick={handleMaintenanceConfirm} disabled={saveMutation.isPending}>
+            {saveMutation.isPending ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Enabling...</> : "Enable Maintenance"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+    </>
   );
 }

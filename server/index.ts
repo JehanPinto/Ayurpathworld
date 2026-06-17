@@ -10,6 +10,7 @@ import helmet from "helmet";
 import cors from "cors";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
+import { initMaintenanceCache, maintenanceMiddleware } from "./maintenance";
 
 const app = express();
 const httpServer = createServer(app);
@@ -91,6 +92,8 @@ app.use((req, res, next) => {
 });
 
 (async () => {
+  await initMaintenanceCache();
+  app.use(maintenanceMiddleware);
   await registerRoutes(httpServer, app);
 
   // importantly only setup vite in development and after
