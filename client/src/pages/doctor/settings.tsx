@@ -1273,58 +1273,6 @@ export default function DoctorSettings() {
               </Form>
             </CardContent>
           </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle>Account Security</CardTitle>
-              <CardDescription>
-                Additional security settings for your account
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="flex items-center justify-between py-2">
-                <div>
-                  <h4 className="font-medium">Email Verification</h4>
-                  <p className="text-sm text-muted-foreground">
-                    {user.isEmailVerified 
-                      ? "Your email is verified" 
-                      : "Verify your email to secure your account"}
-                  </p>
-                </div>
-                {user.isEmailVerified ? (
-                  <Badge variant="secondary" className="gap-1">
-                    <Check className="h-3 w-3" />
-                    Verified
-                  </Badge>
-                ) : (
-                  <Button variant="outline" size="sm" onClick={() => toast({ title: "Verification email sent", description: "Please check your inbox and follow the instructions to verify your email." })}>
-                    Verify Email
-                  </Button>
-                )}
-              </div>
-
-              <div className="flex items-center justify-between py-2">
-                <div>
-                  <h4 className="font-medium">Phone Verification</h4>
-                  <p className="text-sm text-muted-foreground">
-                    {user.isPhoneVerified 
-                      ? "Your phone is verified" 
-                      : "Verify your phone for SMS notifications"}
-                  </p>
-                </div>
-                {user.isPhoneVerified ? (
-                  <Badge variant="secondary" className="gap-1">
-                    <Check className="h-3 w-3" />
-                    Verified
-                  </Badge>
-                ) : (
-                  <Button variant="outline" size="sm" onClick={() => navigate("/doctor/verify-phone")}>
-                    Verify Phone
-                  </Button>
-                )}
-              </div>
-            </CardContent>
-          </Card>
         </TabsContent>
 
         <TabsContent value="qr-code">
