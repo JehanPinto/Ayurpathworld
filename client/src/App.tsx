@@ -96,7 +96,7 @@ function MaintenanceGuard({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const isAdmin = (user?.role as string) === "admin";
-    if (location === "/maintenance" || isAdmin) return;
+    if (location === "/maintenance" || location === "/login" || isAdmin) return;
     fetch("/api/maintenance-status")
       .then((r) => r.json())
       .then((d) => {

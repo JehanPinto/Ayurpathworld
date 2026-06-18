@@ -76,6 +76,10 @@ export default function MaintenancePage() {
         <p className="text-xs text-muted-foreground">
           This page refreshes automatically. Thank you for your patience.
         </p>
+
+        <a href="/login" className="text-xs text-muted-foreground/40 hover:text-muted-foreground transition-colors mt-4">
+          Admin login
+        </a>
       </div>
     </div>
   );

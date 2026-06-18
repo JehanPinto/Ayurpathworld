@@ -2006,9 +2006,17 @@ export class DbStorage implements IStorage {
     // Ensure settings exist first
     await this.getPlatformSettings();
 
+    const { maintenanceStartTime, maintenanceEndTime, ...rest } = updates;
+    const dbUpdates: any = {
+      ...rest,
+      updatedAt: new Date(),
+      ...(maintenanceStartTime !== undefined && { maintenanceStartTime: maintenanceStartTime ? new Date(maintenanceStartTime) : null }),
+      ...(maintenanceEndTime !== undefined && { maintenanceEndTime: maintenanceEndTime ? new Date(maintenanceEndTime) : null }),
+    };
+
     const result = await db
       .update(platformSettings)
-      .set({ ...updates, updatedAt: new Date() })
+      .set(dbUpdates)
       .where(eq(platformSettings.id, "default"))
       .returning();
 
