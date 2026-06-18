@@ -1,5 +1,6 @@
 import type { Request, Response, NextFunction } from "express";
 import { storage } from "./storage";
+import jwt from "jsonwebtoken";
 
 interface MaintenanceCache {
   isActive: boolean;
@@ -28,7 +29,6 @@ export function getMaintenanceStatus() {
   return { ...cache };
 }
 
-// Routes that are always allowed even during maintenance
 const ALLOWED_PATHS = [
   "/api/auth/login",
   "/api/auth/logout",
@@ -37,6 +37,17 @@ const ALLOWED_PATHS = [
 ];
 
 const ADMIN_PREFIXES = ["/api/admin", "/admin"];
+
+function getTokenRole(req: Request): string | null {
+  try {
+    const token = req.cookies?.token || req.headers.authorization?.replace("Bearer ", "");
+    if (!token) return null;
+    const decoded = jwt.verify(token, process.env.SESSION_SECRET!) as any;
+    return decoded?.role ?? null;
+  } catch {
+    return null;
+  }
+}
 
 export function maintenanceMiddleware(req: Request, res: Response, next: NextFunction) {
   if (!cache.isActive) return next();
@@ -49,8 +60,11 @@ export function maintenanceMiddleware(req: Request, res: Response, next: NextFun
   // Always allow specific paths
   if (ALLOWED_PATHS.some((p) => path === p || path.startsWith(p + "/"))) return next();
 
-  // Allow static assets (js, css, images)
+  // Allow static assets
   if (path.match(/\.(js|css|png|jpg|jpeg|svg|ico|woff|woff2|ttf|map)$/)) return next();
+
+  // Allow any request with a valid admin JWT token
+  if (getTokenRole(req) === "admin") return next();
 
   // Block API requests with 503
   if (path.startsWith("/api/")) {
@@ -61,7 +75,5 @@ export function maintenanceMiddleware(req: Request, res: Response, next: NextFun
     });
   }
 
-  // For all other requests (HTML pages), let the SPA handle it
-  // The frontend will redirect to /maintenance based on the status API
   next();
 }

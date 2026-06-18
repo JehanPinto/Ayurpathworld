@@ -90,11 +90,13 @@ function ProtectedRoute({
 }
 
 function MaintenanceGuard({ children }: { children: React.ReactNode }) {
-  const { user } = useAuth();
+  const { user, isLoading } = useAuth();
   const [location, navigate] = useLocation();
   const [isMaintenance, setIsMaintenance] = useState(false);
 
   useEffect(() => {
+    // Wait for auth to finish loading — avoids redirecting admin on page refresh
+    if (isLoading) return;
     const isAdmin = (user?.role as string) === "admin";
     if (location === "/maintenance" || location === "/login" || isAdmin) return;
     fetch("/api/maintenance-status")
@@ -109,7 +111,7 @@ function MaintenanceGuard({ children }: { children: React.ReactNode }) {
         }
       })
       .catch(() => {});
-  }, [location]);
+  }, [location, isLoading]);
 
   const isAdmin = (user?.role as string) === "admin";
   if (isMaintenance && location !== "/maintenance" && !isAdmin) return null;

@@ -158,6 +158,9 @@ export default function AdminSettingsPage() {
         maintenanceMode: serverSettings.maintenanceMode,
         cancellationFee: String(serverSettings.cancellationFee ?? 300),
       }));
+      if (serverSettings.maintenanceEndTime) {
+        setMaintEndTime(toLocalDatetimeValue(new Date(serverSettings.maintenanceEndTime)));
+      }
       setSystemTaxes((prev) =>
         prev.map((t) => {
           if (t.id === "vat") return { ...t, enabled: serverSettings.vatEnabled ?? true };
