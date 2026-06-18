@@ -1042,6 +1042,12 @@ export async function registerRoutes(
 
         const tCredentialsVerified = new Date().toISOString();
 
+        // Block non-admin logins during maintenance
+        const { isActive: maintenanceActive } = getMaintenanceStatus();
+        if (maintenanceActive && user.role !== UserRole.ADMIN) {
+          return res.status(503).json({ error: "Platform is currently under maintenance. Please try again later." });
+        }
+
         if (user.provider && user.provider !== AuthProvider.LOCAL) {
           const providerName = user.provider.charAt(0).toUpperCase() + user.provider.slice(1);
 
