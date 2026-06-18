@@ -68,8 +68,8 @@ const buildPersonalInfoSchema = (requirePassword: boolean) =>
       phone: z
         .string()
         .regex(
-          /^\+947[0-9]{8}$/,
-          "Please enter a valid Sri Lankan mobile number starting with +94 (e.g., +94771234567)",
+          /^07[0-9]{8}$/,
+          "Please enter a valid Sri Lankan mobile number (07XXXXXXXX)",
         ),
       password: requirePassword
         ? z
@@ -216,20 +216,6 @@ const SRI_LANKAN_BANKS = [
   { name: "Union Bank of Colombo PLC", domain: "unionb.com" },
   { name: "Other", domain: "" },
 ];
-
-// --- SRI LANKAN CITIES ---
-const SRI_LANKAN_CITIES = [
-  "Ambalangoda", "Ampara", "Anuradhapura", "Avissawella", "Badulla", "Balangoda", 
-  "Bandarawela", "Battaramulla", "Batticaloa", "Beruwala", "Boralesgamuwa", "Chilaw", 
-  "Colombo", "Dambulla", "Dehiwala", "Embilipitiya", "Galle", "Gampaha", "Gampola", 
-  "Hambantota", "Hatton", "Homagama", "Horana", "Ja-Ela", "Jaffna", "Kadawatha", 
-  "Kadugannawa", "Kaduwela", "Kalutara", "Kandana", "Kandy", "Kegalle", "Kelaniya", 
-  "Kilinochchi", "Kinniya", "Kolonnawa", "Kuliyapitiya", "Kurunegala", "Maharagama", 
-  "Mahiyanganaya", "Malabe", "Mannar", "Matale", "Matara", "Minuwangoda", "Moneragala", 
-  "Moratuwa", "Mount Lavinia", "Mullaitivu", "Nawalapitiya", "Negombo", "Nugegoda", 
-  "Nuwara Eliya", "Panadura", "Peliyagoda", "Point Pedro", "Polonnaruwa", "Puttalam", 
-  "Ratnapura", "Sri Jayawardenepura Kotte", "Tangalle", "Trincomalee", "Vavuniya", "Wattala", "Weligama", "Welisara"
-].sort();
 
 export default function DoctorRegisterPage() {
   const [currentStep, setCurrentStep] = useState(4);
@@ -861,41 +847,12 @@ export default function DoctorRegisterPage() {
                           <FormLabel>Phone *</FormLabel>
                           <FormControl>
                             <Input
-                              placeholder="+947XXXXXXXX"
+                              placeholder="+94 77 123 4567"
                               data-testid="input-phone"
-                              maxLength={12}
+                              maxLength={10}
                               {...field}
-                              onChange={(e) => {
-                                const val = e.target.value;
-
-                                if (!val.startsWith("+94")) {
-                                  const digitsOnly = val.replace(/\D/g, "");
-                                  
-                                  if (digitsOnly.length >= 9) {
-                                    let cleaned = digitsOnly;
-                                    if (cleaned.startsWith("94")) cleaned = cleaned.slice(2);
-                                    if (cleaned.startsWith("0")) cleaned = cleaned.slice(1);
-                                    field.onChange("+94" + cleaned.slice(0, 9));
-                                    return;
-                                  }
-                                  
-                                  field.onChange("+94");
-                                  return;
-                                }
-
-                                let rest = val.slice(3).replace(/\D/g, "");
-                                
-                                if (rest.startsWith("0")) {
-                                  rest = rest.slice(1); 
-                                }
-
-                                field.onChange("+94" + rest);
-                              }}
                             />
                           </FormControl>
-                          <FormDescription>
-                            Enter your number in the format +947XXXXXXXX (12 characters total).
-                          </FormDescription>
                           <FormMessage />
                         </FormItem>
                       )}
@@ -997,21 +954,14 @@ export default function DoctorRegisterPage() {
                     name="city"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>City *</FormLabel>
-                        <Select onValueChange={field.onChange} defaultValue={field.value}>
-                          <FormControl>
-                            <SelectTrigger data-testid="select-city">
-                              <SelectValue placeholder="Select your city" />
-                            </SelectTrigger>
-                          </FormControl>
-                          <SelectContent className="max-h-[300px]">
-                            {SRI_LANKAN_CITIES.map((city) => (
-                              <SelectItem key={city} value={city}>
-                                {city}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
+                        <FormLabel>City</FormLabel>
+                        <FormControl>
+                          <Input
+                            placeholder="Colombo"
+                            data-testid="input-city"
+                            {...field}
+                          />
+                        </FormControl>
                         <FormMessage />
                       </FormItem>
                     )}
