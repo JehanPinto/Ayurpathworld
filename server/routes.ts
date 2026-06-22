@@ -4,7 +4,7 @@ import type { Express, NextFunction, Request, Response } from "express";
 import fs from "fs";
 import { type Server } from "http";
 import path from "path";
-import { pool } from "./db";
+import { db, pool } from "./db";
 import { storage } from "./storage";
 import { sendApplicationEmail, sendPasswordResetOtpEmail } from "./util/email";
 
@@ -26,6 +26,7 @@ import {
   loginSchema,
   PaymentMethod,
   PaymentStatus,
+  refunds,
   updateHospitalSchema,
   UserRole,
 } from "@shared/schema";
@@ -3128,7 +3129,9 @@ export async function registerRoutes(
           dependentGender: bookingData.dependentGender,
           dependentContact: bookingData.dependentContact,
           isCalled: false,
-          status: AppointmentStatus.PENDING,
+          status: bookingData.paymentMethod === PaymentMethod.AT_CLINIC
+            ? AppointmentStatus.CONFIRMED
+            : AppointmentStatus.PENDING,
         };
 
         const appointment = await storage.createAppointment(appointmentData);
@@ -3170,7 +3173,7 @@ export async function registerRoutes(
           totalAmount,
           status:
             bookingData.paymentMethod === PaymentMethod.ONLINE
-              ? PaymentStatus.PENDING
+              ? PaymentStatus.COMPLETED
               : PaymentStatus.UNPAID,
           method: bookingData.paymentMethod,
         };
@@ -3286,54 +3289,6 @@ export async function registerRoutes(
         res.json(appointments);
       } catch (error) {
         res.status(500).json({ error: "Failed to get appointments" });
-      }
-    },
-  );
-
-  app.patch(
-    "/api/appointments/:id/confirm",
-    authMiddleware,
-    roleMiddleware(UserRole.DOCTOR),
-    async (req: AuthenticatedRequest, res: Response) => {
-      try {
-        const existingAppointment = await storage.getAppointment(req.params.id);
-        if (!existingAppointment) {
-          return res.status(404).json({ error: "Appointment not found" });
-        }
-
-        const profile = await storage.getDoctorProfileByUserId(req.user!.id);
-
-        if (!profile || existingAppointment.doctorId !== profile.id) {
-          return res.status(403).json({ error: "Forbidden: You can only confirm your own appointments." });
-        }
-
-        const appointment = await storage.updateAppointment(req.params.id, {
-          status: AppointmentStatus.CONFIRMED,
-        });
-
-        if (appointment) {
-          const doctorUser = await storage.getUser(profile.userId);
-          const doctorName = doctorUser?.fullName || "your doctor";
-          const [yr, mo, dy] = appointment.appointmentDate.split("-");
-          const months = [
-            "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-            "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-          ];
-          const formattedDate = `${parseInt(dy)} ${months[parseInt(mo) - 1]}`;
-
-          await storage.createNotification({
-            userId: appointment.patientId,
-            title: "Appointment Confirmed",
-            message: `Your appointment with Dr. ${doctorName} for ${formattedDate} at ${appointment.appointmentTime} has been confirmed.`,
-            type: "appointment",
-            isRead: false,
-            relatedId: appointment.id,
-          });
-        }
-
-        res.json(appointment);
-      } catch (error) {
-        res.status(500).json({ error: "Failed to confirm appointment" });
       }
     },
   );
@@ -3571,6 +3526,12 @@ export async function registerRoutes(
 
         const updated = await storage.updatePayment(req.params.id, {
           status: PaymentStatus.FAILED,
+          consultationFee: 0,
+          bookingCharges: 0,
+          tax: 0,
+          platformCommission: 0,
+          doctorEarnings: 0,
+          totalAmount: 0,
         });
 
         const formattedAmount = `LKR ${payment.totalAmount.toLocaleString("en-LK")}`;
@@ -6203,6 +6164,20 @@ export async function registerRoutes(
   );
 
   app.get(
+    "/api/admin/refund-stats",
+    authMiddleware,
+    roleMiddleware(UserRole.ADMIN),
+    async (req: Request, res: Response) => {
+      try {
+        const stats = await storage.getRefundStats();
+        res.json(stats);
+      } catch (error) {
+        res.status(500).json({ error: "Failed to fetch refund stats" });
+      }
+    },
+  );
+
+  app.get(
     "/api/admin/refund-requests",
     authMiddleware,
     roleMiddleware(UserRole.ADMIN),
@@ -6210,11 +6185,11 @@ export async function registerRoutes(
       try {
         const page = parseInt(req.query.page as string) || 1;
         const limit = parseInt(req.query.limit as string) || 10;
+        const status = req.query.status as string; // 'pending' or 'history'
 
-        const result = await storage.getPaginatedRefundRequests(page, limit);
+        const result = await storage.getPaginatedRefundRequests(page, limit, status);
         res.json(result);
       } catch (error) {
-        console.error(error);
         res.status(500).json({ error: "Failed to fetch refund requests" });
       }
     },
@@ -6227,7 +6202,7 @@ export async function registerRoutes(
     roleMiddleware(UserRole.ADMIN),
     async (req: Request, res: Response) => {
       try {
-        const { status } = req.body; // 'completed' or 'rejected'
+        const { status } = req.body; 
         const updatedRefund = await storage.processRefund(req.params.id, status);
         res.json(updatedRefund);
       } catch (error) {
@@ -6560,7 +6535,15 @@ export async function registerRoutes(
         } else if (status_code === "-2" || status_code === "-1" || status_code === "0") {
           console.log(`[PAYHERE WEBHOOK] ⚠️ Payment Failed/Canceled for Appointment: ${appointmentId}`);
           if (payment && appt) {
-            await storage.updatePayment(payment.id, { status: PaymentStatus.FAILED });
+            await storage.updatePayment(payment.id, { 
+              status: PaymentStatus.FAILED,
+              consultationFee: 0,
+              bookingCharges: 0,
+              tax: 0,
+              platformCommission: 0,
+              doctorEarnings: 0,
+              totalAmount: 0
+            });
             await storage.updateAppointment(appointmentId, { 
                 status: AppointmentStatus.CANCELLED, 
                 cancelReason: `PayHere Payment Failed (Code: ${status_code})` 
@@ -6633,7 +6616,15 @@ export async function registerRoutes(
         // 1. Payment status update to faild
         const payment = await storage.getPaymentByAppointment(appointmentId);
         if (payment) {
-          await storage.updatePayment(payment.id, { status: PaymentStatus.FAILED });
+          await storage.updatePayment(payment.id, { 
+            status: PaymentStatus.FAILED,
+            consultationFee: 0,
+            bookingCharges: 0,
+            tax: 0,
+            platformCommission: 0,
+            doctorEarnings: 0,
+            totalAmount: 0
+          });
         }
 
         // 2. Appointment status update to cancelled with reason
@@ -6784,6 +6775,80 @@ export async function registerRoutes(
           return res.status(400).json({ error: "Validation failed", details: error.errors });
         }
         res.status(500).json({ error: "Failed to update location" });
+      }
+    }
+  );
+
+  // INITIATE REFUND REQUEST (From Admin Payments Page)
+  app.post(
+    "/api/admin/refund-requests/create",
+    authMiddleware,
+    roleMiddleware(UserRole.ADMIN),
+    async (req: Request, res: Response) => {
+      const tRequestReceived = new Date().toISOString();
+      try {
+        // refundAmount fetch
+        const { paymentId, refundReason, refundAmount } = req.body; 
+        
+        const payment = await storage.getPayment(paymentId);
+        if (!payment) {
+          return res.status(404).json({ error: "Payment not found" });
+        }
+
+        const existingRefunds = await db.select().from(refunds).where(eq(refunds.paymentId, paymentId));
+        if (existingRefunds.length > 0) {
+          return res.status(400).json({ error: "A refund request already exists for this payment." });
+        }
+
+        // Calculate Refund Amount Based on Reason
+        let calculatedRefundAmount = payment.totalAmount; // Default: Full Refund
+
+        if (refundReason.startsWith("Patient Cancellation")) {
+          // Patient Cancel 
+          calculatedRefundAmount = payment.consultationFee;
+        } else if (refundReason.startsWith("Other")) {
+          // Other
+          calculatedRefundAmount = Number(refundAmount) || 0;
+          
+          if (calculatedRefundAmount <= 0) {
+            return res.status(400).json({ error: "Custom refund amount must be greater than 0" });
+          }
+          if (calculatedRefundAmount > payment.totalAmount) {
+            return res.status(400).json({ error: "Refund amount cannot exceed the total payment amount" });
+          }
+        }
+
+        // Create a Pending Refund Request
+        const pendingRefund = await storage.createRefundRequest({
+          paymentId: payment.id,
+          appointmentId: payment.appointmentId,
+          patientId: payment.patientId,
+          amount: calculatedRefundAmount,
+          reason: refundReason,
+          status: "pending", 
+        });
+
+        // Audit Log
+        const { ipAddress, device, location, sessionId } = getReqInfo(req);
+        const { actorId, actorRole } = await getActorInfo(req);
+        await storage.createAuditLog({
+          actorId, actorRole,
+          action: 'REFUND_REQUEST_INITIATED', status: 'success',
+          entityType: 'refund', entityId: pendingRefund.id,
+          ipAddress, device, location, sessionId: sessionId || 'N/A',
+          metadata: {
+            auditType: 'PAYMENT',
+            originalAmount: payment.totalAmount,
+            calculatedRefundAmount: calculatedRefundAmount,
+            reason: refundReason,
+            timeline: { requestReceivedAt: tRequestReceived, completedAt: new Date().toISOString() }
+          }
+        });
+
+        res.status(201).json(pendingRefund);
+      } catch (error) {
+        console.error("Refund Request Error:", error);
+        res.status(500).json({ error: "Failed to create refund request" });
       }
     }
   );
