@@ -279,7 +279,6 @@ export const payments = pgTable("payments", {
   consultationFee: integer("consultation_fee").notNull(),
   bookingCharges: integer("booking_charges").default(0),
   tax: integer("tax").default(0),
-  taxBreakdown: jsonb("tax_breakdown").$type<{ title: string; rate: number; amount: number; applicableTo: string }[]>(),
   platformCommission: integer("platform_commission").default(0),
   doctorEarnings: integer("doctor_earnings").notNull(),
   totalAmount: integer("total_amount").notNull(),
