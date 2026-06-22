@@ -2241,6 +2241,7 @@ export class DbStorage implements IStorage {
   }
 
   async getPatientPayments(patientId: string): Promise<Payment[]> {
+    await pool.query(`ALTER TABLE payments ADD COLUMN IF NOT EXISTS tax_breakdown JSONB DEFAULT '[]'`);
     const records = await db
       .select()
       .from(payments)

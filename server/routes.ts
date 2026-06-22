@@ -4123,12 +4123,15 @@ export async function registerRoutes(
     async (req: AuthenticatedRequest, res: Response) => {
       try {
         const patientId = req.user!.id;
-        
+
         // 1. Get all appointments for the patient
         const allAppointments = await storage.getPatientAppointments(patientId);
-        
+
         // 2. Get all payments for the patient
-        const allPayments = await storage.getPatientPayments(patientId);
+        const [allPayments, platformSettings] = await Promise.all([
+          storage.getPatientPayments(patientId),
+          storage.getPlatformSettings(),
+        ]);
 
         const today = new Date().toISOString().split("T")[0];
 
@@ -4177,14 +4180,28 @@ export async function registerRoutes(
 
         // --- Recent Transactions ---
         const recentTransactions = recentPayments.map(p => {
-           const appointment = allAppointments.find(a => a.id === p.appointmentId);
-           const doctor = appointment ? doctorMap.get(appointment.doctorId) : null;
-           
-           return {
-             ...p,
-             doctorName: doctor?.user?.fullName || "Doctor",
-             date: p.createdAt
-           };
+          const appointment = allAppointments.find(a => a.id === p.appointmentId);
+          const doctor = appointment ? doctorMap.get(appointment.doctorId) : null;
+
+          // Build fallback breakdown for old payments that have no stored breakdown
+          let taxBreakdown = (p as any).taxBreakdown;
+          if (!taxBreakdown || (Array.isArray(taxBreakdown) && taxBreakdown.length === 0)) {
+            taxBreakdown = [];
+            const fee = p.consultationFee || 0;
+            const baseTax = Math.round(fee * (platformSettings.taxRate / 100));
+            if (baseTax > 0) taxBreakdown.push({ title: `Government Tax`, rate: platformSettings.taxRate, amount: baseTax, applicableTo: "patients" });
+            if (platformSettings.stampDutyEnabled) {
+              const stampAmt = Math.round(fee * 0.01);
+              if (stampAmt > 0) taxBreakdown.push({ title: "Stamp Duty", rate: 1, amount: stampAmt, applicableTo: "patients" });
+            }
+          }
+
+          return {
+            ...p,
+            taxBreakdown,
+            doctorName: doctor?.user?.fullName || "Doctor",
+            date: p.createdAt
+          };
         });
 
         res.json({
