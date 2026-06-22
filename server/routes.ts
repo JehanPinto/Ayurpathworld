@@ -6358,7 +6358,7 @@ export async function registerRoutes(
         const w4 = patientRegistrations[3].patients;
         const registrationGrowth = w1 === 0 ? (w4 > 0 ? 100 : 0) : Math.round(((w4 - w1) / w1) * 1000) / 10;
 
-        // Doctor performance table (top 10 by completed appointments, counted live from appointments table)
+        // Doctor performance table (verified doctors only, by completed appointments, counted live from appointments table)
         const doctorPerf = await pool.query(
           `SELECT
              u.full_name,
@@ -6371,9 +6371,9 @@ export async function registerRoutes(
            FROM doctor_profiles dp
            JOIN users u ON dp.user_id = u.id
            LEFT JOIN appointments a ON a.doctor_id = dp.id AND a.status = 'completed'
+           WHERE dp.status = 'verified'
            GROUP BY dp.id, u.full_name, dp.status, dp.average_rating, dp.total_reviews
-           ORDER BY COUNT(a.id) DESC
-           LIMIT 10`
+           ORDER BY COUNT(a.id) DESC`
         );
 
         const doctorPerformance = doctorPerf.rows.map((r: any) => ({

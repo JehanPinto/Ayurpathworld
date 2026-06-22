@@ -15,10 +15,10 @@ import {
   Area,
   ResponsiveContainer,
 } from "recharts";
-import { TrendingUp, TrendingDown, Download, DollarSign, Stethoscope, Wallet, Star } from "lucide-react";
+import { TrendingUp, TrendingDown, Download, DollarSign, Stethoscope, Wallet, Star, Search } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
 import { LoadingPage } from "@/components/ui/loading-spinner";
 import {
   Select,
@@ -140,6 +140,7 @@ function WeekTick({ x, y, payload }: { x?: number; y?: number; payload?: { value
 
 export default function AdminReportsPage() {
   const [view, setView] = useState<FilterView>("all");
+  const [doctorSearch, setDoctorSearch] = useState("");
 
   const { data, isLoading, isError } = useQuery<ReportsData>({
     queryKey: ["/api/admin/reports"],
@@ -157,6 +158,15 @@ export default function AdminReportsPage() {
   }
 
   const { revenueStats, weeklyAppointments, specializationBookings, patientRegistrations, registrationGrowth, doctorPerformance } = data;
+
+  const filteredDoctors = doctorPerformance.filter((doc) => {
+    const q = doctorSearch.trim().toLowerCase();
+    if (!q) return true;
+    return (
+      doc.name.toLowerCase().includes(q) ||
+      doc.specializations.some((s) => s.toLowerCase().includes(q))
+    );
+  });
 
   return (
     <div className="p-6 space-y-6">
@@ -368,38 +378,40 @@ export default function AdminReportsPage() {
             <Card>
               <CardHeader className="pb-2">
                 <CardTitle className="text-base">Doctor Performance</CardTitle>
-                <p className="text-xs text-muted-foreground">Top practitioners by activity & rating</p>
+                <p className="text-xs text-muted-foreground">Verified practitioners by activity & rating</p>
+                <div className="relative mt-2">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    placeholder="Search by name or specialization..."
+                    value={doctorSearch}
+                    onChange={(e) => setDoctorSearch(e.target.value)}
+                    className="pl-9 h-9 text-sm"
+                  />
+                </div>
               </CardHeader>
               <CardContent className="p-0">
-                <div className="overflow-x-auto">
+                <div className="max-h-[360px] overflow-y-auto">
                   <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b bg-muted/40">
+                    <thead className="sticky top-0 z-10">
+                      <tr className="border-b bg-muted">
                         <th className="text-left px-4 py-3 font-medium text-muted-foreground text-xs">Doctor</th>
-                        <th className="text-left px-4 py-3 font-medium text-muted-foreground text-xs">Status</th>
                         <th className="text-center px-4 py-3 font-medium text-muted-foreground text-xs">N.O.A</th>
                         <th className="text-center px-4 py-3 font-medium text-muted-foreground text-xs">Rating</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {doctorPerformance.length === 0 ? (
+                      {filteredDoctors.length === 0 ? (
                         <tr>
-                          <td colSpan={4} className="text-center py-8 text-muted-foreground text-xs px-4">No doctor data available</td>
+                          <td colSpan={3} className="text-center py-8 text-muted-foreground text-xs px-4">
+                            {doctorPerformance.length === 0 ? "No doctor data available" : "No doctors match your search"}
+                          </td>
                         </tr>
                       ) : (
-                        doctorPerformance.map((doc) => (
+                        filteredDoctors.map((doc) => (
                           <tr key={doc.id} className="border-b last:border-0 hover:bg-muted/20 transition-colors">
                             <td className="px-4 py-3">
                               <p className="font-medium text-foreground leading-tight">{doc.name}</p>
                               <p className="text-xs text-muted-foreground mt-0.5">{doc.specializations.slice(0, 2).join(", ") || "—"}</p>
-                            </td>
-                            <td className="px-4 py-3">
-                              <Badge
-                                variant={doc.status === "verified" ? "default" : "secondary"}
-                                className={doc.status === "verified" ? "bg-emerald-100 text-emerald-700 hover:bg-emerald-100 text-xs" : "bg-amber-100 text-amber-700 hover:bg-amber-100 text-xs"}
-                              >
-                                {doc.status === "verified" ? "Verified" : "Pending"}
-                              </Badge>
                             </td>
                             <td className="px-4 py-3 text-center font-medium">{doc.appointments}</td>
                             <td className="px-4 py-3 text-center"><StarRating rating={doc.rating} /></td>
