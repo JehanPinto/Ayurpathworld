@@ -279,6 +279,7 @@ export const payments = pgTable("payments", {
   consultationFee: integer("consultation_fee").notNull(),
   bookingCharges: integer("booking_charges").default(0),
   tax: integer("tax").default(0),
+  taxBreakdown: jsonb("tax_breakdown").$type<{ title: string; rate: number; amount: number; applicableTo: string }[]>(),
   platformCommission: integer("platform_commission").default(0),
   doctorEarnings: integer("doctor_earnings").notNull(),
   totalAmount: integer("total_amount").notNull(),
@@ -799,6 +800,12 @@ export const insertPaymentSchema = z.object({
   consultationFee: z.number().min(0),
   bookingCharges: z.number().min(0).default(0),
   tax: z.number().min(0).default(0),
+  taxBreakdown: z.array(z.object({
+    title: z.string(),
+    rate: z.number(),
+    amount: z.number(),
+    applicableTo: z.enum(["doctors", "patients", "both", "platform"]),
+  })).optional(),
   platformCommission: z.number().min(0).default(0),
   doctorEarnings: z.number().min(0),
   totalAmount: z.number().min(0),
@@ -939,7 +946,15 @@ export interface TaxEntry {
   id: string;
   title: string;
   rate: number;
+  applicableTo: "doctors" | "patients" | "both";
   createdAt: string;
+}
+
+export interface TaxBreakdownItem {
+  title: string;
+  rate: number;
+  amount: number;
+  applicableTo: "doctors" | "patients" | "both" | "platform";
 }
 
 // ================== AUTH SCHEMAS ==================

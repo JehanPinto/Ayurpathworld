@@ -1070,6 +1070,7 @@ export class DbStorage implements IStorage {
   }
 
   async createPayment(payment: InsertPayment): Promise<Payment> {
+    await pool.query(`ALTER TABLE payments ADD COLUMN IF NOT EXISTS tax_breakdown JSONB DEFAULT '[]'`);
     const result = await db.insert(payments).values(payment).returning();
     return {
       ...result[0],
@@ -2042,35 +2043,40 @@ export class DbStorage implements IStorage {
         id VARCHAR(50) PRIMARY KEY DEFAULT gen_random_uuid()::text,
         title VARCHAR(255) NOT NULL,
         rate INTEGER NOT NULL DEFAULT 0,
+        applicable_to VARCHAR(20) NOT NULL DEFAULT 'doctors',
         created_at TIMESTAMP DEFAULT NOW()
       )
     `);
+    await pool.query(`ALTER TABLE tax_entries ADD COLUMN IF NOT EXISTS applicable_to VARCHAR(20) NOT NULL DEFAULT 'doctors'`);
     const result = await pool.query(
-      `SELECT id, title, rate, created_at FROM tax_entries ORDER BY created_at ASC`,
+      `SELECT id, title, rate, applicable_to, created_at FROM tax_entries ORDER BY created_at ASC`,
     );
     return result.rows.map((r: any) => ({
       id: r.id,
       title: r.title,
       rate: r.rate,
+      applicableTo: r.applicable_to as "doctors" | "patients" | "both",
       createdAt: r.created_at,
     }));
   }
 
-  async createTaxEntry(title: string, rate: number): Promise<TaxEntry> {
+  async createTaxEntry(title: string, rate: number, applicableTo: "doctors" | "patients" | "both"): Promise<TaxEntry> {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS tax_entries (
         id VARCHAR(50) PRIMARY KEY DEFAULT gen_random_uuid()::text,
         title VARCHAR(255) NOT NULL,
         rate INTEGER NOT NULL DEFAULT 0,
+        applicable_to VARCHAR(20) NOT NULL DEFAULT 'doctors',
         created_at TIMESTAMP DEFAULT NOW()
       )
     `);
+    await pool.query(`ALTER TABLE tax_entries ADD COLUMN IF NOT EXISTS applicable_to VARCHAR(20) NOT NULL DEFAULT 'doctors'`);
     const result = await pool.query(
-      `INSERT INTO tax_entries (title, rate) VALUES ($1, $2) RETURNING id, title, rate, created_at`,
-      [title, rate],
+      `INSERT INTO tax_entries (title, rate, applicable_to) VALUES ($1, $2, $3) RETURNING id, title, rate, applicable_to, created_at`,
+      [title, rate, applicableTo],
     );
     const r = result.rows[0];
-    return { id: r.id, title: r.title, rate: r.rate, createdAt: r.created_at };
+    return { id: r.id, title: r.title, rate: r.rate, applicableTo: r.applicable_to, createdAt: r.created_at };
   }
 
   async deleteTaxEntry(id: string): Promise<boolean> {
