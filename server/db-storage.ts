@@ -2043,11 +2043,12 @@ export class DbStorage implements IStorage {
         id VARCHAR(50) PRIMARY KEY DEFAULT gen_random_uuid()::text,
         title VARCHAR(255) NOT NULL,
         rate INTEGER NOT NULL DEFAULT 0,
-        applicable_to VARCHAR(20) NOT NULL DEFAULT 'doctors',
+        applicable_to VARCHAR(20) DEFAULT 'doctors',
         created_at TIMESTAMP DEFAULT NOW()
       )
     `);
-    await pool.query(`ALTER TABLE tax_entries ADD COLUMN IF NOT EXISTS applicable_to VARCHAR(20) NOT NULL DEFAULT 'doctors'`);
+    await pool.query(`ALTER TABLE tax_entries ADD COLUMN IF NOT EXISTS applicable_to VARCHAR(20) DEFAULT 'doctors'`);
+    await pool.query(`UPDATE tax_entries SET applicable_to = 'doctors' WHERE applicable_to IS NULL`);
     const result = await pool.query(
       `SELECT id, title, rate, applicable_to, created_at FROM tax_entries ORDER BY created_at ASC`,
     );
@@ -2055,7 +2056,7 @@ export class DbStorage implements IStorage {
       id: r.id,
       title: r.title,
       rate: r.rate,
-      applicableTo: r.applicable_to as "doctors" | "patients" | "both",
+      applicableTo: (r.applicable_to ?? "doctors") as "doctors" | "patients" | "both",
       createdAt: r.created_at,
     }));
   }
@@ -2066,11 +2067,11 @@ export class DbStorage implements IStorage {
         id VARCHAR(50) PRIMARY KEY DEFAULT gen_random_uuid()::text,
         title VARCHAR(255) NOT NULL,
         rate INTEGER NOT NULL DEFAULT 0,
-        applicable_to VARCHAR(20) NOT NULL DEFAULT 'doctors',
+        applicable_to VARCHAR(20) DEFAULT 'doctors',
         created_at TIMESTAMP DEFAULT NOW()
       )
     `);
-    await pool.query(`ALTER TABLE tax_entries ADD COLUMN IF NOT EXISTS applicable_to VARCHAR(20) NOT NULL DEFAULT 'doctors'`);
+    await pool.query(`ALTER TABLE tax_entries ADD COLUMN IF NOT EXISTS applicable_to VARCHAR(20) DEFAULT 'doctors'`);
     const result = await pool.query(
       `INSERT INTO tax_entries (title, rate, applicable_to) VALUES ($1, $2, $3) RETURNING id, title, rate, applicable_to, created_at`,
       [title, rate, applicableTo],
