@@ -6359,6 +6359,8 @@ export async function registerRoutes(
         const registrationGrowth = w1 === 0 ? (w4 > 0 ? 100 : 0) : Math.round(((w4 - w1) / w1) * 1000) / 10;
 
         // Doctor performance table (verified doctors only, by completed appointments, counted live from appointments table)
+        // NOTE: returns all verified doctors; frontend handles search/scroll client-side.
+        // Fine for current scale — switch to server-side pagination (LIMIT/OFFSET + search param) if doctor count grows into the thousands.
         const doctorPerf = await pool.query(
           `SELECT
              u.full_name,
