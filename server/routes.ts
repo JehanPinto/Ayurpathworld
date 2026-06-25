@@ -120,10 +120,11 @@ function validateBankDetails(acc?: string | null, branch?: string | null) {
 
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: process.env.NODE_ENV === "production" ? 5 : 100,
-  message: { error: "Too many login attempts, try again later" },
+  max: process.env.NODE_ENV === "production" ? 10 : 100,
+  message: { error: "Too many login attempts. Please try again in 15 minutes." },
   standardHeaders: true,
   legacyHeaders: false,
+  skipSuccessfulRequests: true,
 });
 
 const registrationLimiter = rateLimit({
@@ -2513,6 +2514,15 @@ export async function registerRoutes(
       }
     },
   );
+
+  app.get("/api/cities", publicApiLimiter, async (_req: Request, res: Response) => {
+    try {
+      const cities = await storage.getActiveCities();
+      res.json(cities);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to get cities" });
+    }
+  });
 
   app.get("/api/specializations", publicApiLimiter, async (_req: Request, res: Response) => {
     try {

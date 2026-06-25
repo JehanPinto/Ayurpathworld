@@ -777,7 +777,7 @@ export default function DoctorRegisterPage() {
                           <FormLabel>Phone *</FormLabel>
                           <FormControl>
                             <Input
-                              placeholder="+94 77 123 4567"
+                              placeholder="0771234567"
                               data-testid="input-phone"
                               maxLength={10}
                               {...field}

@@ -249,6 +249,30 @@ export class DbStorage implements IStorage {
     return result as Specialization[];
   }
 
+  async getActiveCities(): Promise<string[]> {
+    const toTitleCase = (s: string) =>
+      s.trim().replace(/\w\S*/g, (w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());
+
+    const result = await pool.query<{ city: string }>(`
+      SELECT city FROM users
+      WHERE role = 'doctor'
+        AND city IS NOT NULL AND TRIM(city) != ''
+        AND id IN (SELECT user_id FROM doctor_profiles WHERE status = 'verified')
+      UNION
+      SELECT city FROM hospitals
+      WHERE city IS NOT NULL AND TRIM(city) != ''
+    `);
+
+    const seen = new Set<string>();
+    const cities: string[] = [];
+    for (const row of result.rows) {
+      const normalized = toTitleCase(row.city);
+      const key = normalized.toLowerCase();
+      if (!seen.has(key)) { seen.add(key); cities.push(normalized); }
+    }
+    return cities.sort();
+  }
+
   async createSpecialization(
     spec: InsertSpecialization,
   ): Promise<Specialization> {

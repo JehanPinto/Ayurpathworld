@@ -10,7 +10,6 @@ import type { DoctorWithDetails, Specialization, Hospital } from "@shared/schema
 import { useUrlPagination } from "@/hooks/use-url-pagination";
 import { Pagination } from "@/components/ui/pagination";
 
-const cities = ["Colombo", "Kandy", "Galle", "Jaffna", "Negombo", "Matara"];
 
 export default function DoctorsPage() {
   const [location] = useLocation();
@@ -45,6 +44,11 @@ export default function DoctorsPage() {
 
   const scrollToTop = () => window.scrollTo({ top: 0, behavior: "smooth" });
 
+  const { data: cities = [] } = useQuery<string[]>({
+    queryKey: ["/api/cities"],
+    staleTime: 5 * 60 * 1000,
+  });
+
   const { data: specializations = [], isError: specError } = useQuery<Specialization[]>({
     queryKey: ["/api/specializations"],
     staleTime: 5 * 60 * 1000,
@@ -78,9 +82,10 @@ export default function DoctorsPage() {
     }
     
     if (selectedCity !== "all") {
-      filtered = filtered.filter(d => 
-        d.hospitals?.some(h => h.city === selectedCity) ||
-        d.user?.city === selectedCity
+      const cityLower = selectedCity.toLowerCase();
+      filtered = filtered.filter(d =>
+        d.hospitals?.some(h => h.city?.toLowerCase() === cityLower) ||
+        d.user?.city?.toLowerCase() === cityLower
       );
     }
     
