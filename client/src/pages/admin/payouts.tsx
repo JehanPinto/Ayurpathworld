@@ -36,6 +36,7 @@ interface DoctorPayout {
   vatAmount: number;
   withholdingAmount: number;
   stampDutyAmount: number;
+  customDoctorTaxes: { title: string; rate: number; amount: number }[];
   payoutAmount: number;
 }
 
@@ -84,9 +85,12 @@ function PayoutModal({ doc, onClose }: { doc: DoctorPayout; onClose: () => void 
   const [vatChecked, setVatChecked] = useState(doc.vatEnabled);
   const [withholdingChecked, setWithholdingChecked] = useState(doc.withholdingTaxEnabled);
 
+  const customTaxTotal = (doc.customDoctorTaxes || []).reduce((s, t) => s + t.amount, 0);
+
   const totalTaxes =
     (vatChecked ? doc.vatAmount : 0) +
-    (withholdingChecked ? doc.withholdingAmount : 0);
+    (withholdingChecked ? doc.withholdingAmount : 0) +
+    customTaxTotal;
 
   const finalPayout = Math.max(
     0,
@@ -187,6 +191,17 @@ function PayoutModal({ doc, onClose }: { doc: DoctorPayout; onClose: () => void 
                   </div>
                   <span className="text-sm text-muted-foreground">− {formatLKR(doc.stampDutyAmount)}</span>
                 </div>
+                {(doc.customDoctorTaxes || []).map((t) => (
+                  <div key={t.title} className="flex items-center justify-between">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-5 h-5 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
+                        <span className="text-[9px] font-bold text-primary">%</span>
+                      </div>
+                      <span className="text-sm text-foreground">{t.title} ({t.rate}%)</span>
+                    </div>
+                    <span className="text-sm font-medium text-red-500">− {formatLKR(t.amount)}</span>
+                  </div>
+                ))}
                 <div className="border-t border-border pt-2 flex justify-between">
                   <span className="text-sm font-medium text-foreground">Total taxes</span>
                   <span className="text-sm font-semibold text-red-500">− {formatLKR(totalTaxes)}</span>

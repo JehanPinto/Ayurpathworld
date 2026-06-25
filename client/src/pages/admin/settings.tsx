@@ -13,6 +13,13 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Separator } from "@/components/ui/separator";
 import { useToast } from "@/hooks/use-toast";
@@ -101,7 +108,7 @@ export default function AdminSettingsPage() {
 
   const [newTaxTitle, setNewTaxTitle] = useState("");
   const [newTaxRate, setNewTaxRate] = useState("");
-  const [newTaxApplicableTo, setNewTaxApplicableTo] = useState("");
+  const [newTaxApplicableTo, setNewTaxApplicableTo] = useState<"doctors" | "patients" | "both">("doctors");
 
   const [systemTaxes, setSystemTaxes] = useState([
     { id: "vat", title: "VAT", rate: 18, description: "Value-added tax on consultation fees", applicableTo: "doctors", enabled: true },
@@ -167,13 +174,14 @@ export default function AdminSettingsPage() {
   });
 
   const addTaxMutation = useMutation({
-    mutationFn: async ({ title, rate }: { title: string; rate: number }) =>
-      apiRequest("POST", "/api/admin/tax-entries", { title, rate }),
+    mutationFn: async ({ title, rate, applicableTo }: { title: string; rate: number; applicableTo: "doctors" | "patients" | "both" }) =>
+      apiRequest("POST", "/api/admin/tax-entries", { title, rate, applicableTo }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/tax-entries"] });
       queryClient.invalidateQueries({ queryKey: ["/api/tax-entries"] });
       setNewTaxTitle("");
       setNewTaxRate("");
+      setNewTaxApplicableTo("doctors");
       toast({ title: "Tax Added", description: "Custom tax entry has been added." });
     },
     onError: (error: Error) => {
@@ -227,7 +235,7 @@ export default function AdminSettingsPage() {
       toast({ title: "Error", description: "Please enter a valid tax rate", variant: "destructive" });
       return;
     }
-    addTaxMutation.mutate({ title, rate });
+    addTaxMutation.mutate({ title, rate, applicableTo: newTaxApplicableTo });
   };
 
   const update = (key: string, value: unknown) =>
@@ -348,17 +356,30 @@ export default function AdminSettingsPage() {
                     data-testid="input-new-tax-rate"
                   />
                 </div>
-                <div className="w-40 space-y-1.5">
+                <div className="w-44 space-y-1.5">
                   <Label className="text-xs font-medium">To whom</Label>
-                  <select
-                    value={newTaxApplicableTo}
-                    onChange={(e) => setNewTaxApplicableTo(e.target.value)}
-                    className="flex h-9 w-full rounded-md border border-primary/30 bg-transparent px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-primary text-foreground"
-                  >
-                    <option value="">Select</option>
-                    <option value="doctors">Doctors</option>
-                    <option value="patients">Patients</option>
-                  </select>
+                  <Select value={newTaxApplicableTo} onValueChange={(v) => setNewTaxApplicableTo(v as "doctors" | "patients" | "both")}>
+                    <SelectTrigger className="border-primary/30 h-9">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="doctors">
+                        <span className="flex items-center gap-2">
+                          <span className="px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-700 border border-purple-200">Doctors</span>
+                        </span>
+                      </SelectItem>
+                      <SelectItem value="patients">
+                        <span className="flex items-center gap-2">
+                          <span className="px-2 py-0.5 rounded text-xs font-medium bg-pink-100 text-pink-600 border border-pink-200">Patients</span>
+                        </span>
+                      </SelectItem>
+                      <SelectItem value="both">
+                        <span className="flex items-center gap-2">
+                          <span className="px-2 py-0.5 rounded text-xs font-medium bg-muted text-muted-foreground border border-border">Both</span>
+                        </span>
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
                 <Button
                   onClick={handleAddTax}
@@ -418,20 +439,33 @@ export default function AdminSettingsPage() {
 
                   {/* User-added dynamic taxes */}
                   {!taxLoading && taxEntries.map((entry) => (
-                    <div key={entry.id} className="flex items-center justify-between py-3 gap-4">
+                    <div key={entry.id} className="flex items-center py-3">
                       <div className="flex-1 min-w-0">
                         <span className="text-sm font-semibold text-foreground">
                           {entry.title} ({entry.rate}%)
                         </span>
                       </div>
-                      <button
-                        onClick={() => deleteTaxMutation.mutate(entry.id)}
-                        disabled={deleteTaxMutation.isPending}
-                        className="text-destructive hover:text-destructive/70 transition-colors shrink-0"
-                        data-testid={`button-delete-tax-${entry.id}`}
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
+                      <div className="flex-1 flex justify-center">
+                        <span className={`px-4 py-1 rounded-md text-sm font-medium ${
+                          entry.applicableTo === "doctors"
+                            ? "bg-purple-100 text-purple-700 border border-purple-200"
+                            : entry.applicableTo === "patients"
+                            ? "bg-pink-100 text-pink-600 border border-pink-200"
+                            : "bg-muted text-muted-foreground border border-border"
+                        }`}>
+                          {entry.applicableTo === "doctors" ? "Doctors" : entry.applicableTo === "patients" ? "Patients" : "Both"}
+                        </span>
+                      </div>
+                      <div className="flex-1 flex justify-end">
+                        <button
+                          onClick={() => deleteTaxMutation.mutate(entry.id)}
+                          disabled={deleteTaxMutation.isPending}
+                          className="text-destructive hover:text-destructive/70 transition-colors shrink-0"
+                          data-testid={`button-delete-tax-${entry.id}`}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>

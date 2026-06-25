@@ -800,6 +800,12 @@ export const insertPaymentSchema = z.object({
   consultationFee: z.number().min(0),
   bookingCharges: z.number().min(0).default(0),
   tax: z.number().min(0).default(0),
+  taxBreakdown: z.array(z.object({
+    title: z.string(),
+    rate: z.number(),
+    amount: z.number(),
+    applicableTo: z.enum(["doctors", "patients", "both", "platform"]),
+  })).optional(),
   platformCommission: z.number().min(0).default(0),
   doctorEarnings: z.number().min(0),
   totalAmount: z.number().min(0),
@@ -940,7 +946,15 @@ export interface TaxEntry {
   id: string;
   title: string;
   rate: number;
+  applicableTo: "doctors" | "patients" | "both";
   createdAt: string;
+}
+
+export interface TaxBreakdownItem {
+  title: string;
+  rate: number;
+  amount: number;
+  applicableTo: "doctors" | "patients" | "both" | "platform";
 }
 
 // ================== AUTH SCHEMAS ==================

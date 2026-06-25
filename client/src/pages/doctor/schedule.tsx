@@ -74,6 +74,7 @@ export default function DoctorSchedule() {
   });
 
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [slotToDelete, setSlotToDelete] = useState<AppointmentSlot | null>(null);
   const [newSlot, setNewSlot] = useState({
     date: todayDateStr,
     startTime: "09:00",
@@ -378,8 +379,7 @@ export default function DoctorSchedule() {
                               variant="outline"
                               size="sm"
                               className="text-red-500 border-red-100 hover:bg-red-50 dark:hover:bg-red-950/20"
-                              onClick={() => deactivateSlotMutation.mutate(slot.id)}
-                              disabled={deactivateSlotMutation.isPending}
+                              onClick={() => setSlotToDelete(slot)}
                             >
                               <Trash2 className="w-4 h-4 mr-1.5" />
                               Delete
@@ -397,8 +397,50 @@ export default function DoctorSchedule() {
         </div>
       </div>
 
-      <Modal 
-        isOpen={isModalOpen} 
+      {/* Delete Confirmation Dialog */}
+      <Dialog open={!!slotToDelete} onOpenChange={(open) => { if (!open) setSlotToDelete(null); }}>
+        <DialogContent className="max-w-sm rounded-2xl">
+          <DialogHeader>
+            <DialogTitle className="text-lg font-bold">Delete this slot?</DialogTitle>
+            <DialogDescription className="text-sm text-muted-foreground pt-1">
+              {slotToDelete && (
+                <>
+                  <span className="block font-medium text-foreground mb-1">
+                    {format(parseISO(slotToDelete.date), "EEE, MMM d")}
+                    {" · "}
+                    {formatTimeAMPM(slotToDelete.startTime)} – {formatTimeAMPM(slotToDelete.endTime)}
+                    {" · "}
+                    {slotToDelete.consultationType === "online" ? "Online" : "In Person"}
+                  </span>
+                  This action cannot be undone.
+                </>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="flex gap-2 pt-2">
+            <Button variant="outline" className="flex-1" onClick={() => setSlotToDelete(null)}>
+              No, Cancel
+            </Button>
+            <Button
+              className="flex-1 bg-red-600 hover:bg-red-700 text-white"
+              disabled={deactivateSlotMutation.isPending}
+              onClick={() => {
+                if (slotToDelete) {
+                  deactivateSlotMutation.mutate(slotToDelete.id, {
+                    onSuccess: () => setSlotToDelete(null),
+                    onError: () => setSlotToDelete(null),
+                  });
+                }
+              }}
+            >
+              {deactivateSlotMutation.isPending ? "Deleting..." : "Yes, Delete"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Modal
+        isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
         title="Add New Schedule Slot"
         description="Set up your availability. Only future dates and valid times can be selected."
