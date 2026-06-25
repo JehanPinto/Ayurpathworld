@@ -46,6 +46,7 @@ import { useAuth } from "@/lib/auth-context";
 import {
   PaymentMethod,
   Gender,
+  UserRole,
   type DoctorWithDetails,
   type AppointmentSlot,
   type TaxEntry,
@@ -355,7 +356,7 @@ export default function BookAppointmentPage() {
 
   if (doctorLoading || slotLoading) {
     return (
-      <PublicLayout showHeader={false}>
+      <PublicLayout showHeader={false} showFooter={user?.role !== UserRole.PATIENT}>
         <LoadingPage message="Loading booking details..." />
       </PublicLayout>
     );
@@ -363,7 +364,7 @@ export default function BookAppointmentPage() {
 
   if (!doctor || !slot || slotError) {
     return (
-      <PublicLayout showHeader={false}>
+      <PublicLayout showHeader={false} showFooter={user?.role !== UserRole.PATIENT}>
         <div className="container mx-auto px-4 py-16 text-center">
           <h1 className="text-2xl font-bold mb-4">Booking not found</h1>
           <Link href="/patient/find-doctors"><Button>Find Doctors</Button></Link>
