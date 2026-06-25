@@ -246,7 +246,6 @@ export interface IStorage {
     appointmentId: string,
     consultationNotes?: string,
   ): Promise<Appointment | undefined>;
-  confirmAppointment(appointmentId: string): Promise<Appointment | undefined>;
   markAppointmentNoShow(
     appointmentId: string,
   ): Promise<Appointment | undefined>;
@@ -1603,12 +1602,6 @@ export class MemStorage implements IStorage {
   async completeAppointment(
     _appointmentId: string,
     _consultationNotes?: string,
-  ): Promise<Appointment | undefined> {
-    return undefined;
-  }
-
-  async confirmAppointment(
-    _appointmentId: string,
   ): Promise<Appointment | undefined> {
     return undefined;
   }

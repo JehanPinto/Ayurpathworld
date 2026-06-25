@@ -1667,7 +1667,6 @@ export class DbStorage implements IStorage {
     const offset = (page - 1) * limit;
 
     try {
-      // 1. තත්පරයකින් සියලු දත්ත Join කරලා ගන්නවා
       const rawData = await db
         .select({
           payment: payments,
@@ -1681,16 +1680,18 @@ export class DbStorage implements IStorage {
             id: doctorProfiles.id,
             userId: doctorProfiles.userId,
           },
+          refundRequest: refunds,
         })
         .from(payments)
         .leftJoin(appointments, eq(payments.appointmentId, appointments.id))
         .leftJoin(users, eq(payments.patientId, users.id))
         .leftJoin(doctorProfiles, eq(payments.doctorId, doctorProfiles.id))
+        .leftJoin(refunds, eq(payments.id, refunds.paymentId))
         .orderBy(desc(payments.createdAt))
         .limit(limit)
         .offset(offset);
 
-      // 2. Doctor ගේ නම ගන්නවා
+      // 2. Doctor's name fetch
       const doctorUserIds = [
         ...new Set(rawData.map((r) => r.doctorProfile?.userId).filter(Boolean)),
       ];
@@ -1703,7 +1704,7 @@ export class DbStorage implements IStorage {
           : [];
       const doctorUserMap = new Map(doctorUsers.map((u) => [u.id, u.fullName]));
 
-      // 3. Frontend එකට ඕනේ විදිහට හදනවා
+      // 3. Frontend 
       const formattedData = rawData.map((row) => {
         const docFullName = row.doctorProfile
           ? doctorUserMap.get(row.doctorProfile.userId)
@@ -1721,10 +1722,11 @@ export class DbStorage implements IStorage {
                 },
               }
             : undefined,
+          refundRequest: row.refundRequest || null,
         };
       });
 
-      // 4. මුළු ගණන (Total Count)
+      // 4. Total Count
       const allRecords = await db.select({ id: payments.id }).from(payments);
       const count = allRecords.length;
 
@@ -1821,78 +1823,6 @@ export class DbStorage implements IStorage {
     return paymentsWithDetails;
   }
 
-  async getDoctorEarningsSummary(doctorId: string): Promise<{
-    totalEarnings: number;
-    pendingEarnings: number;
-    completedPayments: number;
-    pendingPayments: number;
-    thisMonthEarnings: number;
-    lastMonthEarnings: number;
-  }> {
-    const doctorPayments = await db
-      .select()
-      .from(payments)
-      .where(eq(payments.doctorId, doctorId));
-
-    const now = new Date();
-    const thisMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-    const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-    const lastMonthStr = `${lastMonth.getFullYear()}-${String(lastMonth.getMonth() + 1).padStart(2, "0")}`;
-
-    const completedPayments = doctorPayments.filter(
-      (p) => p.status === PaymentStatus.COMPLETED,
-    );
-    const pendingPaymentsList = doctorPayments.filter(
-      (p) => p.status === PaymentStatus.PENDING,
-    );
-
-    const totalEarnings = completedPayments.reduce(
-      (sum, p) => sum + p.doctorEarnings,
-      0,
-    );
-    const pendingEarnings = pendingPaymentsList.reduce(
-      (sum, p) => sum + p.doctorEarnings,
-      0,
-    );
-
-    const thisMonthPayments = completedPayments.filter((p) =>
-      toISOString(p.createdAt).startsWith(thisMonth),
-    );
-    const lastMonthPayments = completedPayments.filter((p) =>
-      toISOString(p.createdAt).startsWith(lastMonthStr),
-    );
-
-    // Subtract settled cancellation charges from total earnings
-    const settledCharges = await db
-      .select()
-      .from(doctorCancellationCharges)
-      .where(
-        and(
-          eq(doctorCancellationCharges.doctorId, doctorId),
-          eq(doctorCancellationCharges.settled, true),
-        ),
-      );
-    const totalDeductions = settledCharges.reduce(
-      (sum, c) => sum + c.amountOwed,
-      0,
-    );
-
-    return {
-      totalEarnings: Math.max(0, totalEarnings - totalDeductions),
-      pendingEarnings,
-      completedPayments: completedPayments.length,
-      pendingPayments: pendingPaymentsList.length,
-      thisMonthEarnings: thisMonthPayments.reduce(
-        (sum, p) => sum + p.doctorEarnings,
-        0,
-      ),
-      lastMonthEarnings: lastMonthPayments.reduce(
-        (sum, p) => sum + p.doctorEarnings,
-        0,
-      ),
-    };
-  }
-
   async respondToReview(
     reviewId: string,
     response: string,
@@ -1932,14 +1862,6 @@ export class DbStorage implements IStorage {
     return this.updateAppointment(appointmentId, {
       status: AppointmentStatus.COMPLETED,
       consultationNotes,
-    });
-  }
-
-  async confirmAppointment(
-    appointmentId: string,
-  ): Promise<Appointment | undefined> {
-    return this.updateAppointment(appointmentId, {
-      status: AppointmentStatus.CONFIRMED,
     });
   }
 
@@ -2494,11 +2416,34 @@ export class DbStorage implements IStorage {
     return result[0] as Refund;
   }
 
-  async getPaginatedRefundRequests(page: number, limit: number): Promise<any> {
+  async getRefundStats() {
+    const now = new Date();
+    const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+
+    const allRefunds = await db.select().from(refunds);
+
+    const pendingRequests = allRefunds.filter(r => r.status === "pending");
+    const pendingCount = pendingRequests.length;
+    const refundableTotalAmount = pendingRequests.reduce((sum, r) => sum + Number(r.amount), 0);
+
+    const last30Days = allRefunds.filter(r => new Date(r.createdAt) >= thirtyDaysAgo);
+    const requestsLast30DaysCount = last30Days.length;
+    const refundedLast30DaysAmount = last30Days
+      .filter(r => r.status === "completed")
+      .reduce((sum, r) => sum + Number(r.amount), 0);
+
+    return { 
+      pendingCount, 
+      requestsLast30DaysCount, 
+      refundedLast30DaysAmount, 
+      refundableTotalAmount 
+    };
+  }
+
+  async getPaginatedRefundRequests(page: number, limit: number, statusFilter?: string): Promise<any> {
     const offset = (page - 1) * limit;
 
-    // single query to get refunds with payment, appointment, and patient details
-    const rawData = await db
+    let baseQuery = db
       .select({
         refund: refunds,
         payment: payments,
@@ -2511,7 +2456,20 @@ export class DbStorage implements IStorage {
       .from(refunds)
       .leftJoin(payments, eq(refunds.paymentId, payments.id))
       .leftJoin(appointments, eq(refunds.appointmentId, appointments.id))
-      .leftJoin(users, eq(refunds.patientId, users.id))
+      .leftJoin(users, eq(refunds.patientId, users.id));
+
+    // Status Filter (for Tabs)
+    let conditions = [];
+    if (statusFilter === 'pending') {
+      conditions.push(eq(refunds.status, 'pending'));
+    } else if (statusFilter === 'history') {
+      conditions.push(or(eq(refunds.status, 'completed'), eq(refunds.status, 'rejected')));
+    }
+
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
+    const rawData = await baseQuery
+      .where(whereClause)
       .orderBy(
         sql`CASE WHEN ${refunds.status} = 'pending' THEN 0 ELSE 1 END`,
         desc(refunds.createdAt),
@@ -2523,34 +2481,25 @@ export class DbStorage implements IStorage {
       refund: row.refund,
       payment: {
         ...row.payment,
-        createdAt: row.payment?.createdAt
-          ? toISOString(row.payment.createdAt)
-          : null,
+        createdAt: row.payment?.createdAt ? toISOString(row.payment.createdAt) : null,
       },
-      appointment: row.appointment
-        ? {
-            ...row.appointment,
-            patient: row.patient,
-          }
-        : null,
+      appointment: row.appointment ? { ...row.appointment, patient: row.patient } : null,
     }));
 
-    const [{ count }] = await db
-      .select({ count: sql`count(*)`.mapWith(Number) })
-      .from(refunds);
+    let countQuery = db.select({ count: sql`count(*)`.mapWith(Number) }).from(refunds);
+    if (whereClause) countQuery = countQuery.where(whereClause) as any;
+    
+    const [{ count }] = await countQuery;
 
     return {
       data: formattedData,
       totalCount: count,
-      totalPages: Math.ceil(count / limit),
+      totalPages: Math.ceil(count / limit) || 1,
       currentPage: page,
     };
   }
 
   async processRefund(refundId: string, status: string): Promise<any> {
-    console.log(
-      `\n[DB-STORAGE] ⚙️ Processing refund ID: ${refundId} with status: ${status}`,
-    );
 
     let refundRecord;
 
@@ -2611,7 +2560,7 @@ export class DbStorage implements IStorage {
         .where(eq(payments.id, refundRecord.paymentId));
     }
 
-    // 🟢 AUTO AUDIT LOG FOR REFUNDS 🟢
+    //  AUTO AUDIT LOG FOR REFUNDS
     if (refundRecord) {
       try {
         await this.createAuditLog({

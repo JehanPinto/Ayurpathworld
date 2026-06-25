@@ -51,15 +51,6 @@ export default function DoctorAppointments() {
     staleTime: 60 * 1000,
   });
 
-  const confirmMutation = useMutation({
-    mutationFn: (id: string) => apiRequest("PATCH", `/api/appointments/${id}/confirm`),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/doctor/appointments"] });
-      toast({ title: "Appointment confirmed" });
-    },
-    onError: () => toast({ title: "Failed to confirm appointment", variant: "destructive" }),
-  });
-
   const completeMutation = useMutation({
     mutationFn: ({ id, notes }: { id: string; notes?: string }) =>
       apiRequest("PATCH", `/api/appointments/${id}/complete`, { consultationNotes: notes }),
@@ -319,15 +310,6 @@ export default function DoctorAppointments() {
                                 </Button>
                               </DropdownMenuTrigger>
                               <DropdownMenuContent align="end">
-                                {appointment.status === "pending" && (
-                                  <DropdownMenuItem
-                                    onClick={() => confirmMutation.mutate(appointment.id)}
-                                    disabled={confirmMutation.isPending}
-                                    data-testid={`action-confirm-${appointment.id}`}
-                                  >
-                                    <Check className="h-4 w-4 mr-2" /> Confirm
-                                  </DropdownMenuItem>
-                                )}
                                 {appointment.status === "confirmed" && !appointment.isCalled && (
                                   <DropdownMenuItem
                                     onClick={() => callMutation.mutate(appointment.id)}
