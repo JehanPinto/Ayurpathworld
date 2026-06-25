@@ -147,6 +147,12 @@ export default function DoctorSettings() {
     staleTime: 10 * 60 * 1000,
   });
 
+  const { data: availableCities = [] } = useQuery<string[]>({
+    queryKey: ["/api/cities"],
+    staleTime: 5 * 60 * 1000,
+  });
+
+
   const profileForm = useForm<ProfileFormData>({
     resolver: zodResolver(profileSchema),
     defaultValues: {
@@ -279,6 +285,7 @@ export default function DoctorSettings() {
     onSuccess: async () => {
       await updateUser();
       queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/cities"] });
       toast({ title: "Profile updated successfully" });
     },
     onError: () => {
@@ -673,25 +680,22 @@ export default function DoctorSettings() {
                     render={({ field }) => (
                       <FormItem>
                         <FormLabel>City</FormLabel>
-                        <Select onValueChange={field.onChange} value={field.value}>
-                          <FormControl>
-                            <SelectTrigger className="bg-white dark:bg-background rounded-lg">
-                              <SelectValue placeholder="Select city" />
-                            </SelectTrigger>
-                          </FormControl>
-                          <SelectContent>
-                            <SelectItem value="colombo">Colombo</SelectItem>
-                            <SelectItem value="kandy">Kandy</SelectItem>
-                            <SelectItem value="galle">Galle</SelectItem>
-                            <SelectItem value="jaffna">Jaffna</SelectItem>
-                            <SelectItem value="negombo">Negombo</SelectItem>
-                            <SelectItem value="anuradhapura">Anuradhapura</SelectItem>
-                            <SelectItem value="matara">Matara</SelectItem>
-                            <SelectItem value="kurunegala">Kurunegala</SelectItem>
-                            <SelectItem value="batticaloa">Batticaloa</SelectItem>
-                            <SelectItem value="trincomalee">Trincomalee</SelectItem>
-                          </SelectContent>
-                        </Select>
+                        <FormControl>
+                          <div>
+                            <datalist id="city-suggestions">
+                              {availableCities.map((city) => (
+                                <option key={city} value={city} />
+                              ))}
+                            </datalist>
+                            <input
+                              list="city-suggestions"
+                              placeholder="Type or select your city"
+                              value={field.value || ""}
+                              onChange={(e) => field.onChange(e.target.value)}
+                              className="w-full h-10 px-3 rounded-lg border border-input bg-white dark:bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                            />
+                          </div>
+                        </FormControl>
                         <FormMessage />
                       </FormItem>
                     )}
@@ -777,6 +781,13 @@ export default function DoctorSettings() {
                   onSave={handleSaveHospital}
                   onDelete={(id) => handleRemoveLocation(id)}
                 />
+              </div>
+
+              <div className="flex justify-end">
+                <Button type="submit" disabled={updateProfileMutation.isPending} className="bg-primary text-white gap-2">
+                  {updateProfileMutation.isPending ? <LoadingSpinner className="h-4 w-4" /> : <Save className="h-4 w-4" />}
+                  Save Personal Profile
+                </Button>
               </div>
             </form>
           </Form>
@@ -1271,58 +1282,6 @@ export default function DoctorSettings() {
                   </Button>
                 </form>
               </Form>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle>Account Security</CardTitle>
-              <CardDescription>
-                Additional security settings for your account
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="flex items-center justify-between py-2">
-                <div>
-                  <h4 className="font-medium">Email Verification</h4>
-                  <p className="text-sm text-muted-foreground">
-                    {user.isEmailVerified 
-                      ? "Your email is verified" 
-                      : "Verify your email to secure your account"}
-                  </p>
-                </div>
-                {user.isEmailVerified ? (
-                  <Badge variant="secondary" className="gap-1">
-                    <Check className="h-3 w-3" />
-                    Verified
-                  </Badge>
-                ) : (
-                  <Button variant="outline" size="sm" onClick={() => toast({ title: "Verification email sent", description: "Please check your inbox and follow the instructions to verify your email." })}>
-                    Verify Email
-                  </Button>
-                )}
-              </div>
-
-              <div className="flex items-center justify-between py-2">
-                <div>
-                  <h4 className="font-medium">Phone Verification</h4>
-                  <p className="text-sm text-muted-foreground">
-                    {user.isPhoneVerified 
-                      ? "Your phone is verified" 
-                      : "Verify your phone for SMS notifications"}
-                  </p>
-                </div>
-                {user.isPhoneVerified ? (
-                  <Badge variant="secondary" className="gap-1">
-                    <Check className="h-3 w-3" />
-                    Verified
-                  </Badge>
-                ) : (
-                  <Button variant="outline" size="sm" onClick={() => navigate("/doctor/verify-phone")}>
-                    Verify Phone
-                  </Button>
-                )}
-              </div>
             </CardContent>
           </Card>
         </TabsContent>

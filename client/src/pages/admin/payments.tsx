@@ -269,7 +269,6 @@ export default function AdminPaymentsPage() {
           <SelectContent>
             <SelectItem value="all">All Methods</SelectItem>
             <SelectItem value="online">Online</SelectItem>
-            <SelectItem value="at_clinic">At Clinic</SelectItem>
           </SelectContent>
         </Select>
       </div>

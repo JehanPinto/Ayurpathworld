@@ -1,9 +1,10 @@
 import { createContext, useContext, useState, useEffect, type ReactNode } from "react";
-import type { User } from "@shared/schema";
+import type { DoctorProfile, User } from "@shared/schema";
 import { apiRequest } from "./queryClient";
 
 interface AuthContextType {
   user: User | null;
+  doctorProfile?: DoctorProfile | null;
   isLoading: boolean;
   login: (user: User, token?: string) => void;
   logout: () => void;
@@ -14,6 +15,7 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
+  const [doctorProfile, setDoctorProfile] = useState<DoctorProfile | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
@@ -23,11 +25,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (res.ok) {
           const data = await res.json();
           setUser(data.user);
+          setDoctorProfile(data.doctorProfile);
         } else {
           setUser(null);
+          setDoctorProfile(null);
         }
       } catch (error) {
         setUser(null);
+        setDoctorProfile(null);
       } finally {
         setIsLoading(false);
       }
@@ -66,6 +71,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const fresh: User = data.user;
         localStorage.setItem("user", JSON.stringify(fresh));
         setUser(fresh);
+        setDoctorProfile(data.doctorProfile);
       }
     } catch {
       // silent — keep existing state if re-fetch fails
@@ -73,7 +79,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, isLoading, login, logout, updateUser }}>
+    <AuthContext.Provider value={{ user, doctorProfile, isLoading, login, logout, updateUser }}>
       {children}
     </AuthContext.Provider>
   );
