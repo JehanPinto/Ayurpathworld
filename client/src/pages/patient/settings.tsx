@@ -405,7 +405,7 @@ export default function PatientSettings() {
                       <FormItem>
                         <Label className="text-muted-foreground text-xs font-semibold uppercase tracking-wider">Phone Number</Label>
                         <FormControl>
-                          <Input {...field} disabled={!isEditing} className={`bg-white dark:bg-background border-primary/40 ${!isEditing && "opacity-70 font-medium"}`} />
+                          <Input {...field} disabled={!isEditing} placeholder="0771234567" maxLength={10} className={`bg-white dark:bg-background border-primary/40 ${!isEditing && "opacity-70 font-medium"}`} />
                         </FormControl>
                         <FormMessage />
                       </FormItem>

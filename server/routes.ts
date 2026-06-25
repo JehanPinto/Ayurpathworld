@@ -6334,6 +6334,7 @@ export async function registerRoutes(
 
         // Weekly appointments: last 4 weeks
         const weeklyAppointments = [];
+        const MON = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
         for (let w = 3; w >= 0; w--) {
           const weekEnd = new Date(now.getTime() - w * 7 * 24 * 60 * 60 * 1000);
           const weekStart = new Date(weekEnd.getTime() - 7 * 24 * 60 * 60 * 1000);
@@ -6344,8 +6345,14 @@ export async function registerRoutes(
              FROM appointments WHERE created_at >= $1 AND created_at < $2`,
             [weekStart, weekEnd]
           );
+          // For current week (w=0) weekEnd=now so today IS included; past weeks use exclusive upper bound - 1
+          const lastDay = w === 0 ? now : new Date(weekEnd.getTime() - 24 * 60 * 60 * 1000);
+          const sDay = weekStart.getDate(), sMon = MON[weekStart.getMonth()];
+          const eDay = lastDay.getDate(), eMon = MON[lastDay.getMonth()];
+          const dateLabel = sMon === eMon ? `${sDay}-${eDay} ${sMon}` : `${sDay} ${sMon}-${eDay} ${eMon}`;
           weeklyAppointments.push({
             week: `W${4 - w}`,
+            dateLabel,
             completed: parseInt(result.rows[0].completed),
             cancelled: parseInt(result.rows[0].cancelled),
           });
@@ -6392,7 +6399,9 @@ export async function registerRoutes(
         const w4 = patientRegistrations[3].patients;
         const registrationGrowth = w1 === 0 ? (w4 > 0 ? 100 : 0) : Math.round(((w4 - w1) / w1) * 1000) / 10;
 
-        // Doctor performance table (top 10 by appointments)
+        // Doctor performance table (verified doctors only, by completed appointments, counted live from appointments table)
+        // NOTE: returns all verified doctors; frontend handles search/scroll client-side.
+        // Fine for current scale — switch to server-side pagination (LIMIT/OFFSET + search param) if doctor count grows into the thousands.
         const doctorPerf = await pool.query(
           `SELECT
              u.full_name,
@@ -6400,12 +6409,14 @@ export async function registerRoutes(
              dp.status,
              dp.average_rating,
              dp.total_reviews,
-             COALESCE(dp.total_appointments, 0) AS total_appointments,
+             COUNT(a.id) AS total_appointments,
              (SELECT array_agg(s.name) FROM specializations s WHERE s.id = ANY(dp.specialization_ids)) AS specialization_names
            FROM doctor_profiles dp
            JOIN users u ON dp.user_id = u.id
-           ORDER BY dp.total_appointments DESC NULLS LAST
-           LIMIT 10`
+           LEFT JOIN appointments a ON a.doctor_id = dp.id AND a.status = 'completed'
+           WHERE dp.status = 'verified'
+           GROUP BY dp.id, u.full_name, dp.status, dp.average_rating, dp.total_reviews
+           ORDER BY COUNT(a.id) DESC`
         );
 
         const doctorPerformance = doctorPerf.rows.map((r: any) => ({
