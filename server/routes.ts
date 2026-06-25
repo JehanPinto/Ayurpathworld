@@ -4,9 +4,9 @@ import type { Express, NextFunction, Request, Response } from "express";
 import fs from "fs";
 import { type Server } from "http";
 import path from "path";
-import { pool } from "./db";
+import { db, pool } from "./db";
 import { storage } from "./storage";
-import { sendApplicationEmail, sendPasswordResetOtpEmail } from "./util/email";
+import { sendApplicationEmail, sendDoctorVerifiedEmail, sendPasswordResetOtpEmail } from "./util/email";
 
 import {
   AppointmentStatus,
@@ -26,6 +26,7 @@ import {
   loginSchema,
   PaymentMethod,
   PaymentStatus,
+  refunds,
   updateHospitalSchema,
   UserRole,
 } from "@shared/schema";
@@ -120,10 +121,11 @@ function validateBankDetails(acc?: string | null, branch?: string | null) {
 
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: process.env.NODE_ENV === "production" ? 5 : 100,
-  message: { error: "Too many login attempts, try again later" },
+  max: process.env.NODE_ENV === "production" ? 10 : 100,
+  message: { error: "Too many login attempts. Please try again in 15 minutes." },
   standardHeaders: true,
   legacyHeaders: false,
+  skipSuccessfulRequests: true,
 });
 
 const registrationLimiter = rateLimit({
@@ -1139,6 +1141,39 @@ export async function registerRoutes(
                 .status(403)
                 .json({
                   error: "Your doctor account application was rejected.",
+                });
+            }
+
+            if (doctorProfile.status === DoctorStatus.PENDING) {
+              const tFailed = new Date().toISOString();
+              try {
+                const { ipAddress, device, location, sessionId } = getReqInfo(req);
+                const { actorId, actorRole } = await getActorInfo(req);
+                await storage.createAuditLog({
+                  actorId, actorRole,
+                  action: 'USER_LOGIN', status: 'failed',
+                  entityType: 'user', entityId: user.id,
+                  ipAddress, device, location, sessionId: sessionId,
+                  metadata: { 
+                    auditType: "AUTH",
+                    method: 'Doctor', reason: 'Doctor application pending',
+                    timeline: {
+                      requestReceivedAt: tRequestReceived,
+                      credentialsVerifiedAt: tCredentialsVerified,
+                      providerIdentifiedAt: tProviderIdentified,
+                      DoctorStatusCheckedAt: tDoctorStatusChecked,
+                      PendingIdentifiedAt: tFailed,
+                      completedAt: tFailed
+                    }
+                  }
+                });
+              } catch (e) { console.error(e); }
+
+              return res
+                .status(403)
+                .json({
+                  error: "verification_pending",
+                  message: "Your account is pending verification."
                 });
             }
           }
@@ -2514,6 +2549,15 @@ export async function registerRoutes(
     },
   );
 
+  app.get("/api/cities", publicApiLimiter, async (_req: Request, res: Response) => {
+    try {
+      const cities = await storage.getActiveCities();
+      res.json(cities);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to get cities" });
+    }
+  });
+
   app.get("/api/specializations", publicApiLimiter, async (_req: Request, res: Response) => {
     try {
       const specializations = await storage.getAllSpecializations();
@@ -2936,7 +2980,7 @@ export async function registerRoutes(
         const existingSlots = await storage.getAvailableSlots(profile.id, data.date);
         
         const isOverlap = (s1: string, e1: string, s2: string, e2: string) => {
-          return s1 < e2 && s2 < e1;
+          return s1 < e2 && s2 < e1; // This is actually correct. The problem is usually in the frontend UI state or buffer logic. Let's ensure this strictly checks exclusive bounds.
         };
 
         const hasOverlap = existingSlots.some((slot) => 
@@ -3128,7 +3172,9 @@ export async function registerRoutes(
           dependentGender: bookingData.dependentGender,
           dependentContact: bookingData.dependentContact,
           isCalled: false,
-          status: AppointmentStatus.PENDING,
+          status: bookingData.paymentMethod === PaymentMethod.AT_CLINIC
+            ? AppointmentStatus.CONFIRMED
+            : AppointmentStatus.PENDING,
         };
 
         const appointment = await storage.createAppointment(appointmentData);
@@ -3146,12 +3192,35 @@ export async function registerRoutes(
           consultationFee = doctor.homeVisitFee;
         }
 
-        const platformSettings = await storage.getPlatformSettings();
+        const [platformSettings, allCustomTaxes] = await Promise.all([
+          storage.getPlatformSettings(),
+          storage.getTaxEntries(),
+        ]);
         const bookingCharges = platformSettings.bookingCharges;
-        const stampDuty = platformSettings.stampDutyEnabled
+        const stampDutyAmt = platformSettings.stampDutyEnabled
           ? Math.round(consultationFee * 0.01)
           : 0;
-        const tax = Math.round(consultationFee * (platformSettings.taxRate / 100)) + stampDuty;
+        const baseTaxAmt = Math.round(consultationFee * (platformSettings.taxRate / 100));
+
+        // Custom taxes for patients
+        const patientCustomTaxes = allCustomTaxes.filter(
+          (t) => t.applicableTo === "patients" || t.applicableTo === "both"
+        );
+        const customPatientTaxAmt = patientCustomTaxes.reduce(
+          (sum, t) => sum + Math.round(consultationFee * (t.rate / 100)), 0
+        );
+
+        const tax = baseTaxAmt + stampDutyAmt + customPatientTaxAmt;
+
+        // Build full breakdown for patient invoice
+        const taxBreakdown: { title: string; rate: number; amount: number; applicableTo: string }[] = [];
+        if (baseTaxAmt > 0) taxBreakdown.push({ title: `Government Tax`, rate: platformSettings.taxRate, amount: baseTaxAmt, applicableTo: "patients" });
+        if (stampDutyAmt > 0) taxBreakdown.push({ title: "Stamp Duty", rate: 1, amount: stampDutyAmt, applicableTo: "patients" });
+        for (const t of patientCustomTaxes) {
+          const amt = Math.round(consultationFee * (t.rate / 100));
+          taxBreakdown.push({ title: t.title, rate: t.rate, amount: amt, applicableTo: t.applicableTo });
+        }
+
         const platformCommission = Math.round(
           consultationFee * (platformSettings.platformCommissionRate / 100),
         );
@@ -3165,12 +3234,13 @@ export async function registerRoutes(
           consultationFee,
           bookingCharges,
           tax,
+          taxBreakdown,
           platformCommission,
           doctorEarnings,
           totalAmount,
           status:
             bookingData.paymentMethod === PaymentMethod.ONLINE
-              ? PaymentStatus.PENDING
+              ? PaymentStatus.COMPLETED
               : PaymentStatus.UNPAID,
           method: bookingData.paymentMethod,
         };
@@ -3286,54 +3356,6 @@ export async function registerRoutes(
         res.json(appointments);
       } catch (error) {
         res.status(500).json({ error: "Failed to get appointments" });
-      }
-    },
-  );
-
-  app.patch(
-    "/api/appointments/:id/confirm",
-    authMiddleware,
-    roleMiddleware(UserRole.DOCTOR),
-    async (req: AuthenticatedRequest, res: Response) => {
-      try {
-        const existingAppointment = await storage.getAppointment(req.params.id);
-        if (!existingAppointment) {
-          return res.status(404).json({ error: "Appointment not found" });
-        }
-
-        const profile = await storage.getDoctorProfileByUserId(req.user!.id);
-
-        if (!profile || existingAppointment.doctorId !== profile.id) {
-          return res.status(403).json({ error: "Forbidden: You can only confirm your own appointments." });
-        }
-
-        const appointment = await storage.updateAppointment(req.params.id, {
-          status: AppointmentStatus.CONFIRMED,
-        });
-
-        if (appointment) {
-          const doctorUser = await storage.getUser(profile.userId);
-          const doctorName = doctorUser?.fullName || "your doctor";
-          const [yr, mo, dy] = appointment.appointmentDate.split("-");
-          const months = [
-            "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-            "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-          ];
-          const formattedDate = `${parseInt(dy)} ${months[parseInt(mo) - 1]}`;
-
-          await storage.createNotification({
-            userId: appointment.patientId,
-            title: "Appointment Confirmed",
-            message: `Your appointment with Dr. ${doctorName} for ${formattedDate} at ${appointment.appointmentTime} has been confirmed.`,
-            type: "appointment",
-            isRead: false,
-            relatedId: appointment.id,
-          });
-        }
-
-        res.json(appointment);
-      } catch (error) {
-        res.status(500).json({ error: "Failed to confirm appointment" });
       }
     },
   );
@@ -3571,6 +3593,12 @@ export async function registerRoutes(
 
         const updated = await storage.updatePayment(req.params.id, {
           status: PaymentStatus.FAILED,
+          consultationFee: 0,
+          bookingCharges: 0,
+          tax: 0,
+          platformCommission: 0,
+          doctorEarnings: 0,
+          totalAmount: 0,
         });
 
         const formattedAmount = `LKR ${payment.totalAmount.toLocaleString("en-LK")}`;
@@ -4099,12 +4127,15 @@ export async function registerRoutes(
     async (req: AuthenticatedRequest, res: Response) => {
       try {
         const patientId = req.user!.id;
-        
+
         // 1. Get all appointments for the patient
         const allAppointments = await storage.getPatientAppointments(patientId);
-        
+
         // 2. Get all payments for the patient
-        const allPayments = await storage.getPatientPayments(patientId);
+        const [allPayments, platformSettings] = await Promise.all([
+          storage.getPatientPayments(patientId),
+          storage.getPlatformSettings(),
+        ]);
 
         const today = new Date().toISOString().split("T")[0];
 
@@ -4153,14 +4184,28 @@ export async function registerRoutes(
 
         // --- Recent Transactions ---
         const recentTransactions = recentPayments.map(p => {
-           const appointment = allAppointments.find(a => a.id === p.appointmentId);
-           const doctor = appointment ? doctorMap.get(appointment.doctorId) : null;
-           
-           return {
-             ...p,
-             doctorName: doctor?.user?.fullName || "Doctor",
-             date: p.createdAt
-           };
+          const appointment = allAppointments.find(a => a.id === p.appointmentId);
+          const doctor = appointment ? doctorMap.get(appointment.doctorId) : null;
+
+          // Build fallback breakdown for old payments that have no stored breakdown
+          let taxBreakdown = (p as any).taxBreakdown;
+          if (!taxBreakdown || (Array.isArray(taxBreakdown) && taxBreakdown.length === 0)) {
+            taxBreakdown = [];
+            const fee = p.consultationFee || 0;
+            const baseTax = Math.round(fee * (platformSettings.taxRate / 100));
+            if (baseTax > 0) taxBreakdown.push({ title: `Government Tax`, rate: platformSettings.taxRate, amount: baseTax, applicableTo: "patients" });
+            if (platformSettings.stampDutyEnabled) {
+              const stampAmt = Math.round(fee * 0.01);
+              if (stampAmt > 0) taxBreakdown.push({ title: "Stamp Duty", rate: 1, amount: stampAmt, applicableTo: "patients" });
+            }
+          }
+
+          return {
+            ...p,
+            taxBreakdown,
+            doctorName: doctor?.user?.fullName || "Doctor",
+            date: p.createdAt
+          };
         });
 
         res.json({
@@ -4314,13 +4359,21 @@ export async function registerRoutes(
         );
 
         if (doctor) {
+          // 1. Send internal system notification
           await storage.createNotification({
             userId: doctor.userId,
             title: "Account Verified",
-            message:
-              "Congratulations! Your doctor account has been verified. You can now accept appointments.",
+            message: "Congratulations! Your doctor account has been verified. You can now accept appointments.",
             type: "verification",
           });
+
+          // 2. NEW: Send Email Notification to the Doctor
+          const doctorUser = await storage.getUser(doctor.userId);
+          if (doctorUser) {
+            // Fire and forget email (Doesn't block the API response to the admin)
+            sendDoctorVerifiedEmail(doctorUser.email, doctorUser.fullName)
+              .catch(err => console.error("Email send error:", err));
+          }
         }
 
         res.json(doctor);
@@ -4775,9 +4828,10 @@ export async function registerRoutes(
 
   app.post("/api/admin/tax-entries", authMiddleware, roleMiddleware(UserRole.ADMIN), async (req: Request, res: Response) => {
     try {
-      const { title, rate } = req.body;
+      const { title, rate, applicableTo } = req.body;
       if (!title?.trim() || rate === undefined) return res.status(400).json({ error: "Title and rate are required" });
-      const entry = await storage.createTaxEntry(title.trim(), Number(rate));
+      if (!["doctors", "patients", "both"].includes(applicableTo)) return res.status(400).json({ error: "applicableTo must be doctors, patients, or both" });
+      const entry = await storage.createTaxEntry(title.trim(), Number(rate), applicableTo);
       res.status(201).json(entry);
     } catch { res.status(500).json({ error: "Failed to create tax entry" }); }
   });
@@ -4796,15 +4850,21 @@ export async function registerRoutes(
     roleMiddleware(UserRole.ADMIN),
     async (_req: Request, res: Response) => {
       try {
-        const [settings, doctors] = await Promise.all([
+        const [settings, doctors, allCustomTaxEntries] = await Promise.all([
           storage.getPlatformSettings(),
           storage.getVerifiedDoctors(),
+          storage.getTaxEntries(),
         ]);
 
+        const doctorCustomTaxEntries = allCustomTaxEntries.filter(
+          (t) => t.applicableTo === "doctors" || t.applicableTo === "both"
+        );
         const commissionRate = settings.platformCommissionRate / 100;
+        const customDoctorTaxRate = doctorCustomTaxEntries.reduce((sum, t) => sum + t.rate / 100, 0);
         const totalTaxRate =
           (settings.vatEnabled ? 0.18 : 0) +
-          (settings.withholdingTaxEnabled ? 0.05 : 0);
+          (settings.withholdingTaxEnabled ? 0.05 : 0) +
+          customDoctorTaxRate;
         const vatEnabled = settings.vatEnabled ?? true;
         const withholdingTaxEnabled = settings.withholdingTaxEnabled ?? true;
         const stampDutyEnabled = settings.stampDutyEnabled ?? false;
@@ -4854,6 +4914,11 @@ export async function registerRoutes(
           const vatAmount = vatEnabled ? Math.round(earnAmount * 0.18) : 0;
           const withholdingAmount = withholdingTaxEnabled ? Math.round(earnAmount * 0.05) : 0;
           const stampDutyAmount = stampDutyEnabled ? Math.round(earnAmount * 0.01) : 0;
+          const customDoctorTaxes = doctorCustomTaxEntries.map((t) => ({
+            title: t.title,
+            rate: t.rate,
+            amount: Math.round(earnAmount * (t.rate / 100)),
+          }));
 
           doctorPayouts.push({
             doctorId: doctor.id,
@@ -4875,6 +4940,7 @@ export async function registerRoutes(
             vatAmount,
             withholdingAmount,
             stampDutyAmount,
+            customDoctorTaxes,
             payoutAmount,
           });
         }
@@ -6205,6 +6271,20 @@ export async function registerRoutes(
   );
 
   app.get(
+    "/api/admin/refund-stats",
+    authMiddleware,
+    roleMiddleware(UserRole.ADMIN),
+    async (req: Request, res: Response) => {
+      try {
+        const stats = await storage.getRefundStats();
+        res.json(stats);
+      } catch (error) {
+        res.status(500).json({ error: "Failed to fetch refund stats" });
+      }
+    },
+  );
+
+  app.get(
     "/api/admin/refund-requests",
     authMiddleware,
     roleMiddleware(UserRole.ADMIN),
@@ -6212,11 +6292,11 @@ export async function registerRoutes(
       try {
         const page = parseInt(req.query.page as string) || 1;
         const limit = parseInt(req.query.limit as string) || 10;
+        const status = req.query.status as string; // 'pending' or 'history'
 
-        const result = await storage.getPaginatedRefundRequests(page, limit);
+        const result = await storage.getPaginatedRefundRequests(page, limit, status);
         res.json(result);
       } catch (error) {
-        console.error(error);
         res.status(500).json({ error: "Failed to fetch refund requests" });
       }
     },
@@ -6229,7 +6309,7 @@ export async function registerRoutes(
     roleMiddleware(UserRole.ADMIN),
     async (req: Request, res: Response) => {
       try {
-        const { status } = req.body; // 'completed' or 'rejected'
+        const { status } = req.body; 
         const updatedRefund = await storage.processRefund(req.params.id, status);
         res.json(updatedRefund);
       } catch (error) {
@@ -6285,6 +6365,7 @@ export async function registerRoutes(
 
         // Weekly appointments: last 4 weeks
         const weeklyAppointments = [];
+        const MON = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
         for (let w = 3; w >= 0; w--) {
           const weekEnd = new Date(now.getTime() - w * 7 * 24 * 60 * 60 * 1000);
           const weekStart = new Date(weekEnd.getTime() - 7 * 24 * 60 * 60 * 1000);
@@ -6295,8 +6376,14 @@ export async function registerRoutes(
              FROM appointments WHERE created_at >= $1 AND created_at < $2`,
             [weekStart, weekEnd]
           );
+          // For current week (w=0) weekEnd=now so today IS included; past weeks use exclusive upper bound - 1
+          const lastDay = w === 0 ? now : new Date(weekEnd.getTime() - 24 * 60 * 60 * 1000);
+          const sDay = weekStart.getDate(), sMon = MON[weekStart.getMonth()];
+          const eDay = lastDay.getDate(), eMon = MON[lastDay.getMonth()];
+          const dateLabel = sMon === eMon ? `${sDay}-${eDay} ${sMon}` : `${sDay} ${sMon}-${eDay} ${eMon}`;
           weeklyAppointments.push({
             week: `W${4 - w}`,
+            dateLabel,
             completed: parseInt(result.rows[0].completed),
             cancelled: parseInt(result.rows[0].cancelled),
           });
@@ -6343,7 +6430,9 @@ export async function registerRoutes(
         const w4 = patientRegistrations[3].patients;
         const registrationGrowth = w1 === 0 ? (w4 > 0 ? 100 : 0) : Math.round(((w4 - w1) / w1) * 1000) / 10;
 
-        // Doctor performance table (top 10 by appointments)
+        // Doctor performance table (verified doctors only, by completed appointments, counted live from appointments table)
+        // NOTE: returns all verified doctors; frontend handles search/scroll client-side.
+        // Fine for current scale — switch to server-side pagination (LIMIT/OFFSET + search param) if doctor count grows into the thousands.
         const doctorPerf = await pool.query(
           `SELECT
              u.full_name,
@@ -6351,12 +6440,14 @@ export async function registerRoutes(
              dp.status,
              dp.average_rating,
              dp.total_reviews,
-             COALESCE(dp.total_appointments, 0) AS total_appointments,
+             COUNT(a.id) AS total_appointments,
              (SELECT array_agg(s.name) FROM specializations s WHERE s.id = ANY(dp.specialization_ids)) AS specialization_names
            FROM doctor_profiles dp
            JOIN users u ON dp.user_id = u.id
-           ORDER BY dp.total_appointments DESC NULLS LAST
-           LIMIT 10`
+           LEFT JOIN appointments a ON a.doctor_id = dp.id AND a.status = 'completed'
+           WHERE dp.status = 'verified'
+           GROUP BY dp.id, u.full_name, dp.status, dp.average_rating, dp.total_reviews
+           ORDER BY COUNT(a.id) DESC`
         );
 
         const doctorPerformance = doctorPerf.rows.map((r: any) => ({
@@ -6562,7 +6653,15 @@ export async function registerRoutes(
         } else if (status_code === "-2" || status_code === "-1" || status_code === "0") {
           console.log(`[PAYHERE WEBHOOK] ⚠️ Payment Failed/Canceled for Appointment: ${appointmentId}`);
           if (payment && appt) {
-            await storage.updatePayment(payment.id, { status: PaymentStatus.FAILED });
+            await storage.updatePayment(payment.id, { 
+              status: PaymentStatus.FAILED,
+              consultationFee: 0,
+              bookingCharges: 0,
+              tax: 0,
+              platformCommission: 0,
+              doctorEarnings: 0,
+              totalAmount: 0
+            });
             await storage.updateAppointment(appointmentId, { 
                 status: AppointmentStatus.CANCELLED, 
                 cancelReason: `PayHere Payment Failed (Code: ${status_code})` 
@@ -6635,7 +6734,15 @@ export async function registerRoutes(
         // 1. Payment status update to faild
         const payment = await storage.getPaymentByAppointment(appointmentId);
         if (payment) {
-          await storage.updatePayment(payment.id, { status: PaymentStatus.FAILED });
+          await storage.updatePayment(payment.id, { 
+            status: PaymentStatus.FAILED,
+            consultationFee: 0,
+            bookingCharges: 0,
+            tax: 0,
+            platformCommission: 0,
+            doctorEarnings: 0,
+            totalAmount: 0
+          });
         }
 
         // 2. Appointment status update to cancelled with reason

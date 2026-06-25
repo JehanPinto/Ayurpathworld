@@ -11,14 +11,12 @@ if (process.env.GOOGLE_REFRESH_TOKEN_TEST) {
   oauth2Client.setCredentials({ refresh_token: process.env.GOOGLE_REFRESH_TOKEN_TEST });
 }
 
-// patientEmail එක optional කරලා තියෙන්නේ (string | null)
 export async function createGoogleMeetEvent(doctorEmail: string, patientEmail: string | null, startTimeIso: string) {
   try {
     const calendar = google.calendar({ version: "v3", auth: oauth2Client });
     
     const endTime = new Date(new Date(startTimeIso).getTime() + 30 * 60000).toISOString();
 
-    // Attendees හදන විදිහ
     const attendees = [{ email: doctorEmail }];
     if (patientEmail) {
       attendees.push({ email: patientEmail });
@@ -35,7 +33,7 @@ export async function createGoogleMeetEvent(doctorEmail: string, patientEmail: s
           conferenceSolutionKey: { type: "hangoutsMeet" } 
         }
       },
-      attendees: attendees, // වෙනස් කරපු තැන
+      attendees: attendees,
       reminders: {
         useDefault: false,
         overrides: [

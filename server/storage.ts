@@ -75,6 +75,7 @@ export interface IStorage {
 
   getSpecialization(id: string): Promise<Specialization | undefined>;
   getAllSpecializations(): Promise<Specialization[]>;
+  getActiveCities(): Promise<string[]>;
   createSpecialization(spec: InsertSpecialization): Promise<Specialization>;
   updateSpecialization(
     id: string,
@@ -252,7 +253,6 @@ export interface IStorage {
     appointmentId: string,
     consultationNotes?: string,
   ): Promise<Appointment | undefined>;
-  confirmAppointment(appointmentId: string): Promise<Appointment | undefined>;
   markAppointmentNoShow(
     appointmentId: string,
   ): Promise<Appointment | undefined>;
@@ -746,6 +746,10 @@ export class MemStorage implements IStorage {
 
   async getAllSpecializations(): Promise<Specialization[]> {
     return Array.from(this.specializations.values());
+  }
+
+  async getActiveCities(): Promise<string[]> {
+    return [];
   }
 
   async createSpecialization(
@@ -1606,12 +1610,6 @@ export class MemStorage implements IStorage {
   async completeAppointment(
     _appointmentId: string,
     _consultationNotes?: string,
-  ): Promise<Appointment | undefined> {
-    return undefined;
-  }
-
-  async confirmAppointment(
-    _appointmentId: string,
   ): Promise<Appointment | undefined> {
     return undefined;
   }

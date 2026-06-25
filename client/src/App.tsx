@@ -62,6 +62,7 @@ import AdminReportsPage from "./pages/admin/reports";
 import FindDoctors from "./pages/patient/find-doctors";
 import DoctorDetailsPage from "./pages/doctor-details";
 import AdminAuditPage from "./pages/admin/AdminAudit";
+import DoctorWaitingVerification from "@/pages/doctor/doctor_verifing_waiting_dashboard";
 
 function ProtectedRoute({ 
   children, 
@@ -70,8 +71,8 @@ function ProtectedRoute({
   children: React.ReactNode; 
   allowedRoles?: string[];
 }) {
-  const { user, isLoading } = useAuth();
-  const [, setLocation] = useLocation();
+  const { user, isLoading, doctorProfile } = useAuth();
+  const [location] = useLocation();
 
   if (isLoading) {
     return <LoadingPage />;
@@ -80,6 +81,10 @@ function ProtectedRoute({
   if (!user) {
     return <Redirect to="/login" />;
   }
+
+  // if (user.role === UserRole.DOCTOR && doctorProfile?.status === "pending") {
+  //    return <Redirect to="/doctor/verification-pending" />;
+  // }
 
   if (allowedRoles && !allowedRoles.includes(user.role)) {
     return <Redirect to="/" />;
@@ -124,6 +129,7 @@ function Router() {
       <Route path="/refund-policy" component={RefundPolicyPage} />
       <Route path="/contact-privacy" component={ContactPrivacyPage} />
       <Route path="/doctor-details/:id" component={DoctorDetailsPage} />
+      <Route path="/doctor/verification-pending" component={DoctorWaitingVerification} />
 
       <Route path="/book/:doctorId">
         <ProtectedRoute allowedRoles={[UserRole.PATIENT]}>

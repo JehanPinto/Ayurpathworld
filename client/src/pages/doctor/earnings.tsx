@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useState, useEffect } from "react";
+import { useQuery } from "@tanstack/react-query";
 import {
   DollarSign,
   TrendingUp,
@@ -13,7 +13,9 @@ import {
   Download,
   Filter,
   ArrowUpRight,
-  ArrowDownRight
+  ArrowDownRight,
+  ArrowUp,
+  ArrowDown
 } from "lucide-react";
 import { format, parseISO } from "date-fns";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -56,24 +58,25 @@ interface EarningsData {
 export default function DoctorEarnings() {
   const [filterStatus, setFilterStatus] = useState<string>("all");
   const [filterPeriod, setFilterPeriod] = useState<string>("all");
-  const [showSettleConfirm, setShowSettleConfirm] = useState(false);
-  const queryClient = useQueryClient();
+  const [showScrollBtn, setShowScrollBtn] = useState(false);
+  const [atBottom, setAtBottom] = useState(false);
+
+  useEffect(() => {
+    const container = document.querySelector("main");
+    if (!container) return;
+    const onScroll = () => {
+      const scrolled = container.scrollTop;
+      const total = container.scrollHeight - container.clientHeight;
+      setShowScrollBtn(scrolled > 300);
+      setAtBottom(total > 0 && scrolled >= total - 50);
+    };
+    container.addEventListener("scroll", onScroll);
+    return () => container.removeEventListener("scroll", onScroll);
+  }, []);
 
   const { data, isLoading, isError } = useQuery<EarningsData>({
     queryKey: ["/api/doctor/earnings"],
     staleTime: 2 * 60 * 1000,
-  });
-
-  const settleMutation = useMutation({
-    mutationFn: async () => {
-      const res = await fetch("/api/doctor/earnings/settle", { method: "POST", credentials: "include" });
-      if (!res.ok) throw new Error("Failed to settle");
-      return res.json();
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/doctor/earnings"] });
-      setShowSettleConfirm(false);
-    },
   });
 
   const formatFee = (fee: number) => {
@@ -153,56 +156,6 @@ export default function DoctorEarnings() {
           <Download className="h-4 w-4 mr-2" />
           Export Report
         </Button>
-      </div>
-
-      <div className={`flex items-start gap-4 rounded-xl border p-4 ${
-        cancellationCharges.totalOwed > 0
-          ? "border-red-200 bg-red-50 dark:border-red-900 dark:bg-red-950/20"
-          : "border-green-200 bg-green-50 dark:border-green-900 dark:bg-green-950/20"
-      }`}>
-        <AlertTriangle className={`h-5 w-5 mt-0.5 shrink-0 ${cancellationCharges.totalOwed > 0 ? "text-red-500" : "text-green-500"}`} />
-        <div className="flex-1 min-w-0">
-          <p className={`font-semibold ${cancellationCharges.totalOwed > 0 ? "text-red-700 dark:text-red-400" : "text-green-700 dark:text-green-400"}`}>
-            Owed to System Admin
-          </p>
-          <p className={`text-sm mt-0.5 ${cancellationCharges.totalOwed > 0 ? "text-red-600 dark:text-red-500" : "text-green-600 dark:text-green-500"}`}>
-            {cancellationCharges.count > 0
-              ? `When you cancel an appointment, the cancellation charge is billed back to you. ${cancellationCharges.count} cancellation${cancellationCharges.count > 1 ? "s" : ""} this period — patients fully refunded.`
-              : "No outstanding cancellation charges. All patients have been settled."}
-          </p>
-        </div>
-        <div className="flex items-center gap-3 shrink-0">
-          <span className={`font-bold ${cancellationCharges.totalOwed > 0 ? "text-red-600 dark:text-red-400" : "text-green-600 dark:text-green-400"}`}>
-            {formatFee(cancellationCharges.totalOwed)}
-          </span>
-          {cancellationCharges.totalOwed > 0 && !showSettleConfirm && (
-            <Button size="sm" className="bg-red-600 hover:bg-red-700 text-white" onClick={() => setShowSettleConfirm(true)}>
-              Settle now
-            </Button>
-          )}
-          {showSettleConfirm && (
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-red-700 font-medium">Deduct {formatFee(cancellationCharges.totalOwed)} from earnings?</span>
-              <Button
-                size="sm"
-                className="bg-red-600 hover:bg-red-700 text-white h-7 px-2 text-xs"
-                onClick={() => settleMutation.mutate()}
-                disabled={settleMutation.isPending}
-              >
-                {settleMutation.isPending ? "Settling…" : "Confirm"}
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-7 px-2 text-xs"
-                onClick={() => setShowSettleConfirm(false)}
-                disabled={settleMutation.isPending}
-              >
-                Cancel
-              </Button>
-            </div>
-          )}
-        </div>
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
@@ -357,8 +310,8 @@ export default function DoctorEarnings() {
                       <TableCell className="font-semibold text-green-600">
                         {formatFee(payment.doctorEarnings)}
                       </TableCell>
-                      <TableCell>
-                        <StatusBadge status={payment.status} type="payment" />
+                      <TableCell className="align-middle">
+                        <StatusBadge status={payment.status} type="payment" className="inline-flex items-center justify-center h-6 w-20" />
                       </TableCell>
                     </TableRow>
                   ))}
@@ -450,6 +403,20 @@ export default function DoctorEarnings() {
           </CardContent>
         </Card>
       </div>
+
+      {showScrollBtn && (
+        <button
+          onClick={() => {
+            const container = document.querySelector("main");
+            if (!container) return;
+            container.scrollTo({ top: atBottom ? 0 : container.scrollHeight, behavior: "smooth" });
+          }}
+          className="fixed bottom-6 right-6 z-50 h-12 w-12 rounded-full bg-green-500 hover:bg-green-600 text-white shadow-lg flex items-center justify-center transition-all"
+          aria-label={atBottom ? "Scroll to top" : "Scroll to bottom"}
+        >
+          {atBottom ? <ArrowUp className="h-5 w-5" /> : <ArrowDown className="h-5 w-5" />}
+        </button>
+      )}
     </div>
   );
 }

@@ -1,5 +1,5 @@
 import { resend, defaultFromEmail } from "./config"; 
-import { getPasswordResetOtpEmailHtml, getPatientBookingReceiptEmailHtml, getDoctorNewBookingEmailHtml } from "./templates";
+import { getPasswordResetOtpEmailHtml, getPatientBookingReceiptEmailHtml, getDoctorNewBookingEmailHtml, getDoctorVerifiedEmailHtml } from "./templates";
 
 export async function sendPasswordResetOtpEmail(toEmail: string, otp: string) {
   try {
@@ -83,6 +83,29 @@ export async function sendDoctorNewBookingEmail(
     return { success: true };
   } catch (err) {
     console.error("🔴 Failed to send doctor notification email:", err);
+    return { success: false, error: "Failed to send email" };
+  }
+}
+
+export async function sendDoctorVerifiedEmail(toEmail: string, doctorName: string) {
+  try {
+    console.log(`[EMAIL] Attempting to send Doctor Verification to: ${toEmail}`);
+    const { data, error } = await resend.emails.send({
+      from: defaultFromEmail,
+      to: [toEmail],
+      subject: `Your AyurPath Doctor Account is Verified!`,
+      html: getDoctorVerifiedEmailHtml(doctorName),
+    });
+
+    if (error) {
+      console.error(`🔴 Failed to send verification email to ${toEmail}:`, error);
+      return { success: false, error: error.message };
+    }
+    
+    console.log(`🟢 Verification email sent to ${toEmail} | ID: ${data?.id}`);
+    return { success: true };
+  } catch (err) {
+    console.error("🔴 Failed to send verification email:", err);
     return { success: false, error: "Failed to send email" };
   }
 }

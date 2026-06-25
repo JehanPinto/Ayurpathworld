@@ -180,7 +180,6 @@ export default function PatientAppointmentsPage() {
               <SelectItem value="all">All Types</SelectItem>
               <SelectItem value="in_person">In-Person</SelectItem>
               <SelectItem value="online">Online</SelectItem>
-              <SelectItem value="home_visit">Home Visit</SelectItem>
             </SelectContent>
           </Select>
         </div>

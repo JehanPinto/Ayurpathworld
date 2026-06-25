@@ -9,11 +9,15 @@ import {
   X, 
   CheckCircle2, 
   AlertCircle, 
-  Loader2
+  Loader2,
+  Clock,
+  ArrowRightLeft,
+  History,
+  XCircle
 } from "lucide-react";
 import { format, parseISO } from "date-fns";
 
-import { Card } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -45,13 +49,13 @@ const RefundRowSkeleton = () => (
 export default function AdminRefunds() {
   const { toast } = useToast();
   const [selectedRefund, setSelectedRefund] = useState<any>(null);
-
+  const [activeTab, setActiveTab] = useState<"pending" | "history">("pending");
   const [currentPage, setCurrentPage] = useState(1);
 
   const { data: response, isLoading, isFetching, isError } = useQuery({
-    queryKey: ["/api/admin/refund-requests", currentPage],
+    queryKey: ["/api/admin/refund-requests", currentPage, activeTab],
     queryFn: async () => { 
-      const res = await fetch(`/api/admin/refund-requests?page=${currentPage}&limit=10`);
+      const res = await fetch(`/api/admin/refund-requests?page=${currentPage}&limit=10&status=${activeTab}`);
       if (!res.ok) throw new Error("Failed to load refund requests");
       return res.json();
     }
@@ -60,38 +64,45 @@ export default function AdminRefunds() {
   const allRequests = response?.data || [];
   const totalPages = response?.totalPages || 1;
 
-  console.log("Fetched refund requests:", allRequests);
-  console.log("Current page:", currentPage, "Total pages:", totalPages);
-
   const processMutation = useMutation({
     mutationFn: (data: { id: string; status: string }) => {
       return apiRequest("PATCH", `/api/admin/refunds/${data.id}/process`, { status: data.status });
     },
-    onSuccess: (responseData) => {
+    onSuccess: (responseData, variables) => {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/refund-requests"] });
       setSelectedRefund(null);
-      toast({ title: "Refund processed successfully!" });
+      toast({ 
+        title: variables.status === 'completed' ? "Refund Approved!" : "Refund Rejected",
+        description: `The refund request was successfully ${variables.status}.`,
+        variant: variables.status === 'rejected' ? 'destructive' : 'default'
+      });
     },
     onError: (err: any) => {
       toast({ title: "Failed to process", description: err.message, variant: "destructive" });
     },
   });
 
+  // --- CALCULATIONS FOR CARDS ---
+  const now = new Date();
+  const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+
+  // Since allRequests is paginated, we should ideally fetch global stats from an endpoint.
+  // For now, based on your logic:
   const pendingRequests = allRequests.filter((r: any) => r.refund.status === "pending");
-  const completedRefunds = allRequests.filter((r: any) => r.refund.status === "completed");
+  const pendingRequestsCount = pendingRequests.length;
 
-  const doctorCancellationsPending = pendingRequests.filter((r: any) => r.appointment.cancelledBy === "doctor").length;
-  const doctorCancellationsTotal = allRequests.filter((r: any) => r.appointment.cancelledBy === "doctor").length;
-  const doctorRefundedAmount = completedRefunds
-    .filter((r: any) => r.appointment.cancelledBy === "doctor")
-    .reduce((sum: number, r: any) => sum + r.refund.amount, 0);
+  const requestsLast30Days = allRequests.filter((r: any) => {
+    const createdAt = new Date(r.refund.createdAt || r.refund.created_at || Date.now());
+    return createdAt >= thirtyDaysAgo;
+  });
+  const requestsLast30DaysCount = requestsLast30Days.length;
 
-  const patientCancellationsTotal = allRequests.filter((r: any) => r.appointment.cancelledBy === "patient").length;
-  const patientRefundedAmount = completedRefunds
-    .filter((r: any) => r.appointment.cancelledBy === "patient")
-    .reduce((sum: number, r: any) => sum + r.refund.amount, 0);
+  const refundedLast30DaysAmount = requestsLast30Days
+    .filter((r: any) => r.refund.status === "completed")
+    .reduce((sum: number, r: any) => sum + (Number(r.refund.amount) || 0), 0);
 
-  const refundableTotal = pendingRequests.reduce((sum: number, r: any) => sum + r.refund.amount, 0);
+  const refundableTotalAmount = pendingRequests
+    .reduce((sum: number, r: any) => sum + (Number(r.refund.amount) || 0), 0);
 
   const formatPrice = (value: number) => 
     new Intl.NumberFormat("en-LK", { minimumFractionDigits: 0 }).format(value || 0);
@@ -115,77 +126,114 @@ export default function AdminRefunds() {
         <p className="text-muted-foreground">Review and process pending appointment refunds.</p>
       </div>
 
-      {/* --- STATS CARDS --- */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 lg:gap-6">
-        <Card className="p-6 border-primary/50 bg-sidebar dark:bg-popover rounded-3xl shadow-sm flex flex-col justify-between">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="p-2 bg-primary/10 rounded-full border border-primary/50 text-primary/50">
-              <MoreHorizontal className="w-5 h-5" />
+      {/* --- STATS CARDS USING CSS VARIABLES (NO HARDCODED COLORS) --- */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 lg:gap-6">
+        
+        {/* Card 1: Pending Requests (Secondary/Yellow Theme) */}
+        <Card className="p-6 border-secondary/20 bg-secondary/5 rounded-3xl shadow-sm flex flex-col justify-between hover-elevate">
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-secondary/20 rounded-full text-secondary">
+              <Clock className="w-5 h-5" />
             </div>
-            <span className="text-sm font-bold text-slate-600 dark:text-white/80">Pending Requests</span>
+            <span className="text-sm font-bold text-foreground/80">Pending Requests</span>
           </div>
-          <div className="text-center mt-2">
-            <span className="text-4xl lg:text-5xl font-black text-slate-800 dark:text-white tracking-tight">{pendingRequests.length}</span>
-            <p className="text-sm font-bold text-destructive mt-2">{doctorCancellationsPending} doctor cancellations</p>
+          <div className="text-center">
+            <span className="text-4xl lg:text-5xl font-black text-secondary tracking-tight">
+              {pendingRequestsCount}
+            </span>
+            <p className="text-sm font-bold text-muted-foreground">Awaiting processing</p>
           </div>
         </Card>
 
-        <Card className="p-6 border-primary/50 bg-sidebar dark:bg-popover rounded-3xl shadow-sm flex flex-col justify-between">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="p-2 bg-primary/10 rounded-full border border-primary/50 text-primary/50">
-              <UserX className="w-5 h-5" />
+        {/* Card 2: Refund Requests (Primary/Green Theme) */}
+        <Card className="p-6 border-primary/20 bg-primary/5 rounded-3xl shadow-sm flex flex-col justify-between hover-elevate">
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-primary/20 rounded-full text-primary">
+              <ArrowRightLeft className="w-5 h-5" />
             </div>
-            <span className="text-sm font-bold text-slate-600 dark:text-white/80">Doctor cancellations</span>
+            <span className="text-sm font-bold text-foreground/80">Refund Requests</span>
           </div>
-          <div className="text-center mt-2">
-            <span className="text-4xl lg:text-5xl font-black text-slate-800 dark:text-white tracking-tight">{doctorCancellationsTotal}</span>
-            <p className="text-sm font-bold text-slate-400 dark:text-white/80 mt-2">LKR {formatPrice(doctorRefundedAmount)} refunded</p>
+          <div className="text-center">
+            <span className="text-4xl lg:text-5xl font-black text-primary tracking-tight">
+              {requestsLast30DaysCount}
+            </span>
+            <p className="text-sm font-bold text-muted-foreground">Last 30 days</p>
           </div>
         </Card>
 
-        <Card className="p-6 border-primary/50 bg-sidebar dark:bg-popover rounded-3xl shadow-sm flex flex-col justify-between">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="p-2 bg-primary/10 rounded-full border border-primary/50 text-primary/50">
-              <UserX className="w-5 h-5" />
+        {/* Card 3: Refund Payment (Accent/Muted Theme) */}
+        <Card className="p-6 border-accent bg-accent/30 rounded-3xl shadow-sm flex flex-col justify-between hover-elevate">
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-background border border-border rounded-full text-foreground">
+              <CheckCircle2 className="w-5 h-5" />
             </div>
-            <span className="text-sm font-bold text-slate-600 dark:text-white/80">Patient cancellations</span>
+            <span className="text-sm font-bold text-foreground/80">Refunded Payment</span>
           </div>
-          <div className="text-center mt-2">
-            <span className="text-4xl lg:text-5xl font-black text-slate-800 dark:text-white tracking-tight">{patientCancellationsTotal}</span>
-            <p className="text-sm font-bold text-slate-400 dark:text-white/80 mt-2">LKR {formatPrice(patientRefundedAmount)} refunded</p>
+          <div className="text-center flex items-baseline justify-center gap-1.5">
+            <span className="text-xl lg:text-2xl font-black text-foreground">LKR</span>
+            <span className="text-3xl lg:text-4xl font-black text-foreground tracking-tight">
+              {formatPrice(refundedLast30DaysAmount)}
+            </span>
           </div>
+          <p className="text-sm font-bold text-muted-foreground text-center mt-2">Last 30 days</p>
         </Card>
 
-        <Card className="p-6 border-primary/50 bg-sidebar dark:bg-popover rounded-3xl shadow-sm flex flex-col justify-between">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="p-2 bg-primary/10 rounded-full border border-primary/50 text-primary/50">
+        {/* Card 4: Refundable Total (Destructive/Red Theme) */}
+        <Card className="p-6 border-destructive/20 bg-destructive/5 rounded-3xl shadow-sm flex flex-col justify-between hover-elevate">
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-destructive/20 rounded-full text-destructive">
               <Sigma className="w-5 h-5" />
             </div>
-            <span className="text-sm font-bold text-slate-600 dark:text-white/80">Refundable Total</span>
+            <span className="text-sm font-bold text-foreground/80">Refundable Total</span>
           </div>
-          <div className="text-center mt-2 flex items-baseline justify-center gap-1.5">
-            <span className="text-xl lg:text-2xl font-black text-slate-800 dark:text-white">LKR</span>
-            <span className="text-4xl lg:text-5xl font-black text-slate-800 dark:text-white tracking-tight">{formatPrice(refundableTotal)}</span>
+          <div className="text-center flex items-baseline justify-center gap-1.5">
+            <span className="text-xl lg:text-2xl font-black text-destructive">LKR</span>
+            <span className="text-3xl lg:text-4xl font-black text-destructive tracking-tight">
+              {formatPrice(refundableTotalAmount)}
+            </span>
           </div>
+          <p className="text-sm font-bold text-muted-foreground text-center mt-2">Pending to be paid</p>
         </Card>
+
+      </div>
+
+      {/* --- TABS --- */}
+      <div className="flex items-center gap-2 p-1.5 bg-muted/40 w-fit rounded-xl border border-border shadow-sm">
+        <button 
+          onClick={() => { setActiveTab("pending"); setCurrentPage(1); }}
+          className={`flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-bold transition-all ${
+            activeTab === "pending" 
+            ? "bg-background text-foreground shadow-sm" 
+            : "text-muted-foreground hover:text-foreground hover:bg-muted"
+          }`}
+        >
+          <Clock className="w-4 h-4" /> Pending Processing
+        </button>
+        <button 
+          onClick={() => { setActiveTab("history"); setCurrentPage(1); }}
+          className={`flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-bold transition-all ${
+            activeTab === "history" 
+            ? "bg-background text-foreground shadow-sm" 
+            : "text-muted-foreground hover:text-foreground hover:bg-muted"
+          }`}
+        >
+          <History className="w-4 h-4" /> Refund History
+        </button>
       </div>
 
       {/* --- DATA TABLE --- */}
       <Card className="overflow-hidden border-border rounded-[2rem] shadow-lg bg-card">
         <div className="overflow-x-auto w-full">
           <table className="w-full text-xs md:text-sm text-left">
-            <thead className="bg-primary/10 text-emerald-900 dark:text-emerald-500 font-bold uppercase tracking-wider border-b border-border">
+            <thead className="bg-primary/10 text-primary font-bold uppercase tracking-wider border-b border-border">
               <tr>
-                {/* Sticky Column Header */}
                 <th className="px-3 py-4 md:px-6 md:py-5 whitespace-nowrap sticky left-0 bg-popover z-20 border-r border-border">#</th>
                 <th className="px-3 py-4 md:px-6 md:py-5 whitespace-nowrap">Patient</th>
                 <th className="px-3 py-4 md:px-6 md:py-5 whitespace-nowrap">Reason</th>
-                <th className="px-3 py-4 md:px-6 md:py-5 whitespace-nowrap">Total</th>
-                
+                <th className="px-3 py-4 md:px-6 md:py-5 whitespace-nowrap">Original Paid</th>
                 <th className="px-3 py-4 md:px-6 md:py-5 whitespace-nowrap hidden sm:table-cell">Booking Charge</th>
                 <th className="px-3 py-4 md:px-6 md:py-5 whitespace-nowrap hidden sm:table-cell">Tax</th>
-                
-                <th className="px-3 py-4 md:px-6 md:py-5 whitespace-nowrap">Refund</th>
+                <th className="px-3 py-4 md:px-6 md:py-5 whitespace-nowrap">Refund Total</th>
                 <th className="px-3 py-4 md:px-6 md:py-5 whitespace-nowrap text-right">Action</th>
               </tr>
             </thead>
@@ -201,34 +249,55 @@ export default function AdminRefunds() {
               ) : allRequests.length === 0 ? (
                 <tr>
                   <td colSpan={8} className="px-6 py-16 text-center text-muted-foreground font-bold text-base">
-                    No refund requests found.
+                    No {activeTab} refund requests found.
                   </td>
                 </tr>
               ) : (
                 allRequests.map((req: any, index: number) => (
                   <tr key={req.refund.id} className="hover:bg-accent/50 transition-colors">
                     <td className="px-3 py-4 md:px-6 md:py-5 font-mono font-bold text-muted-foreground bg-card sticky left-0 z-10 border-r border-border">
-                      {index + 1}
+                      {((currentPage - 1) * 10) + index + 1}
                     </td>
                     <td className="px-3 py-4 md:px-6 md:py-5 font-bold text-foreground whitespace-nowrap">
-                      {req.appointment.patient?.fullName || "Unknown"}
+                      {req.appointment?.patient?.fullName || "Unknown"}
                     </td>
-                    <td className="px-3 py-4 md:px-6 md:py-5 font-medium text-muted-foreground whitespace-nowrap">{req.refund.reason}</td>
-                    <td className="px-3 py-4 md:px-6 md:py-5 font-semibold text-foreground whitespace-nowrap">LKR {formatPrice(req.payment.totalAmount)}</td>
+                    <td className="px-3 py-4 md:px-6 md:py-5 font-medium text-muted-foreground whitespace-nowrap truncate max-w-[200px]" title={req.refund.reason}>
+                      {req.refund.reason}
+                    </td>
+                    <td className="px-3 py-4 md:px-6 md:py-5 font-semibold text-foreground whitespace-nowrap">
+                      LKR {formatPrice(req.payment.totalAmount)}
+                    </td>
                     
                     <td className="px-3 py-4 md:px-6 md:py-5 font-black text-destructive whitespace-nowrap hidden sm:table-cell">LKR {formatPrice(req.payment.bookingCharges || 0)}</td>
                     <td className="px-3 py-4 md:px-6 md:py-5 font-black text-destructive whitespace-nowrap hidden sm:table-cell">LKR {formatPrice(req.payment.tax || 0)}</td>
                     
-                    <td className="px-3 py-4 md:px-6 md:py-5 font-black text-emerald-600 dark:text-emerald-400 whitespace-nowrap">LKR {formatPrice(req.refund.amount)}</td>
+                    <td className="px-3 py-4 md:px-6 md:py-5 font-black text-primary whitespace-nowrap">LKR {formatPrice(req.refund.amount)}</td>
                     <td className="px-3 py-4 md:px-6 md:py-5 text-right whitespace-nowrap">
-                      <Button
-                        onClick={() => setSelectedRefund(req)}
-                        className="bg-secondary text-secondary-foreground hover:bg-secondary/90 rounded-full font-bold px-4 md:px-6 shadow-sm"
-                        size="sm"
-                      >
-                        <CircleDollarSign className="w-4 h-4 md:mr-2" /> 
-                        <span className="hidden md:inline">Refund</span>
-                      </Button>
+                      {activeTab === 'pending' ? (
+                        <Button
+                          onClick={() => setSelectedRefund(req)}
+                          className="bg-secondary text-secondary-foreground hover:bg-secondary/90 rounded-full font-bold px-4 md:px-6 shadow-sm"
+                          size="sm"
+                        >
+                          <CircleDollarSign className="w-4 h-4 md:mr-2" /> 
+                          <span className="hidden md:inline">Process</span>
+                        </Button>
+                      ) : (
+                        <div className="flex items-center justify-end gap-3">
+                          <Badge variant={req.refund.status === 'completed' ? 'default' : 'destructive'} className="capitalize hidden lg:flex">
+                            {req.refund.status}
+                          </Badge>
+                          <Button
+                            onClick={() => setSelectedRefund(req)}
+                            variant="outline"
+                            className="rounded-full font-bold shadow-sm"
+                            size="sm"
+                          >
+                            <Info className="w-4 h-4 md:mr-2" /> 
+                            <span className="hidden md:inline">Details</span>
+                          </Button>
+                        </div>
+                      )}
                     </td>
                   </tr>
                 ))
@@ -238,43 +307,49 @@ export default function AdminRefunds() {
         </div>
       </Card>
 
-      <div className="flex items-center justify-center">
+      {/* --- PAGINATION --- */}
+      <div className="flex items-center justify-center pt-4">
         {totalPages > 1 && (
-          <div className="pt-4 flex justify-end">
+          <div className="flex justify-end">
             <Pagination currentPage={currentPage} totalPages={totalPages} onPageChange={setCurrentPage} />
           </div>
         )}
       </div>
 
+      {/* --- PROCESS REFUND MODAL --- */}
       <Modal 
         isOpen={!!selectedRefund} 
         onClose={() => setSelectedRefund(null)}
-        title="Process Refund"
-        description="Review and confirm refund details"
+        title={selectedRefund?.refund.status === 'pending' ? "Process Refund Request" : "Refund Details"}
+        description={selectedRefund?.refund.status === 'pending' ? "Review the details and confirm or reject the refund." : "Viewing processed refund details."}
         icon={<CircleDollarSign className="w-6 h-6 text-primary" />}
       >
         {selectedRefund && (
           <div className="space-y-6">
             <div className="bg-muted/30 border border-border rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div>
-                <h4 className="font-bold text-foreground text-lg">{selectedRefund.appointment.patient?.fullName}</h4>
+                <h4 className="font-bold text-foreground text-lg">{selectedRefund.appointment?.patient?.fullName}</h4>
                 <p className="text-xs font-bold text-muted-foreground mt-1">
-                  {format(parseISO(selectedRefund.appointment.appointmentDate), "MMM d, yyyy")}
+                  Appt. Date: {format(parseISO(selectedRefund.appointment?.appointmentDate || new Date().toISOString()), "MMM d, yyyy")}
                 </p>
               </div>
-              <Badge variant="outline" className="border-primary/20 text-primary rounded-full font-bold px-3">
-                {selectedRefund.appointment.consultationType === "in_person" ? "In Person" : "Online"}
+              <Badge 
+                variant={selectedRefund.refund.status === 'completed' ? 'default' : selectedRefund.refund.status === 'rejected' ? 'destructive' : 'outline'} 
+                className="rounded-full font-bold px-3 capitalize"
+              >
+                Status: {selectedRefund.refund.status}
               </Badge>
             </div>
 
-            <div className="bg-destructive/10 border border-destructive/20 text-destructive px-4 py-3 rounded-xl text-sm font-bold">
-              {selectedRefund.appointment.cancelledBy === "doctor" ? "Doctor cancelled" : "Patient cancelled"} — Only consultation fee refund eligible
+            <div className="bg-primary/5 border border-primary/20 text-foreground px-4 py-3 rounded-xl text-sm flex flex-col gap-1">
+              <span className="font-bold text-primary uppercase text-[10px] tracking-wider">Reason for Refund</span>
+              <span className="font-medium leading-relaxed">{selectedRefund.refund.reason}</span>
             </div>
 
             {/* Breakdown Table */}
             <div className="border border-border rounded-2xl overflow-hidden bg-card">
               <div className="flex justify-between items-center p-4 border-b border-border">
-                <span className="font-semibold text-muted-foreground">Total Paid</span>
+                <span className="font-semibold text-muted-foreground">Original Paid Amount</span>
                 <span className="font-bold text-foreground">LKR {formatPrice(selectedRefund.payment.totalAmount)}</span>
               </div>
               <div className="flex justify-between items-center p-4 border-b border-border">
@@ -285,34 +360,38 @@ export default function AdminRefunds() {
                 <span className="font-semibold text-muted-foreground">Booking Charge</span>
                 <span className="font-bold text-destructive">– LKR {formatPrice(selectedRefund.payment.bookingCharges || 0)}</span>
               </div>
-              <div className="flex justify-between items-center p-4 bg-primary/10 text-primary">
-                <span className="font-bold">Final Refund</span>
+              <div className={`flex justify-between items-center p-4 ${selectedRefund.refund.status === 'rejected' ? 'bg-destructive/10 text-destructive' : 'bg-primary/10 text-primary'}`}>
+                <span className="font-bold">Requested Refund Amount</span>
                 <span className="font-black text-lg">LKR {formatPrice(selectedRefund.refund.amount)}</span>
               </div>
             </div>
 
-            <div className="flex gap-3 justify-end pt-2">
-              <Button variant="outline" onClick={() => setSelectedRefund(null)} className="rounded-full">Cancel</Button>
-              <Button 
-                onClick={() => processMutation.mutate({ id: selectedRefund.refund.id, status: 'completed' })}
-                className="rounded-full bg-primary text-primary-foreground hover:bg-primary/90"
-              >
-                Confirm Refund
-              </Button>
-            </div>
+            {selectedRefund.refund.status === 'pending' ? (
+              <div className="flex gap-3 justify-end pt-4 border-t border-border">
+                <Button 
+                  variant="outline" 
+                  onClick={() => processMutation.mutate({ id: selectedRefund.refund.id, status: 'rejected' })}
+                  className="rounded-full text-destructive border-destructive/50 hover:bg-destructive hover:text-white"
+                  disabled={processMutation.isPending}
+                >
+                  {processMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <><XCircle className="w-4 h-4 mr-2" /> Reject</>}
+                </Button>
+                <Button 
+                  onClick={() => processMutation.mutate({ id: selectedRefund.refund.id, status: 'completed' })}
+                  className="rounded-full bg-primary text-primary-foreground hover:bg-primary/90"
+                  disabled={processMutation.isPending}
+                >
+                  {processMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : "Confirm Refund"}
+                </Button>
+              </div>
+            ) : (
+              <div className="flex gap-3 justify-end pt-2">
+                <Button onClick={() => setSelectedRefund(null)} className="rounded-full">Close</Button>
+              </div>
+            )}
           </div>
         )}
       </Modal>
     </div>
-  );
-}
-
-function StethoscopeIcon({ className = "" }: { className?: string }) {
-  return (
-    <svg xmlns="http://www.w3.org/2000/svg" className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M4.8 2.3A.3.3 0 1 0 5 2H4a2 2 0 0 0-2 2v5a6 6 0 0 0 6 6v0a6 6 0 0 0 6-6V4a2 2 0 0 0-2-2h-1a.2.2 0 1 0 .3.3"/>
-      <path d="M8 15v1a6 6 0 0 0 6 6v0a6 6 0 0 0 6-6v-4"/>
-      <circle cx="20" cy="10" r="2"/>
-    </svg>
   );
 }
