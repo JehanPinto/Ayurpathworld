@@ -188,3 +188,28 @@ export const getDoctorNewBookingEmailHtml = (
     </div>
   `;
 };
+
+export const getDoctorVerifiedEmailHtml = (doctorName: string) => {
+  const safeName = sanitizeHTML(doctorName);
+  return `
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #e0e0e0; border-radius: 10px; overflow: hidden;">
+        <div style="background-color: #10b981; padding: 20px; text-align: center;">
+            <h1 style="color: white; margin: 0;">Account Verified!</h1>
+        </div>
+        <div style="padding: 30px; background-color: #ffffff;">
+            <p style="font-size: 16px; color: #333;">Dear Dr. ${safeName},</p>
+            <p style="font-size: 16px; color: #333; line-height: 1.5;">
+                Congratulations! We are pleased to inform you that your medical credentials have been successfully reviewed and verified by our administration team.
+            </p>
+            <div style="background-color: #ecfdf5; border: 1px solid #a7f3d0; padding: 20px; border-radius: 8px; text-align: center; margin-top: 20px;">
+                <h3 style="color: #065f46; margin-top: 0;">You are ready to go</h3>
+                <p style="color: #065f46; font-size: 14px; margin-bottom: 15px;">You can now log in, set up your schedule, and start accepting patient appointments.</p>
+                <a href="${process.env.PUBLIC_URL || 'http://localhost:5000'}/login" style="background-color: #10b981; color: white; padding: 12px 25px; text-decoration: none; border-radius: 5px; font-weight: bold; font-size: 16px; display: inline-block;">
+                    Access Dashboard
+                </a>
+            </div>
+            <p style="font-size: 16px; color: #333; margin-top: 30px;">Welcome to the AyurPath platform.<br><br>Best regards,<br><strong>AyurPath Administration Team</strong></p>
+        </div>
+    </div>
+  `;
+};
