@@ -166,6 +166,7 @@ export const doctorProfiles = pgTable("doctor_profiles", {
   hospitalIds: text("hospital_ids")
     .array()
     .default(sql`ARRAY[]::text[]`),
+  consultationFee: integer("consultation_fee").notNull().default(0),
   onlineConsultationFee: integer("online_consultation_fee"),
   homeVisitFee: integer("home_visit_fee"),
   status: varchar("status", { length: 20 }).notNull().default("pending"),
