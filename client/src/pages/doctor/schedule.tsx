@@ -30,6 +30,8 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { AppointmentSlot, DoctorWithDetails } from "@shared/schema";
 import { Modal } from "@/components/ui/modal";
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@radix-ui/react-dialog";
+import { DialogFooter, DialogHeader } from "@/components/ui/dialog";
 
 const generateTimeSlots = () => {
   const slots = [];
@@ -44,8 +46,12 @@ const generateTimeSlots = () => {
 };
 const timeSlots = generateTimeSlots();
 
+// Seconds ain karala HH:mm format ekata ganna
+const normalizeTime = (t: string) => t ? t.substring(0, 5) : "";
+
 const isTimeOverlap = (s1: string, e1: string, s2: string, e2: string) => {
-  return s1 < e2 && s2 < e1;
+  // 9:00-9:30 saha 9:30-10:00 overlap wenne nathi wenna check kireema
+  return normalizeTime(s1) < normalizeTime(e2) && normalizeTime(s2) < normalizeTime(e1);
 };
 
 const formatTimeAMPM = (time24: string) => {
@@ -55,6 +61,12 @@ const formatTimeAMPM = (time24: string) => {
   const ampm = hour >= 12 ? "PM" : "AM";
   hour = hour % 12 || 12; // Convert 0 or 12 to 12
   return `${hour.toString()}:${min} ${ampm}`;
+};
+
+// Ada dawase time eka check karanna current time eka ganna function eka
+const getCurrentTimeStr = () => {
+  const now = new Date();
+  return `${now.getHours().toString().padStart(2, "0")}:${now.getMinutes().toString().padStart(2, "0")}`;
 };
 
 const addMinutesToTime = (time: string, minsToAdd: number) => {
@@ -136,15 +148,12 @@ export default function DoctorSchedule() {
       queryClient.invalidateQueries({ queryKey: ["/api/doctor/slots"] });
       toast({ title: "Slot created successfully" });
       
-      const buffer = profile?.bufferTimeMinutes || 0;
-      const nextStartTime = addMinutesToTime(newSlot.endTime, buffer);
-
       setNewSlot((prev) => ({ 
         ...prev, 
-        startTime: nextStartTime
+        startTime: prev.endTime
       })); 
       
-      setIsModalOpen(false);
+      setIsModalOpen(false); 
     },
     onError: (err: any) => {
       toast({ title: err?.message || "Failed to create slot", variant: "destructive" });
@@ -175,23 +184,27 @@ export default function DoctorSchedule() {
       return;
     }
 
-    // Include buffer time when checking overlaps with existing slots
-    const buffer = profile?.bufferTimeMinutes || 0;
+    // 1. PAST TIME CHECK: Ada dawase denata pahu wela thiyena time ekak nam danna ba
+    if (newSlot.date === todayDateStr && newSlot.startTime < getCurrentTimeStr()) {
+      toast({ 
+        title: "Invalid Time", 
+        description: "You cannot schedule appointments for past times today.", 
+        variant: "destructive" 
+      });
+      return;
+    }
+
+    // 2. OVERLAP CHECK: Normalize karapu time ekka check karanawa
     const existingSlotsOnDate = slots.filter((s) => s.date === newSlot.date && !s.isBlocked);
     
-    // We check if the NEW slot overlaps with any EXISTING slot + its buffer
     const overlappingSlot = existingSlotsOnDate.find((existingSlot) => {
-       const existingEndWithBuffer = addMinutesToTime(existingSlot.endTime, buffer);
-       const newEndWithBuffer = addMinutesToTime(newSlot.endTime, buffer);
-
-       // Check if new start is before existing ends+buffer AND new ends+buffer is after existing start
-       return isTimeOverlap(newSlot.startTime, newEndWithBuffer, existingSlot.startTime, existingEndWithBuffer);
+       return isTimeOverlap(newSlot.startTime, newSlot.endTime, existingSlot.startTime, existingSlot.endTime);
     });
 
     if (overlappingSlot) {
       toast({ 
         title: "Time Slot Unavailable", 
-        description: `You have an existing schedule (with buffer) overlapping this time. Existing: ${formatTimeAMPM(overlappingSlot.startTime)} - ${formatTimeAMPM(overlappingSlot.endTime)}.`,
+        description: `You have an existing schedule overlapping this time: ${formatTimeAMPM(normalizeTime(overlappingSlot.startTime))} - ${formatTimeAMPM(normalizeTime(overlappingSlot.endTime))}.`,
         variant: "destructive" 
       });
       return;
@@ -493,9 +506,16 @@ export default function DoctorSchedule() {
               >
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent className="max-h-[200px]">
-                  {timeSlots.map((time) => (
-                    <SelectItem key={time} value={time}>{formatTimeAMPM(time)}</SelectItem>
-                  ))}
+                  {timeSlots.map((time) => {
+                    // Ada dawase past time ekak nam option eka disable karanawa
+                    const isPastTime = newSlot.date === todayDateStr && time < getCurrentTimeStr();
+                    
+                    return (
+                      <SelectItem key={time} value={time} disabled={isPastTime}>
+                        {formatTimeAMPM(time)}
+                      </SelectItem>
+                    );
+                  })}
                 </SelectContent>
               </Select>
             </div>
