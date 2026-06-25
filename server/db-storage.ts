@@ -1041,26 +1041,37 @@ export class DbStorage implements IStorage {
       console.error("[AUDIT LOG] Error saving cancel log:", e);
     }
 
-    // 3. Create Refund Request if Payment exists
+    // 3. Auto-Create Refund Request (With Duplicate Prevention)
     const payment = await this.getPaymentByAppointment(id);
     if (payment && payment.status === PaymentStatus.COMPLETED) {
       console.log(
         `[DB-STORAGE] 💰 Payment found for refund. Status: ${payment.status}`,
       );
-      const amountToRefund =
-        payment.totalAmount -
-        (payment.bookingCharges || 0) -
-        (payment.tax || 0);
+      
+      // CHECK FOR DUPLICATES: Me payment ekata kalin refund request ekak thiyenawada balanawa
+      const existingRefunds = await db
+        .select()
+        .from(refunds)
+        .where(eq(refunds.paymentId, payment.id));
 
-      if (amountToRefund > 0) {
-        await this.createRefundRequest({
-          paymentId: payment.id,
-          appointmentId: id,
-          patientId: updated.patientId,
-          amount: amountToRefund,
-          reason: reason || `Cancelled by ${cancelledBy}`,
-          status: "pending",
-        });
+      if (existingRefunds.length === 0) {
+        // Original refund calculation eka (tax saha booking charge adu karala)
+        const amountToRefund = payment.totalAmount - (payment.bookingCharges || 0) - (payment.tax || 0);
+
+        if (amountToRefund > 0) {
+          await this.createRefundRequest({
+            paymentId: payment.id,
+            appointmentId: id,
+            patientId: updated.patientId,
+            amount: amountToRefund,
+            // Cancel karapu reason eka Admin Refund table ekata yawenawa
+            reason: `${cancelledBy.toUpperCase()} CANCELLATION: ${reason || 'No specific reason provided'}`, 
+            status: "pending",
+          });
+          console.log(`[DB-STORAGE] ✅ Auto-Refund request created successfully.`);
+        }
+      } else {
+        console.log(`[DB-STORAGE] ⚠️ Refund request already exists. Skipping duplicate creation.`);
       }
     }
 

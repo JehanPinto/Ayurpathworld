@@ -13,7 +13,12 @@ import {
   Clock,
   ArrowRightLeft,
   History,
-  XCircle
+  XCircle,
+  Copy,
+  User,
+  Calendar,
+  CreditCard,
+  Building2
 } from "lucide-react";
 import { format, parseISO } from "date-fns";
 
@@ -32,7 +37,17 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Modal } from "@/components/ui/modal";
 import { useUrlPagination } from "@/hooks/use-url-pagination";
 import { Pagination } from "@/components/ui/pagination";
+import { Avatar, AvatarFallback, AvatarImage } from "@radix-ui/react-avatar";
 
+const getInitials = (name: string) =>
+  name
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase())
+    .join("") || "N/A";
+    
 const RefundRowSkeleton = () => (
   <tr className="animate-pulse border-b border-border">
     <td className="px-3 py-5 md:px-6"><div className="h-4 w-4 bg-muted rounded" /></td>
@@ -316,58 +331,18 @@ export default function AdminRefunds() {
         )}
       </div>
 
-      {/* --- PROCESS REFUND MODAL --- */}
-      <Modal 
-        isOpen={!!selectedRefund} 
+      {/* --- REFUND MODAL --- */}
+      <Modal
+        isOpen={!!selectedRefund}
         onClose={() => setSelectedRefund(null)}
-        title={selectedRefund?.refund.status === 'pending' ? "Process Refund Request" : "Refund Details"}
-        description={selectedRefund?.refund.status === 'pending' ? "Review the details and confirm or reject the refund." : "Viewing processed refund details."}
-        icon={<CircleDollarSign className="w-6 h-6 text-primary" />}
-      >
-        {selectedRefund && (
-          <div className="space-y-6">
-            <div className="bg-muted/30 border border-border rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-              <div>
-                <h4 className="font-bold text-foreground text-lg">{selectedRefund.appointment?.patient?.fullName}</h4>
-                <p className="text-xs font-bold text-muted-foreground mt-1">
-                  Appt. Date: {format(parseISO(selectedRefund.appointment?.appointmentDate || new Date().toISOString()), "MMM d, yyyy")}
-                </p>
-              </div>
-              <Badge 
-                variant={selectedRefund.refund.status === 'completed' ? 'default' : selectedRefund.refund.status === 'rejected' ? 'destructive' : 'outline'} 
-                className="rounded-full font-bold px-3 capitalize"
-              >
-                Status: {selectedRefund.refund.status}
-              </Badge>
-            </div>
-
-            <div className="bg-primary/5 border border-primary/20 text-foreground px-4 py-3 rounded-xl text-sm flex flex-col gap-1">
-              <span className="font-bold text-primary uppercase text-[10px] tracking-wider">Reason for Refund</span>
-              <span className="font-medium leading-relaxed">{selectedRefund.refund.reason}</span>
-            </div>
-
-            {/* Breakdown Table */}
-            <div className="border border-border rounded-2xl overflow-hidden bg-card">
-              <div className="flex justify-between items-center p-4 border-b border-border">
-                <span className="font-semibold text-muted-foreground">Original Paid Amount</span>
-                <span className="font-bold text-foreground">LKR {formatPrice(selectedRefund.payment.totalAmount)}</span>
-              </div>
-              <div className="flex justify-between items-center p-4 border-b border-border">
-                <span className="font-semibold text-muted-foreground">Tax</span>
-                <span className="font-bold text-destructive">– LKR {formatPrice(selectedRefund.payment.tax || 0)}</span>
-              </div>
-              <div className="flex justify-between items-center p-4 border-b border-border">
-                <span className="font-semibold text-muted-foreground">Booking Charge</span>
-                <span className="font-bold text-destructive">– LKR {formatPrice(selectedRefund.payment.bookingCharges || 0)}</span>
-              </div>
-              <div className={`flex justify-between items-center p-4 ${selectedRefund.refund.status === 'rejected' ? 'bg-destructive/10 text-destructive' : 'bg-primary/10 text-primary'}`}>
-                <span className="font-bold">Requested Refund Amount</span>
-                <span className="font-black text-lg">LKR {formatPrice(selectedRefund.refund.amount)}</span>
-              </div>
-            </div>
-
-            {selectedRefund.refund.status === 'pending' ? (
-              <div className="flex gap-3 justify-end pt-4 border-t border-border">
+        title={selectedRefund?.refund.status === 'pending' ? "Process Refund Request" : "Refund Record Details"}
+        description="Comprehensive overview of the appointment, payment, and refund request."
+        icon={<ArrowRightLeft className="w-5 h-5 text-primary" />}
+        className="max-w-4xl w-[95vw] p-0 overflow-hidden"
+        footer={
+          <div className="flex w-full justify-end items-center gap-3 px-6 py-4">
+            {selectedRefund?.refund.status === 'pending' ? (
+              <>
                 <Button 
                   variant="outline" 
                   onClick={() => processMutation.mutate({ id: selectedRefund.refund.id, status: 'rejected' })}
@@ -383,12 +358,216 @@ export default function AdminRefunds() {
                 >
                   {processMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : "Confirm Refund"}
                 </Button>
-              </div>
+              </>
             ) : (
-              <div className="flex gap-3 justify-end pt-2">
-                <Button onClick={() => setSelectedRefund(null)} className="rounded-full">Close</Button>
-              </div>
+              <Button onClick={() => setSelectedRefund(null)} className="rounded-full px-8">Close</Button>
             )}
+          </div>
+        }
+      >
+        {selectedRefund && (
+          <div className="flex-1 custom-scrollbar p-6 max-h-[75vh]">
+            
+            {/* Header Status & Amount Summary */}
+            <div className="flex flex-wrap gap-3 items-center justify-between bg-primary/5 p-4 rounded-2xl border border-primary/20 mb-6">
+              <div>
+                <p className="text-[10px] text-muted-foreground font-bold uppercase tracking-widest mb-1.5">Refund Status</p>
+                <Badge variant={selectedRefund.refund.status === 'completed' ? 'default' : selectedRefund.refund.status === 'rejected' ? 'destructive' : 'secondary'} className="capitalize px-4 py-1 text-sm shadow-sm">
+                  {selectedRefund.refund.status}
+                </Badge>
+              </div>
+              <div className="text-right">
+                <p className="text-[10px] text-muted-foreground font-bold uppercase tracking-widest mb-1">Requested Refund Amount</p>
+                <p className="text-2xl font-black text-primary">LKR {formatPrice(selectedRefund.refund.amount)}</p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+              
+              {/* === LEFT COLUMN === */}
+              <div className="space-y-8">
+                
+                {/* 1. IDs & Metadata */}
+                <div className="space-y-3">
+                  <h4 className="text-sm font-bold text-foreground border-b border-border/50 pb-2 flex items-center gap-2">
+                    <Info className="w-4 h-4 text-muted-foreground"/> Reference IDs
+                  </h4>
+                  <div className="grid grid-cols-2 gap-3 text-sm">
+                    <div className="bg-muted/30 p-3 rounded-xl border border-border">
+                      <p className="text-[10px] text-muted-foreground uppercase font-bold mb-1">Refund ID</p>
+                      <p className="font-mono text-xs font-bold truncate text-foreground flex items-center gap-2">
+                        {selectedRefund.refund.id.split('-')[0].toUpperCase()}
+                        <Copy className="w-3 h-3 cursor-pointer text-muted-foreground hover:text-primary" onClick={() => { navigator.clipboard.writeText(selectedRefund.refund.id); toast({title:"Copied", description:"Refund ID copied"}) }} />
+                      </p>
+                    </div>
+                    <div className="bg-muted/30 p-3 rounded-xl border border-border">
+                      <p className="text-[10px] text-muted-foreground uppercase font-bold mb-1">Payment ID</p>
+                      <p className="font-mono text-xs font-bold truncate text-foreground flex items-center gap-2">
+                        {selectedRefund.payment.id.split('-')[0].toUpperCase()}
+                        <Copy className="w-3 h-3 cursor-pointer text-muted-foreground hover:text-primary" onClick={() => { navigator.clipboard.writeText(selectedRefund.payment.id); toast({title:"Copied", description:"Payment ID copied"}) }} />
+                      </p>
+                    </div>
+                    <div className="bg-muted/30 p-3 rounded-xl border border-border col-span-2">
+                      <p className="text-[10px] text-muted-foreground uppercase font-bold mb-1">Appointment ID</p>
+                      <p className="font-mono text-xs font-bold truncate text-foreground flex items-center gap-2">
+                        {selectedRefund.appointment?.id || "N/A"}
+                        <Copy className="w-3 h-3 cursor-pointer text-muted-foreground hover:text-primary" onClick={() => { navigator.clipboard.writeText(selectedRefund.appointment?.id || ""); toast({title:"Copied", description:"Appointment ID copied"}) }} />
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 2. Participants Info */}
+                <div className="space-y-3">
+                  <h4 className="text-sm font-bold text-foreground border-b border-border/50 pb-2 flex items-center gap-2">
+                    <User className="w-4 h-4 text-muted-foreground"/> Participants
+                  </h4>
+                  <div className="bg-card p-4 rounded-xl border border-border shadow-sm flex flex-col gap-4">
+                    
+                    {/* Patient */}
+                    <div className="flex items-center gap-4">
+                      <Avatar className="h-10 w-10 border border-border">
+                        <AvatarImage src={selectedRefund.appointment?.patient?.profileImage} />
+                        <AvatarFallback className="bg-blue-100 text-blue-600 font-bold">{getInitials(selectedRefund.appointment?.patient?.fullName || "")}</AvatarFallback>
+                      </Avatar>
+                      <div>
+                        <p className="text-[10px] text-muted-foreground uppercase font-bold">Patient</p>
+                        <p className="font-bold text-foreground">{selectedRefund.appointment?.patient?.fullName || "Unknown"}</p>
+                      </div>
+                    </div>
+                    
+                    <div className="w-full h-px bg-border/50"></div>
+
+                    {/* Doctor */}
+                    <div className="flex items-center gap-4">
+                      <Avatar className="h-10 w-10 border border-border">
+                        <AvatarImage src={selectedRefund.appointment?.doctor?.user?.profileImage} />
+                        <AvatarFallback className="bg-emerald-100 text-emerald-600 font-bold">{getInitials(selectedRefund.appointment?.doctor?.user?.fullName || "DC")}</AvatarFallback>
+                      </Avatar>
+                      <div>
+                        <p className="text-[10px] text-muted-foreground uppercase font-bold">Doctor</p>
+                        <p className="font-bold text-foreground">
+                          {selectedRefund.appointment?.doctor?.user?.fullName 
+                            ? `Dr. ${selectedRefund.appointment.doctor.user.fullName}` 
+                            : selectedRefund.appointment?.doctorId ? `ID: ${selectedRefund.appointment.doctorId.split('-')[0].toUpperCase()}` : "Unknown Doctor"}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 3. Reasons */}
+                <div className="space-y-3">
+                  <h4 className="text-sm font-bold text-foreground border-b border-border/50 pb-2 flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4 text-red-500"/> Cancellation & Refund Reasons
+                  </h4>
+                  <div className="bg-red-50 dark:bg-red-950/20 p-4 rounded-xl border border-red-100 dark:border-red-900/30 space-y-4">
+                    <div>
+                      <p className="text-[10px] text-red-800/70 dark:text-red-400 uppercase font-bold mb-1">Appointment Cancelled Reason</p>
+                      <p className="text-sm font-medium text-red-900 dark:text-red-200">{selectedRefund.appointment?.cancelReason || "Not specified in appointment"}</p>
+                    </div>
+                    <div className="border-t border-red-200 dark:border-red-900/50 pt-3">
+                      <p className="text-[10px] text-red-800/70 dark:text-red-400 uppercase font-bold mb-1">Refund Request Reason</p>
+                      <p className="text-sm font-medium text-red-900 dark:text-red-200">{selectedRefund.refund.reason}</p>
+                    </div>
+                  </div>
+                </div>
+
+              </div>
+
+              {/* === RIGHT COLUMN === */}
+              <div className="space-y-8">
+                
+                {/* 4. Appointment & Slot Details */}
+                <div className="space-y-3">
+                  <h4 className="text-sm font-bold text-foreground border-b border-border/50 pb-2 flex items-center gap-2">
+                    <Calendar className="w-4 h-4 text-muted-foreground"/> Appointment & Slot Details
+                  </h4>
+                  <div className="bg-card p-4 rounded-xl border border-border shadow-sm grid grid-cols-2 gap-4 text-sm">
+                    <div>
+                      <p className="text-[10px] text-muted-foreground uppercase font-bold mb-1">Appointment Date</p>
+                      <p className="font-semibold text-foreground">
+                        {selectedRefund.appointment?.appointmentDate ? format(parseISO(selectedRefund.appointment.appointmentDate), "MMM d, yyyy") : "N/A"}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-muted-foreground uppercase font-bold mb-1">Scheduled Time (Slot)</p>
+                      <p className="font-bold text-primary bg-primary/10 px-2 py-0.5 rounded w-fit">
+                        {selectedRefund.appointment?.appointmentTime || "N/A"}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-muted-foreground uppercase font-bold mb-1">Consultation Type</p>
+                      <p className="font-semibold text-foreground capitalize">
+                        {selectedRefund.appointment?.consultationType?.replace('_', ' ') || "N/A"}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-muted-foreground uppercase font-bold mb-1">Booking Made On</p>
+                      <p className="font-medium text-muted-foreground">
+                        {selectedRefund.appointment?.createdAt ? format(new Date(selectedRefund.appointment.createdAt), "MMM d, yyyy h:mm a") : "N/A"}
+                      </p>
+                    </div>
+                    {selectedRefund.appointment?.symptoms && (
+                      <div className="col-span-2 border-t border-border/50 pt-3 mt-1">
+                        <p className="text-[10px] text-muted-foreground uppercase font-bold mb-1">Symptoms / Notes</p>
+                        <p className="text-sm text-foreground">{selectedRefund.appointment.symptoms}</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* 5. Payment Details & Financial Breakdown */}
+                <div className="space-y-3">
+                  <h4 className="text-sm font-bold text-foreground border-b border-border/50 pb-2 flex items-center gap-2">
+                    <CreditCard className="w-4 h-4 text-muted-foreground"/> Payment Details
+                  </h4>
+                  
+                  <div className="grid grid-cols-2 gap-3 mb-4">
+                    <div className="bg-muted/30 p-3 rounded-xl border border-border">
+                      <p className="text-[10px] text-muted-foreground uppercase font-bold mb-1">Payment Method</p>
+                      <p className="font-bold text-foreground capitalize flex items-center gap-1.5">
+                        {selectedRefund.payment.method === "online" ? <CreditCard className="w-3.5 h-3.5 text-blue-500" /> : <Building2 className="w-3.5 h-3.5 text-emerald-500" />}
+                        {selectedRefund.payment.method?.replace('_', ' ') || "N/A"}
+                      </p>
+                    </div>
+                    <div className="bg-muted/30 p-3 rounded-xl border border-border">
+                      <p className="text-[10px] text-muted-foreground uppercase font-bold mb-1">Paid On</p>
+                      <p className="font-bold text-foreground text-xs">
+                        {selectedRefund.payment.createdAt ? format(new Date(selectedRefund.payment.createdAt), "MMM d, yyyy h:mm a") : "N/A"}
+                      </p>
+                    </div>
+                  </div>
+
+                  {selectedRefund.payment.transactionId && (
+                    <div className="bg-blue-50 dark:bg-blue-900/10 p-3 rounded-xl border border-blue-100 dark:border-blue-900/30 mb-4">
+                      <p className="text-[10px] font-bold text-blue-800 dark:text-blue-300 uppercase tracking-wider mb-1">Gateway Transaction ID</p>
+                      <p className="font-mono text-sm text-blue-950 dark:text-blue-200 font-bold">{selectedRefund.payment.transactionId}</p>
+                    </div>
+                  )}
+
+                  <div className="bg-card p-4 rounded-xl border border-border shadow-sm space-y-3 text-sm">
+                    <div className="flex justify-between items-center text-muted-foreground">
+                      <span>Consultation Fee</span>
+                      <span className="font-medium">LKR {formatPrice(selectedRefund.payment?.consultationFee || 0)}</span>
+                    </div>
+                    <div className="flex justify-between items-center text-muted-foreground">
+                      <span>Booking Charges</span>
+                      <span className="font-medium">LKR {formatPrice(selectedRefund.payment?.bookingCharges || 0)}</span>
+                    </div>
+                    <div className="flex justify-between items-center text-muted-foreground pb-3 border-b border-border/50">
+                      <span>Taxes</span>
+                      <span className="font-medium">LKR {formatPrice(selectedRefund.payment?.tax || 0)}</span>
+                    </div>
+                    <div className="flex justify-between items-center font-bold text-foreground">
+                      <span>Total Original Payment</span>
+                      <span className="text-base">LKR {formatPrice(selectedRefund.payment?.totalAmount || 0)}</span>
+                    </div>
+                  </div>
+                </div>
+
+              </div>
+            </div>
           </div>
         )}
       </Modal>
