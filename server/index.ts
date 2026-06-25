@@ -15,6 +15,9 @@ import { initMaintenanceCache, maintenanceMiddleware } from "./maintenance";
 const app = express();
 const httpServer = createServer(app);
 
+// Trust EB load balancer so req.ip returns real client IP, not the proxy IP
+app.set("trust proxy", 1);
+
 app.use(helmet({
   contentSecurityPolicy: false,
   crossOriginEmbedderPolicy: false,

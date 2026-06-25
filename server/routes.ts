@@ -121,10 +121,11 @@ function validateBankDetails(acc?: string | null, branch?: string | null) {
 
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: process.env.NODE_ENV === "production" ? 5 : 100,
-  message: { error: "Too many login attempts, try again later" },
+  max: process.env.NODE_ENV === "production" ? 10 : 100,
+  message: { error: "Too many login attempts. Please try again in 15 minutes." },
   standardHeaders: true,
   legacyHeaders: false,
+  skipSuccessfulRequests: true,
 });
 
 const registrationLimiter = rateLimit({
@@ -2526,6 +2527,15 @@ export async function registerRoutes(
     },
   );
 
+  app.get("/api/cities", publicApiLimiter, async (_req: Request, res: Response) => {
+    try {
+      const cities = await storage.getActiveCities();
+      res.json(cities);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to get cities" });
+    }
+  });
+
   app.get("/api/specializations", publicApiLimiter, async (_req: Request, res: Response) => {
     try {
       const specializations = await storage.getAllSpecializations();
@@ -2948,7 +2958,7 @@ export async function registerRoutes(
         const existingSlots = await storage.getAvailableSlots(profile.id, data.date);
         
         const isOverlap = (s1: string, e1: string, s2: string, e2: string) => {
-          return s1 < e2 && s2 < e1;
+          return s1 < e2 && s2 < e1; // This is actually correct. The problem is usually in the frontend UI state or buffer logic. Let's ensure this strictly checks exclusive bounds.
         };
 
         const hasOverlap = existingSlots.some((slot) => 

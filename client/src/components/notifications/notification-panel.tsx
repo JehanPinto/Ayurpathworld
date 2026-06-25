@@ -12,7 +12,7 @@ import type { Notification } from "@shared/schema";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
-type FilterType = "all" | "appointment" | "payment" | "doctor" | "reminder" | "prescription";
+type FilterType = "all" | "appointment" | "payment" | "doctor" | "reminder";
 type CardVariant = "green" | "red" | "orange" | "gold";
 
 // ─── Constants ──────────────────────────────────────────────────────────────
@@ -23,7 +23,6 @@ const FILTERS: { key: FilterType; label: string }[] = [
   { key: "payment",      label: "Payments" },
   { key: "doctor",       label: "Doctor" },
   { key: "reminder",     label: "Reminder" },
-  { key: "prescription", label: "Prescription" },
 ];
 
 const yesterday   = subDays(new Date(), 1).toISOString();
@@ -145,7 +144,6 @@ export function NotificationPanel({ open, onOpenChange }: Props) {
 
   const filtered = notifications.filter((n) => {
     if (activeFilter === "all")          return true;
-    if (activeFilter === "prescription") return n.title.toLowerCase().includes("prescription");
     if (activeFilter === "doctor")       return n.type === "verification" || n.type === "system";
     return n.type === activeFilter;
   });
