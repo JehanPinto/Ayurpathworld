@@ -32,7 +32,6 @@ const LANGUAGES = [
 const CONSULTATION_TYPES = [
   { value: ConsultationType.IN_PERSON, label: "In Person" },
   { value: ConsultationType.ONLINE, label: "Online" },
-  { value: ConsultationType.HOME_VISIT, label: "Home Visit" },
 ];
 
 const SORT_OPTIONS = [
