@@ -4140,6 +4140,23 @@ export async function registerRoutes(
     },
   );
 
+  // Outstanding cancellation charges the patient owes to AyurPath.
+  // Drives the "Owed to AyurPath" banner on the My Appointments page.
+  app.get(
+    "/api/patient/owed-charges",
+    authMiddleware,
+    roleMiddleware(UserRole.PATIENT),
+    async (req: AuthenticatedRequest, res: Response) => {
+      try {
+        const owed = await storage.getPatientUnsettledCharges(req.user!.id);
+        res.json(owed);
+      } catch (error) {
+        console.error("Failed to get patient owed charges:", error);
+        res.status(500).json({ error: "Failed to get owed charges" });
+      }
+    },
+  );
+
   app.get(
     "/api/patient/dashboard",
     authMiddleware,

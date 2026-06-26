@@ -235,6 +235,10 @@ export interface IStorage {
     count: number;
     totalOwed: number;
   }>;
+  getPatientUnsettledCharges(patientId: string): Promise<{
+    count: number;
+    totalOwed: number;
+  }>;
   settleDoctorCharges(doctorId: string): Promise<void>;
   respondToReview(
     reviewId: string,

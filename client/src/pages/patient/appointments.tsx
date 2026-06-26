@@ -7,6 +7,7 @@ import {
   Search,
   Filter,
   AlertCircle,
+  AlertTriangle,
   Video,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
@@ -41,6 +42,13 @@ export default function PatientAppointmentsPage() {
     queryKey: ["/api/appointments"],
     staleTime: 60 * 1000,
   });
+
+  // Outstanding cancellation charges owed to AyurPath; drives the notice banner.
+  const { data: owedCharges } = useQuery<{ count: number; totalOwed: number }>({
+    queryKey: ["/api/patient/owed-charges"],
+    staleTime: 60 * 1000,
+  });
+  const hasOwedCharges = (owedCharges?.totalOwed ?? 0) > 0;
 
   const getInitials = (name: string) => {
     if (!name) return "DR";
@@ -148,6 +156,22 @@ export default function PatientAppointmentsPage() {
         <h1 className="text-2xl md:text-3xl lg:text-4xl font-black text-foreground tracking-tight">My Appointments</h1>
         <p className="text-sm md:text-base text-muted-foreground font-medium">View and manage your appointments</p>
       </div>
+
+      {/* Owed to AyurPath notice — only shown when the patient has an outstanding cancellation charge */}
+      {hasOwedCharges && (
+        <div
+          className="flex items-start gap-3 rounded-2xl border border-red-200 bg-red-50 dark:border-red-900/40 dark:bg-red-950/20 p-4 md:p-5"
+          data-testid="banner-owed-to-ayurpath"
+        >
+          <AlertTriangle className="h-5 w-5 shrink-0 text-red-500 mt-0.5" />
+          <div className="space-y-0.5">
+            <p className="font-semibold text-red-700 dark:text-red-300">Owed to AyurPath</p>
+            <p className="text-sm text-red-600/90 dark:text-red-300/80">
+              When you cancel an appointment, the cancellation charge is billed back to you. The cancellation charge determined by doctor.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Filters Section */}
       <div className="flex flex-col sm:flex-row gap-3 md:gap-4 items-center bg-card p-3 md:p-4 rounded-2xl border border-border shadow-sm">

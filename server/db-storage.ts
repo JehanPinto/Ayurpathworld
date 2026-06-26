@@ -2549,6 +2549,17 @@ export class DbStorage implements IStorage {
     };
   }
 
+  // Outstanding cancellation charges a patient owes to AyurPath. There is no
+  // patient cancellation-charge flow yet (patients can't self-cancel), so this
+  // returns nothing for now — it is the single seam to wire up when that
+  // feature lands. The "Owed to AyurPath" banner reads this and stays hidden
+  // while totalOwed is 0.
+  async getPatientUnsettledCharges(
+    _patientId: string,
+  ): Promise<{ count: number; totalOwed: number }> {
+    return { count: 0, totalOwed: 0 };
+  }
+
   async settleDoctorCharges(doctorId: string): Promise<void> {
     await db
       .update(doctorCancellationCharges)
