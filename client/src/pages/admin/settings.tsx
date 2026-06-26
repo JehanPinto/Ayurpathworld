@@ -741,43 +741,6 @@ export default function AdminSettingsPage() {
               </div>
             </div>
 
-            <Separator />
-
-            {/* Allow Online Payments */}
-            <div className="flex items-center justify-between py-1">
-              <div>
-                <div className="flex items-center gap-2">
-                  <p className="font-medium">Allow Online Payments</p>
-                  {settings.allowOnlinePayments && (
-                    <span className="flex items-center gap-1 text-xs text-primary font-medium bg-primary/10 px-2 py-0.5 rounded-full">
-                      <span className="h-1.5 w-1.5 rounded-full bg-primary inline-block" />
-                      Enabled
-                    </span>
-                  )}
-                </div>
-                <p className="text-sm text-muted-foreground mt-0.5">Enable online payment processing</p>
-              </div>
-              <Switch
-                checked={settings.allowOnlinePayments}
-                onCheckedChange={(v) => update("allowOnlinePayments", v)}
-                data-testid="switch-online-payments"
-              />
-            </div>
-
-            <Separator />
-
-            {/* Auto-generate Invoices */}
-            <div className="flex items-center justify-between py-1">
-              <div>
-                <p className="font-medium">Auto-generate Invoices</p>
-                <p className="text-sm text-muted-foreground mt-0.5">Send PDF invoices to patients after each payment</p>
-              </div>
-              <Switch
-                checked={settings.autoGenerateInvoices}
-                onCheckedChange={(v) => update("autoGenerateInvoices", v)}
-                data-testid="switch-auto-invoices"
-              />
-            </div>
           </div>
 
           <div className="flex justify-end">
