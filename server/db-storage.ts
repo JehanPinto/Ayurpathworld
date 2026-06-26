@@ -56,6 +56,7 @@ import {
   type Payment,
   type PlatformSettings,
   type TaxEntry,
+  type FeeEntry,
   type Prescription,
   type Review,
   type ReviewWithDoctor,
@@ -2103,6 +2104,91 @@ export class DbStorage implements IStorage {
       id,
     ]);
     return (result.rowCount ?? 0) > 0;
+  }
+
+  private async ensureFeeEntriesTable(): Promise<void> {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS fee_entries (
+        id VARCHAR(50) PRIMARY KEY DEFAULT gen_random_uuid()::text,
+        title VARCHAR(255) NOT NULL,
+        fee_type VARCHAR(20) NOT NULL DEFAULT 'amount',
+        rate INTEGER NOT NULL DEFAULT 0,
+        applicable_to VARCHAR(20) DEFAULT 'doctors',
+        enabled BOOLEAN NOT NULL DEFAULT true,
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+  }
+
+  private mapFeeRow(r: any): FeeEntry {
+    return {
+      id: r.id,
+      title: r.title,
+      feeType: (r.fee_type ?? "amount") as "amount" | "percentage",
+      rate: r.rate,
+      applicableTo: (r.applicable_to ?? "doctors") as
+        | "doctors"
+        | "patients"
+        | "both",
+      enabled: r.enabled ?? true,
+      createdAt: r.created_at,
+    };
+  }
+
+  async getFeeEntries(): Promise<FeeEntry[]> {
+    await this.ensureFeeEntriesTable();
+    const result = await pool.query(
+      `SELECT id, title, fee_type, rate, applicable_to, enabled, created_at
+       FROM fee_entries ORDER BY created_at ASC`,
+    );
+    return result.rows.map((r: any) => this.mapFeeRow(r));
+  }
+
+  async createFeeEntry(
+    title: string,
+    feeType: "amount" | "percentage",
+    rate: number,
+    applicableTo: "doctors" | "patients" | "both",
+  ): Promise<FeeEntry> {
+    await this.ensureFeeEntriesTable();
+    const result = await pool.query(
+      `INSERT INTO fee_entries (title, fee_type, rate, applicable_to)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id, title, fee_type, rate, applicable_to, enabled, created_at`,
+      [title, feeType, rate, applicableTo],
+    );
+    return this.mapFeeRow(result.rows[0]);
+  }
+
+  async updateFeeEntryEnabled(
+    id: string,
+    enabled: boolean,
+  ): Promise<FeeEntry | undefined> {
+    await this.ensureFeeEntriesTable();
+    const result = await pool.query(
+      `UPDATE fee_entries SET enabled = $1 WHERE id = $2
+       RETURNING id, title, fee_type, rate, applicable_to, enabled, created_at`,
+      [enabled, id],
+    );
+    if (result.rows.length === 0) return undefined;
+    return this.mapFeeRow(result.rows[0]);
+  }
+
+  async deleteFeeEntry(id: string): Promise<boolean> {
+    const result = await pool.query(`DELETE FROM fee_entries WHERE id = $1`, [
+      id,
+    ]);
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  // Median consultation fee — a robust cap for flat-amount fees that isn't
+  // distorted by a few outlier doctors with very high consultation fees.
+  async getFeeAmountCap(): Promise<number> {
+    const result = await pool.query(
+      `SELECT COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY consultation_fee), 0) AS median_fee
+       FROM doctor_profiles WHERE consultation_fee > 0`,
+    );
+    return Math.round(Number(result.rows[0]?.median_fee ?? 0));
   }
 
   async createBlogSubmission(

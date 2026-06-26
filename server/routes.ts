@@ -3192,9 +3192,10 @@ export async function registerRoutes(
           consultationFee = doctor.homeVisitFee;
         }
 
-        const [platformSettings, allCustomTaxes] = await Promise.all([
+        const [platformSettings, allCustomTaxes, allFees] = await Promise.all([
           storage.getPlatformSettings(),
           storage.getTaxEntries(),
+          storage.getFeeEntries(),
         ]);
         const bookingCharges = platformSettings.bookingCharges;
         const stampDutyAmt = platformSettings.stampDutyEnabled
@@ -3210,22 +3211,40 @@ export async function registerRoutes(
           (sum, t) => sum + Math.round(consultationFee * (t.rate / 100)), 0
         );
 
+        // Custom fees (enabled only). Amount fees are flat LKR; percentage fees scale with the consultation fee.
+        const enabledFees = allFees.filter((f) => f.enabled);
+        const feeAmount = (f: { feeType: string; rate: number }) =>
+          f.feeType === "percentage" ? Math.round(consultationFee * (f.rate / 100)) : f.rate;
+        const patientFees = enabledFees.filter(
+          (f) => f.applicableTo === "patients" || f.applicableTo === "both"
+        );
+        const doctorFees = enabledFees.filter(
+          (f) => f.applicableTo === "doctors" || f.applicableTo === "both"
+        );
+        const patientFeeAmt = patientFees.reduce((sum, f) => sum + feeAmount(f), 0);
+        const doctorFeeAmt = doctorFees.reduce((sum, f) => sum + feeAmount(f), 0);
+
         const tax = baseTaxAmt + stampDutyAmt + customPatientTaxAmt;
 
         // Build full breakdown for patient invoice
-        const taxBreakdown: { title: string; rate: number; amount: number; applicableTo: string }[] = [];
-        if (baseTaxAmt > 0) taxBreakdown.push({ title: `Government Tax`, rate: platformSettings.taxRate, amount: baseTaxAmt, applicableTo: "patients" });
-        if (stampDutyAmt > 0) taxBreakdown.push({ title: "Stamp Duty", rate: 1, amount: stampDutyAmt, applicableTo: "patients" });
+        const taxBreakdown: { title: string; rate: number; amount: number; applicableTo: "doctors" | "patients" | "both" | "platform"; kind?: "tax" | "fee"; feeType?: "amount" | "percentage" }[] = [];
+        if (baseTaxAmt > 0) taxBreakdown.push({ title: `Government Tax`, rate: platformSettings.taxRate, amount: baseTaxAmt, applicableTo: "patients", kind: "tax" });
+        if (stampDutyAmt > 0) taxBreakdown.push({ title: "Stamp Duty", rate: 1, amount: stampDutyAmt, applicableTo: "patients", kind: "tax" });
         for (const t of patientCustomTaxes) {
           const amt = Math.round(consultationFee * (t.rate / 100));
-          taxBreakdown.push({ title: t.title, rate: t.rate, amount: amt, applicableTo: t.applicableTo });
+          taxBreakdown.push({ title: t.title, rate: t.rate, amount: amt, applicableTo: t.applicableTo, kind: "tax" });
+        }
+        // Patient-facing custom fees appear on the invoice
+        for (const f of patientFees) {
+          taxBreakdown.push({ title: f.title, rate: f.rate, amount: feeAmount(f), applicableTo: f.applicableTo, kind: "fee", feeType: f.feeType });
         }
 
         const platformCommission = Math.round(
           consultationFee * (platformSettings.platformCommissionRate / 100),
         );
-        const doctorEarnings = consultationFee - platformCommission;
-        const totalAmount = consultationFee + bookingCharges + tax;
+        // Doctor-facing custom fees are deducted from the doctor's payout (never below 0)
+        const doctorEarnings = Math.max(0, consultationFee - platformCommission - doctorFeeAmt);
+        const totalAmount = consultationFee + bookingCharges + tax + patientFeeAmt;
 
         const paymentData = {
           appointmentId: appointment.id,
@@ -4842,6 +4861,67 @@ export async function registerRoutes(
       await storage.deleteTaxEntry(req.params.id);
       res.json({ success: true });
     } catch { res.status(500).json({ error: "Failed to delete tax entry" }); }
+  });
+
+  app.get("/api/admin/fee-entries", authMiddleware, roleMiddleware(UserRole.ADMIN), async (_req: Request, res: Response) => {
+    try {
+      const entries = await storage.getFeeEntries();
+      res.json(entries);
+    } catch { res.status(500).json({ error: "Failed to get fee entries" }); }
+  });
+
+  // Public endpoint so the patient invoice / book-appointment page can fetch without admin auth
+  app.get("/api/fee-entries", publicApiLimiter, async (_req: Request, res: Response) => {
+    try {
+      const entries = await storage.getFeeEntries();
+      res.json(entries);
+    } catch { res.status(500).json({ error: "Failed to get fee entries" }); }
+  });
+
+  // Data-driven limits for fee inputs: amount fees are capped at the highest
+  // consultation fee in the system; percentage fees are capped at 100%.
+  app.get("/api/admin/fee-limits", authMiddleware, roleMiddleware(UserRole.ADMIN), async (_req: Request, res: Response) => {
+    try {
+      const maxAmount = await storage.getFeeAmountCap();
+      res.json({ maxAmount, maxPercentage: 100 });
+    } catch { res.status(500).json({ error: "Failed to get fee limits" }); }
+  });
+
+  app.post("/api/admin/fee-entries", authMiddleware, roleMiddleware(UserRole.ADMIN), async (req: Request, res: Response) => {
+    try {
+      const { title, feeType, rate, applicableTo } = req.body;
+      if (!title?.trim() || rate === undefined || rate === null || rate === "") return res.status(400).json({ error: "Title and rate are required" });
+      if (!["amount", "percentage"].includes(feeType)) return res.status(400).json({ error: "feeType must be amount or percentage" });
+      if (!["doctors", "patients", "both"].includes(applicableTo)) return res.status(400).json({ error: "applicableTo must be doctors, patients, or both" });
+      const numericRate = Number(rate);
+      if (Number.isNaN(numericRate) || numericRate < 0) return res.status(400).json({ error: "rate must be a non-negative number" });
+      if (feeType === "percentage" && numericRate > 100) return res.status(400).json({ error: "percentage rate cannot exceed 100" });
+      if (feeType === "amount") {
+        const maxAmount = await storage.getFeeAmountCap();
+        if (maxAmount > 0 && numericRate > maxAmount) {
+          return res.status(400).json({ error: `Amount fee cannot exceed the typical consultation fee (LKR ${maxAmount.toLocaleString()})` });
+        }
+      }
+      const entry = await storage.createFeeEntry(title.trim(), feeType, numericRate, applicableTo);
+      res.status(201).json(entry);
+    } catch { res.status(500).json({ error: "Failed to create fee entry" }); }
+  });
+
+  app.patch("/api/admin/fee-entries/:id", authMiddleware, roleMiddleware(UserRole.ADMIN), async (req: Request, res: Response) => {
+    try {
+      const { enabled } = req.body;
+      if (typeof enabled !== "boolean") return res.status(400).json({ error: "enabled (boolean) is required" });
+      const entry = await storage.updateFeeEntryEnabled(req.params.id, enabled);
+      if (!entry) return res.status(404).json({ error: "Fee entry not found" });
+      res.json(entry);
+    } catch { res.status(500).json({ error: "Failed to update fee entry" }); }
+  });
+
+  app.delete("/api/admin/fee-entries/:id", authMiddleware, roleMiddleware(UserRole.ADMIN), async (req: Request, res: Response) => {
+    try {
+      await storage.deleteFeeEntry(req.params.id);
+      res.json({ success: true });
+    } catch { res.status(500).json({ error: "Failed to delete fee entry" }); }
   });
 
   // Payout Dashboard
