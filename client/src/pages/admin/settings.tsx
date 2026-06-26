@@ -488,7 +488,7 @@ export default function AdminSettingsPage() {
                       </SelectItem>
                       <SelectItem value="both">
                         <span className="flex items-center gap-2">
-                          <span className="px-2 py-0.5 rounded text-xs font-medium bg-muted text-muted-foreground border border-border">Both</span>
+                          <span className="px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-700 border border-orange-200">Both</span>
                         </span>
                       </SelectItem>
                     </SelectContent>
@@ -564,7 +564,7 @@ export default function AdminSettingsPage() {
                             ? "bg-purple-100 text-purple-700 border border-purple-200"
                             : entry.applicableTo === "patients"
                             ? "bg-pink-100 text-pink-600 border border-pink-200"
-                            : "bg-muted text-muted-foreground border border-border"
+                            : "bg-orange-100 text-orange-700 border border-orange-200"
                         }`}>
                           {entry.applicableTo === "doctors" ? "Doctors" : entry.applicableTo === "patients" ? "Patients" : "Both"}
                         </span>
@@ -655,7 +655,7 @@ export default function AdminSettingsPage() {
                       </SelectItem>
                       <SelectItem value="both">
                         <span className="flex items-center gap-2">
-                          <span className="px-2 py-0.5 rounded text-xs font-medium bg-muted text-muted-foreground border border-border">Both</span>
+                          <span className="px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-700 border border-orange-200">Both</span>
                         </span>
                       </SelectItem>
                     </SelectContent>
@@ -714,7 +714,7 @@ export default function AdminSettingsPage() {
                             ? "bg-purple-100 text-purple-700 border border-purple-200"
                             : fee.applicableTo === "patients"
                             ? "bg-pink-100 text-pink-600 border border-pink-200"
-                            : "bg-muted text-muted-foreground border border-border"
+                            : "bg-orange-100 text-orange-700 border border-orange-200"
                         }`}>
                           {fee.applicableTo === "doctors" ? "Doctors" : fee.applicableTo === "patients" ? "Patients" : "Both"}
                         </span>
