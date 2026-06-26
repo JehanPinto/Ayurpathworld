@@ -167,7 +167,7 @@ export default function PatientAppointmentsPage() {
           <div className="space-y-0.5">
             <p className="font-semibold text-red-700 dark:text-red-300">Owed to AyurPath</p>
             <p className="text-sm text-red-600/90 dark:text-red-300/80">
-              When you cancel an appointment, the cancellation charge is billed back to you. The cancellation charge determined by doctor.
+              When you cancel an appointment, the cancellation charge is billed back to you. The cancellation charge is determined by the doctor.
             </p>
           </div>
         </div>
