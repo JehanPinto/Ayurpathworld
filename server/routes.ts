@@ -3758,6 +3758,7 @@ export async function registerRoutes(
 
         res.json({ summary, payments, cancellationCharges: unsettled });
       } catch (error) {
+        console.error("Failed to get doctor earnings:", error);
         res.status(500).json({ error: "Failed to get earnings" });
       }
     },

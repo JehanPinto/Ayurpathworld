@@ -1804,23 +1804,87 @@ export class DbStorage implements IStorage {
       .where(eq(payments.doctorId, doctorId))
       .orderBy(desc(payments.createdAt));
 
-    const paymentsWithDetails: (Payment & {
-      appointment?: AppointmentWithDetails;
-    })[] = [];
-    for (const p of result) {
-      const payment = {
-        ...p,
-        createdAt: toISOString(p.createdAt),
-        updatedAt: toISOString(p.updatedAt),
-      } as Payment;
+    if (result.length === 0) return [];
 
-      const appointment = await this.getAppointmentWithDetails(p.appointmentId);
-      paymentsWithDetails.push({
-        ...payment,
-        appointment: appointment || undefined,
-      });
+    // Batch-load all related appointments in a few parallel queries instead of
+    // calling getAppointmentWithDetails (~8 sequential queries) per payment.
+    const appointmentIds = [...new Set(result.map((p) => p.appointmentId))];
+    const appointmentRows = await db
+      .select()
+      .from(appointments)
+      .where(inArray(appointments.id, appointmentIds));
+    const detailed = await this.buildAppointmentsWithDetails(appointmentRows);
+    const appointmentMap = new Map(detailed.map((a) => [a.id, a]));
+
+    return result.map((p) => ({
+      ...p,
+      createdAt: toISOString(p.createdAt),
+      updatedAt: toISOString(p.updatedAt),
+      appointment: appointmentMap.get(p.appointmentId) || undefined,
+    })) as (Payment & { appointment?: AppointmentWithDetails })[];
+  }
+
+  async getDoctorEarningsSummary(doctorId: string): Promise<{
+    totalEarnings: number;
+    pendingEarnings: number;
+    completedPayments: number;
+    pendingPayments: number;
+    thisMonthEarnings: number;
+    lastMonthEarnings: number;
+  }> {
+    const rows = await db
+      .select()
+      .from(payments)
+      .where(eq(payments.doctorId, doctorId));
+
+    const now = new Date();
+    const thisMonth = now.getMonth();
+    const thisYear = now.getFullYear();
+    const lastMonthDate = new Date(thisYear, thisMonth - 1, 1);
+    const lastMonth = lastMonthDate.getMonth();
+    const lastMonthYear = lastMonthDate.getFullYear();
+
+    let totalEarnings = 0;
+    let pendingEarnings = 0;
+    let completedPayments = 0;
+    let pendingPayments = 0;
+    let thisMonthEarnings = 0;
+    let lastMonthEarnings = 0;
+
+    for (const p of rows) {
+      const earnings = p.doctorEarnings ?? 0;
+      if (p.status === PaymentStatus.COMPLETED) {
+        totalEarnings += earnings;
+        completedPayments += 1;
+
+        const created = p.createdAt ? new Date(p.createdAt) : null;
+        if (created) {
+          if (
+            created.getMonth() === thisMonth &&
+            created.getFullYear() === thisYear
+          ) {
+            thisMonthEarnings += earnings;
+          } else if (
+            created.getMonth() === lastMonth &&
+            created.getFullYear() === lastMonthYear
+          ) {
+            lastMonthEarnings += earnings;
+          }
+        }
+      } else if (p.status === PaymentStatus.PENDING) {
+        pendingEarnings += earnings;
+        pendingPayments += 1;
+      }
     }
-    return paymentsWithDetails;
+
+    return {
+      totalEarnings,
+      pendingEarnings,
+      completedPayments,
+      pendingPayments,
+      thisMonthEarnings,
+      lastMonthEarnings,
+    };
   }
 
   async respondToReview(
