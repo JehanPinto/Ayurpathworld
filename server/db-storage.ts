@@ -1786,6 +1786,12 @@ export class DbStorage implements IStorage {
       .where(eq(appointments.doctorId, doctorId))
       .orderBy(desc(appointments.appointmentDate));
 
+    if (doctorAppointments.length === 0) return [];
+
+    // Batch-load every appointment's details (patient included) in one pass,
+    // instead of calling getUser + getAppointmentWithDetails per appointment.
+    const detailed = await this.buildAppointmentsWithDetails(doctorAppointments);
+
     const patientMap = new Map<
       string,
       {
@@ -1796,30 +1802,23 @@ export class DbStorage implements IStorage {
       }
     >();
 
-    for (const apt of doctorAppointments) {
-      const patientId = apt.patientId;
+    for (const apt of detailed) {
+      const patient = apt.patient;
+      if (!patient) continue;
 
-      if (!patientMap.has(patientId)) {
-        const patient = await this.getUser(patientId);
-        if (patient) {
-          const { password: _pw, ...safePatient } = patient;
-          patientMap.set(patientId, {
-            patient: safePatient as SafeUser,
-            lastVisit: apt.appointmentDate,
-            totalVisits: 0,
-            appointments: [],
-          });
-        }
+      let patientData = patientMap.get(apt.patientId);
+      if (!patientData) {
+        // Appointments are ordered newest-first, so the first seen is the last visit.
+        patientData = {
+          patient,
+          lastVisit: apt.appointmentDate,
+          totalVisits: 0,
+          appointments: [],
+        };
+        patientMap.set(apt.patientId, patientData);
       }
-
-      const patientData = patientMap.get(patientId);
-      if (patientData) {
-        patientData.totalVisits++;
-        const fullApt = await this.getAppointmentWithDetails(apt.id);
-        if (fullApt) {
-          patientData.appointments.push(fullApt);
-        }
-      }
+      patientData.totalVisits++;
+      patientData.appointments.push(apt);
     }
 
     return Array.from(patientMap.values());
