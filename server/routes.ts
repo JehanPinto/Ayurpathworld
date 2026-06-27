@@ -4705,6 +4705,11 @@ export async function registerRoutes(
         const now = Date.now();
         const threshold = 48 * 60 * 60 * 1000;
         const admins = await storage.getAllUsers("admin");
+        // Fetch the admin's notifications once — the dedup check below is keyed
+        // per doctor (relatedId), so a single snapshot is correct and avoids an
+        // N+1 (one getUserNotifications call per pending doctor).
+        const existingNotifs = await storage.getUserNotifications(req.user!.id);
+        const last24h = now - 24 * 60 * 60 * 1000;
 
         for (const doctor of pendingDoctors) {
           const createdAt = new Date(doctor.createdAt).getTime();
@@ -4714,11 +4719,6 @@ export async function registerRoutes(
             (now - createdAt) / (24 * 60 * 60 * 1000),
           );
           const expectedTitle = `Verification pending — ${daysOverdue} ${daysOverdue === 1 ? "day" : "days"} overdue`;
-
-          const existingNotifs = await storage.getUserNotifications(
-            req.user!.id,
-          );
-          const last24h = now - 24 * 60 * 60 * 1000;
 
           const alreadyUpToDate = existingNotifs.some(
             (n) =>
