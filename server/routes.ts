@@ -4882,32 +4882,53 @@ export async function registerRoutes(
 
         const doctorPayouts = [];
 
-        for (const doctor of doctors) {
-          const [paymentsResult, apptResult, chargesResult] = await Promise.all([
-            pool.query(
-              `SELECT consultation_fee, platform_commission, doctor_earnings
-               FROM payments WHERE doctor_id = $1 AND status = 'completed'
-               AND created_at >= $2 AND created_at < $3`,
-              [doctor.id, thisMonthStart, nextMonthStart]
-            ),
-            pool.query(
-              `SELECT status, cancelled_by FROM appointments
-               WHERE doctor_id = $1 AND created_at >= $2 AND created_at < $3`,
-              [doctor.id, thisMonthStart, nextMonthStart]
-            ),
-            pool.query(
-              `SELECT amount_owed FROM doctor_cancellation_charges
-               WHERE doctor_id = $1 AND settled = false`,
-              [doctor.id]
-            ),
-          ]);
+        // Aggregate every doctor's figures in 3 grouped queries instead of 3 per doctor.
+        const [paymentsAgg, apptAgg, chargesAgg] = await Promise.all([
+          pool.query(
+            `SELECT doctor_id, COALESCE(SUM(consultation_fee), 0) AS earn_amount
+             FROM payments
+             WHERE status = 'completed' AND created_at >= $1 AND created_at < $2
+             GROUP BY doctor_id`,
+            [thisMonthStart, nextMonthStart]
+          ),
+          pool.query(
+            `SELECT doctor_id,
+                    COUNT(*) AS total_appts,
+                    COUNT(*) FILTER (WHERE status = 'completed') AS completed_appts
+             FROM appointments
+             WHERE created_at >= $1 AND created_at < $2
+             GROUP BY doctor_id`,
+            [thisMonthStart, nextMonthStart]
+          ),
+          pool.query(
+            `SELECT doctor_id, COALESCE(SUM(amount_owed), 0) AS cancellation_fees
+             FROM doctor_cancellation_charges
+             WHERE settled = false
+             GROUP BY doctor_id`
+          ),
+        ]);
 
-          const earnAmount = paymentsResult.rows.reduce((sum: number, p: any) => sum + (p.consultation_fee || 0), 0);
+        const earnMap = new Map<string, number>(
+          paymentsAgg.rows.map((r: any) => [r.doctor_id, Number(r.earn_amount) || 0])
+        );
+        const apptMap = new Map<string, { total: number; completed: number }>(
+          apptAgg.rows.map((r: any) => [
+            r.doctor_id,
+            { total: Number(r.total_appts) || 0, completed: Number(r.completed_appts) || 0 },
+          ])
+        );
+        const chargesMap = new Map<string, number>(
+          chargesAgg.rows.map((r: any) => [r.doctor_id, Number(r.cancellation_fees) || 0])
+        );
+
+        for (const doctor of doctors) {
+          const earnAmount = earnMap.get(doctor.id) || 0;
           const platformFees = Math.round(earnAmount * commissionRate);
-          const totalAppts = apptResult.rows.length;
-          const completedAppts = apptResult.rows.filter((a: any) => a.status === "completed").length;
+          const apptCounts = apptMap.get(doctor.id) || { total: 0, completed: 0 };
+          const totalAppts = apptCounts.total;
+          const completedAppts = apptCounts.completed;
           const cancellationRate = totalAppts > 0 ? Math.round(((totalAppts - completedAppts) / totalAppts) * 100) : 0;
-          const cancellationFees = chargesResult.rows.reduce((sum: number, c: any) => sum + (c.amount_owed || 0), 0);
+          const cancellationFees = chargesMap.get(doctor.id) || 0;
           const applicableTax = Math.round(earnAmount * totalTaxRate);
           const payoutAmount = Math.max(0, earnAmount - platformFees - cancellationFees - applicableTax);
 
