@@ -1904,31 +1904,31 @@ export async function registerRoutes(
 
       const clientIp = req.ip || req.socket.remoteAddress || "unknown";
 
-      // if (!checkSessionCreationLimit(clientIp)) {
+      if (!checkSessionCreationLimit(clientIp)) {
 
-      //   const tFailed = new Date().toISOString();
+        const tFailed = new Date().toISOString();
 
-      //   try {
-      //     const { ipAddress, device, location } = getReqInfo(req);
-      //     const { actorId, actorRole } = await getActorInfo(req);
-      //     await storage.createAuditLog({
-      //       actorId, actorRole,
-      //       action: 'REGISTRATION_SESSION', status: 'failed',
-      //       entityType: 'system', entityId: 'N/A', 
-      //       ipAddress, device, location, sessionId: 'N/A',
-      //       metadata: { 
-      //         providedEmail: email, reason: 'Rate limit exceeded', 
-      //         timeline: { 
-      //           requestReceivedAt: tRequestReceived, 
-      //           completedAt: tFailed 
-      //         } 
-      //       }
-      //     });
-      //   } catch (e) {}
-      //   return res.status(429).json({
-      //     error: "Too many registration attempts from this device. Please wait 1 hour before trying again.",
-      //   });
-      // }
+        try {
+          const { ipAddress, device, location } = getReqInfo(req);
+          const { actorId, actorRole } = await getActorInfo(req);
+          await storage.createAuditLog({
+            actorId, actorRole,
+            action: 'REGISTRATION_SESSION', status: 'failed',
+            entityType: 'system', entityId: 'N/A',
+            ipAddress, device, location, sessionId: 'N/A',
+            metadata: {
+              providedEmail: email, reason: 'Rate limit exceeded',
+              timeline: {
+                requestReceivedAt: tRequestReceived,
+                completedAt: tFailed
+              }
+            }
+          });
+        } catch (e) {}
+        return res.status(429).json({
+          error: "Too many registration attempts from this device. Please wait 1 hour before trying again.",
+        });
+      }
 
       const tLimitationchekedAt = new Date().toISOString();
 
@@ -2013,11 +2013,11 @@ export async function registerRoutes(
             .json({ error: "Email mismatch with registration session" });
         }
 
-        // if (session.uploadCount >= MAX_UPLOADS_PER_SESSION) {
-        //   return res
-        //     .status(429)
-        //     .json({ error: "Maximum uploads reached for this session" });
-        // }
+        if (session.uploadCount >= MAX_UPLOADS_PER_SESSION) {
+          return res
+            .status(429)
+            .json({ error: "Maximum uploads reached for this session" });
+        }
 
         if (!req.file) {
           return res.status(400).json({ error: "No file uploaded" });
@@ -5087,9 +5087,9 @@ export async function registerRoutes(
           }
         }
 
-        if (updates.phone && !/^\+947[0-9]{8}$/.test(updates.phone)) {
-            return res.status(400).json({ 
-                error: "Please enter a valid Sri Lankan mobile number (e.g., +947XXXXXXXX)" 
+        if (updates.phone && !/^07[0-9]{8}$/.test(updates.phone)) {
+            return res.status(400).json({
+                error: "Please enter a valid Sri Lankan mobile number (07XXXXXXXX)"
             });
         }
 
