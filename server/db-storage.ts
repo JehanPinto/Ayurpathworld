@@ -432,42 +432,72 @@ export class DbStorage implements IStorage {
     }
 
     const profiles = await query;
+
+    // In-memory filters first (specialization / consultation type) so we only
+    // batch-load related data for the doctors we will actually return.
+    const mappedProfiles = profiles
+      .map((p) => mapDoctorProfile(p))
+      .filter((mappedProfile) => {
+        if (
+          filters?.specializationId &&
+          !mappedProfile.specializationIds.includes(filters.specializationId)
+        ) {
+          return false;
+        }
+        if (
+          filters?.consultationType &&
+          !mappedProfile.consultationTypes.includes(
+            filters.consultationType as any,
+          )
+        ) {
+          return false;
+        }
+        return true;
+      });
+
+    if (mappedProfiles.length === 0) return [];
+
+    // Batch-load users (one IN query) and the shared specialization/hospital
+    // lists once — instead of calling getDoctorWithDetails (4 queries) per doctor.
+    const userIds = [...new Set(mappedProfiles.map((p) => p.userId))];
+    const [userRows, allSpecs, allHospitals] = await Promise.all([
+      db.select().from(users).where(inArray(users.id, userIds)),
+      this.getAllSpecializations(),
+      this.getAllHospitals(),
+    ]);
+    const userMap = new Map(
+      (userRows as any[]).map((r) => [r.id, mapSafeUser(r)]),
+    );
+
     const doctors: DoctorWithDetails[] = [];
+    for (const mappedProfile of mappedProfiles) {
+      const user = userMap.get(mappedProfile.userId);
+      if (!user) continue;
 
-    for (const profile of profiles) {
-      const mappedProfile = mapDoctorProfile(profile);
+      const doctor: DoctorWithDetails = {
+        ...mappedProfile,
+        user,
+        specializations: allSpecs.filter((s) =>
+          mappedProfile.specializationIds.includes(s.id),
+        ),
+        hospitals: allHospitals.filter((h) =>
+          mappedProfile.hospitalIds.includes(h.id),
+        ),
+      };
 
-      if (
-        filters?.specializationId &&
-        !mappedProfile.specializationIds.includes(filters.specializationId)
-      ) {
-        continue;
-      }
-      if (
-        filters?.consultationType &&
-        !mappedProfile.consultationTypes.includes(
-          filters.consultationType as any,
-        )
-      ) {
-        continue;
-      }
-
-      const doctor = await this.getDoctorWithDetails(mappedProfile.id);
-      if (doctor) {
-        if (filters?.city) {
-          if (
-            doctor.user.city
-              ?.toLowerCase()
-              .includes(filters.city.toLowerCase()) ||
-            doctor.hospitals.some((h) =>
-              h.city.toLowerCase().includes(filters.city!.toLowerCase()),
-            )
-          ) {
-            doctors.push(doctor);
-          }
-        } else {
+      if (filters?.city) {
+        if (
+          doctor.user.city
+            ?.toLowerCase()
+            .includes(filters.city.toLowerCase()) ||
+          doctor.hospitals.some((h) =>
+            h.city.toLowerCase().includes(filters.city!.toLowerCase()),
+          )
+        ) {
           doctors.push(doctor);
         }
+      } else {
+        doctors.push(doctor);
       }
     }
 
