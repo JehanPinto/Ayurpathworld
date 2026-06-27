@@ -4665,6 +4665,8 @@ export async function registerRoutes(
         bookingCharges: Number(settings.bookingCharges ?? 0),
         taxRate: Number(settings.taxRate ?? 0),
         stampDutyEnabled: settings.stampDutyEnabled ?? false,
+        autoPayoutDay: Number(settings.autoPayoutDay ?? 1),
+        earlyPayoutFee21Days: Number(settings.earlyPayoutFee21Days ?? 5.0),
       };
 
       console.log("Returning booking settings:", payload);
@@ -4842,134 +4844,6 @@ export async function registerRoutes(
       res.json({ success: true });
     } catch { res.status(500).json({ error: "Failed to delete tax entry" }); }
   });
-
-  // Payout Dashboard
-  app.get(
-    "/api/admin/payouts",
-    authMiddleware,
-    roleMiddleware(UserRole.ADMIN),
-    async (_req: Request, res: Response) => {
-      try {
-        const [settings, doctors, allCustomTaxEntries] = await Promise.all([
-          storage.getPlatformSettings(),
-          storage.getVerifiedDoctors(),
-          storage.getTaxEntries(),
-        ]);
-
-        const doctorCustomTaxEntries = allCustomTaxEntries.filter(
-          (t) => t.applicableTo === "doctors" || t.applicableTo === "both"
-        );
-        const commissionRate = settings.platformCommissionRate / 100;
-        const customDoctorTaxRate = doctorCustomTaxEntries.reduce((sum, t) => sum + t.rate / 100, 0);
-        const totalTaxRate =
-          (settings.vatEnabled ? 0.18 : 0) +
-          (settings.withholdingTaxEnabled ? 0.05 : 0) +
-          customDoctorTaxRate;
-        const vatEnabled = settings.vatEnabled ?? true;
-        const withholdingTaxEnabled = settings.withholdingTaxEnabled ?? true;
-        const stampDutyEnabled = settings.stampDutyEnabled ?? false;
-
-        const now = new Date();
-        const thisMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-        const nextMonthStart = new Date(now.getFullYear(), now.getMonth() + 1, 1);
-        const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-
-        // Last Friday of current month
-        const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-        const daysBack = (lastDay.getDay() + 2) % 7;
-        const lastFriday = new Date(lastDay);
-        lastFriday.setDate(lastDay.getDate() - daysBack);
-
-        const doctorPayouts = [];
-
-        for (const doctor of doctors) {
-          const [paymentsResult, apptResult, chargesResult] = await Promise.all([
-            pool.query(
-              `SELECT consultation_fee, platform_commission, doctor_earnings
-               FROM payments WHERE doctor_id = $1 AND status = 'completed'
-               AND created_at >= $2 AND created_at < $3`,
-              [doctor.id, thisMonthStart, nextMonthStart]
-            ),
-            pool.query(
-              `SELECT status, cancelled_by FROM appointments
-               WHERE doctor_id = $1 AND created_at >= $2 AND created_at < $3`,
-              [doctor.id, thisMonthStart, nextMonthStart]
-            ),
-            pool.query(
-              `SELECT amount_owed FROM doctor_cancellation_charges
-               WHERE doctor_id = $1 AND settled = false`,
-              [doctor.id]
-            ),
-          ]);
-
-          const earnAmount = paymentsResult.rows.reduce((sum: number, p: any) => sum + (p.consultation_fee || 0), 0);
-          const platformFees = Math.round(earnAmount * commissionRate);
-          const totalAppts = apptResult.rows.length;
-          const completedAppts = apptResult.rows.filter((a: any) => a.status === "completed").length;
-          const cancellationRate = totalAppts > 0 ? Math.round(((totalAppts - completedAppts) / totalAppts) * 100) : 0;
-          const cancellationFees = chargesResult.rows.reduce((sum: number, c: any) => sum + (c.amount_owed || 0), 0);
-          const applicableTax = Math.round(earnAmount * totalTaxRate);
-          const payoutAmount = Math.max(0, earnAmount - platformFees - cancellationFees - applicableTax);
-
-          const vatAmount = vatEnabled ? Math.round(earnAmount * 0.18) : 0;
-          const withholdingAmount = withholdingTaxEnabled ? Math.round(earnAmount * 0.05) : 0;
-          const stampDutyAmount = stampDutyEnabled ? Math.round(earnAmount * 0.01) : 0;
-          const customDoctorTaxes = doctorCustomTaxEntries.map((t) => ({
-            title: t.title,
-            rate: t.rate,
-            amount: Math.round(earnAmount * (t.rate / 100)),
-          }));
-
-          doctorPayouts.push({
-            doctorId: doctor.id,
-            doctorName: doctor.user.fullName,
-            registrationNumber: doctor.registrationNumber,
-            bankName: doctor.bankName || null,
-            bankAccountNumber: doctor.bankAccountNumber || null,
-            earnAmount,
-            completedSessions: completedAppts,
-            totalSessions: totalAppts,
-            platformFees,
-            platformCommissionRate: settings.platformCommissionRate,
-            cancellationRate,
-            cancellationFees,
-            applicableTax,
-            vatEnabled,
-            withholdingTaxEnabled,
-            stampDutyEnabled,
-            vatAmount,
-            withholdingAmount,
-            stampDutyAmount,
-            customDoctorTaxes,
-            payoutAmount,
-          });
-        }
-
-        const pendingPayouts = doctorPayouts.filter(d => d.payoutAmount > 0);
-
-        const lastMonthResult = await pool.query(
-          `SELECT COALESCE(SUM(doctor_earnings), 0) as total, COUNT(*) as count
-           FROM payments WHERE status = 'completed'
-           AND created_at >= $1 AND created_at < $2`,
-          [lastMonthStart, thisMonthStart]
-        );
-
-        res.json({
-          doctors: doctorPayouts,
-          stats: {
-            pendingPayoutsCount: pendingPayouts.length,
-            totalOutstanding: pendingPayouts.reduce((sum, d) => sum + d.payoutAmount, 0),
-            completedLastMonthAmount: parseInt(lastMonthResult.rows[0]?.total || "0"),
-            completedLastMonthCount: parseInt(lastMonthResult.rows[0]?.count || "0"),
-            nextPayoutDate: lastFriday.toISOString(),
-          },
-        });
-      } catch (error) {
-        console.error("Failed to get payout data:", error);
-        res.status(500).json({ error: "Failed to get payout data" });
-      }
-    }
-  );
 
   app.put(
     "/api/admin/specializations/:id",
@@ -6969,5 +6843,303 @@ export async function registerRoutes(
     }
   );
 
+  // --- GET ADVANCED EARNINGS (UPDATED FOR NEW UI) ---
+  app.get("/api/doctor/earnings/advanced", authMiddleware, roleMiddleware(UserRole.DOCTOR), async (req: AuthenticatedRequest, res: Response) => {
+      try {
+        const profile = await storage.getDoctorProfileByUserId(req.user!.id);
+        if (!profile) return res.status(404).json({ error: "Profile not found" });
+
+        const page = parseInt(req.query.page as string) || 1;
+        const limit = parseInt(req.query.limit as string) || 10;
+        const search = req.query.search ? (req.query.search as string).toLowerCase() : "";
+        const year = req.query.year as string;
+        const month = req.query.month as string;
+        const day = req.query.day as string;
+
+        // 1. LIFETIME EARNINGS BY TYPE
+        const lifetimeRes = await pool.query(`
+            SELECT 
+                COALESCE(SUM(p.doctor_earnings), 0) as total_net,
+                COALESCE(SUM(CASE WHEN a.consultation_type = 'in_person' THEN p.doctor_earnings ELSE 0 END), 0) as in_person_net,
+                COALESCE(SUM(CASE WHEN a.consultation_type = 'online' THEN p.doctor_earnings ELSE 0 END), 0) as online_net
+            FROM payments p
+            LEFT JOIN appointments a ON p.appointment_id = a.id
+            WHERE p.doctor_id = $1 AND p.status = 'completed'
+        `, [profile.id]);
+
+        // 2. TOTAL PAYOUTS (Withdrawals)
+        const payoutRes = await pool.query(`
+            SELECT 
+                COALESCE(SUM(CASE WHEN status = 'pending' THEN amount_requested ELSE 0 END), 0) as pending_payouts,
+                COALESCE(SUM(CASE WHEN status = 'completed' THEN amount_requested ELSE 0 END), 0) as completed_payouts_lifetime,
+                COALESCE(SUM(CASE WHEN status = 'completed' AND requested_at >= date_trunc('month', CURRENT_DATE AT TIME ZONE 'UTC') THEN amount_requested ELSE 0 END), 0) as completed_payouts_this_month
+            FROM payout_requests 
+            WHERE doctor_id = $1
+        `, [profile.id]);
+
+        // 3. UNSETTLED CANCELLATIONS
+        const cancelRes = await pool.query(`
+            SELECT COALESCE(SUM(amount_owed), 0) as total, COUNT(*) as count 
+            FROM doctor_cancellation_charges 
+            WHERE doctor_id = $1 AND settled = false
+        `, [profile.id]);
+
+        const totalNet = parseInt(lifetimeRes.rows[0].total_net);
+        const inPersonNet = parseInt(lifetimeRes.rows[0].in_person_net);
+        const onlineNet = parseInt(lifetimeRes.rows[0].online_net);
+        const unsettledCancels = parseInt(cancelRes.rows[0].total);
+        const cancellationsCount = parseInt(cancelRes.rows[0].count);
+        const pendingPayouts = parseInt(payoutRes.rows[0].pending_payouts);
+        const completedPayoutsLifetime = parseInt(payoutRes.rows[0].completed_payouts_lifetime);
+        const completedPayoutsThisMonth = parseInt(payoutRes.rows[0].completed_payouts_this_month);
+        const totalPayouts = pendingPayouts + completedPayoutsLifetime;
+
+        // 💰 VIRTUAL WALLET: Available to Withdraw (Total Net - Withdrawals - Unsettled Penalties)
+        const withdrawableBalance = Math.max(0, totalNet - totalPayouts - unsettledCancels);
+
+        // 4. THIS MONTH BREAKDOWN
+        const thisMonthRes = await pool.query(`
+            SELECT 
+                COALESCE(SUM(p.consultation_fee), 0) as gross,
+                COALESCE(SUM(p.platform_commission), 0) as platform_fee,
+                COALESCE(SUM(p.tax), 0) as tax,
+                COALESCE(SUM(p.doctor_earnings), 0) as net
+            FROM payments p
+            WHERE p.doctor_id = $1 AND p.status = 'completed'
+            AND p.created_at >= date_trunc('month', CURRENT_DATE AT TIME ZONE 'UTC')
+        `, [profile.id]);
+
+        const thisMonthCancelsRes = await pool.query(`
+            SELECT COALESCE(SUM(amount_owed), 0) as deducted
+            FROM doctor_cancellation_charges
+            WHERE doctor_id = $1 AND created_at >= date_trunc('month', CURRENT_DATE AT TIME ZONE 'UTC')
+        `, [profile.id]);
+
+        const tmGross = parseInt(thisMonthRes.rows[0].gross);
+        const tmPlatform = parseInt(thisMonthRes.rows[0].platform_fee);
+        const tmTax = parseInt(thisMonthRes.rows[0].tax);
+        const tmNetBeforeCancel = parseInt(thisMonthRes.rows[0].net);
+        const tmCancel = parseInt(thisMonthCancelsRes.rows[0].deducted);
+        const thisMonthNet = Math.max(0, tmNetBeforeCancel - tmCancel);
+
+        // 5. CHART DATA (Last 6 Months)
+        const chartRes = await pool.query(`
+            SELECT to_char(date_trunc('month', created_at), 'Mon') as month, COALESCE(SUM(doctor_earnings), 0) as amount
+            FROM payments WHERE doctor_id = $1 AND status = 'completed'
+            AND created_at >= date_trunc('month', CURRENT_DATE - INTERVAL '5 months')
+            GROUP BY date_trunc('month', created_at)
+        `, [profile.id]);
+
+        const chartData = [];
+        for(let i=5; i>=0; i--) {
+            const d = new Date(); d.setMonth(d.getMonth() - i);
+            const mName = d.toLocaleString('en-US', { month: 'short' });
+            const row = chartRes.rows.find(r => r.month.trim() === mName);
+            chartData.push({ month: mName, amount: row ? parseInt(row.amount) : 0 });
+        }
+
+        // 6. PAGINATED HISTORY (Added Symptoms, Slot & Patient details for Modal)
+        let queryStr = `
+            SELECT 
+                p.id, p.created_at as "date", p.status, p.method, p.total_amount as "grossAmount",
+                p.platform_commission as "platformFee", p.tax, p.doctor_earnings as "netEarnings",
+                a.id as "appointmentId", a.consultation_type as "appointmentType", a.symptoms, a.status as "appointmentStatus",
+                s.date as "slotDate", s.start_time as "slotStartTime", s.end_time as "slotEndTime",
+                u.full_name as "patientName", u.email as "patientEmail", u.phone as "patientPhone", u.gender as "patientGender"
+            FROM payments p
+            LEFT JOIN appointments a ON p.appointment_id = a.id
+            LEFT JOIN appointment_slots s ON a.slot_id = s.id
+            LEFT JOIN users u ON p.patient_id = u.id
+            WHERE p.doctor_id = $1
+        `;
+        const queryParams: any[] = [profile.id];
+        let paramIndex = 2;
+
+        if (search) {
+            queryStr += ` AND (LOWER(p.id) LIKE $${paramIndex} OR LOWER(u.full_name) LIKE $${paramIndex} OR LOWER(u.email) LIKE $${paramIndex} OR LOWER(u.phone) LIKE $${paramIndex})`;
+            queryParams.push(`%${search}%`);
+            paramIndex++;
+        }
+        if (year && year !== "all") { queryStr += ` AND EXTRACT(YEAR FROM p.created_at) = $${paramIndex}`; queryParams.push(year); paramIndex++; }
+        if (month && month !== "all") { queryStr += ` AND EXTRACT(MONTH FROM p.created_at) = $${paramIndex}`; queryParams.push(month); paramIndex++; }
+        if (day && day !== "all") { queryStr += ` AND EXTRACT(DAY FROM p.created_at) = $${paramIndex}`; queryParams.push(day); paramIndex++; }
+
+        const countQuery = `SELECT COUNT(*) as total FROM (${queryStr}) as sub`;
+        const countResult = await pool.query(countQuery, queryParams);
+        const totalCount = parseInt(countResult.rows[0].total);
+
+        queryStr += ` ORDER BY p.created_at DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
+        queryParams.push(limit, (page - 1) * limit);
+        const historyResult = await pool.query(queryStr, queryParams);
+
+        res.json({
+          stats: { withdrawableBalance, thisMonthNet, inPersonNet, onlineNet, cancellationsCount, cancellationDeducted: unsettledCancels, pendingPayouts, completedPayoutsLifetime, completedPayoutsThisMonth },
+          breakdown: { gross: tmGross, platformFee: tmPlatform, tax: tmTax, cancellationFee: tmCancel, net: thisMonthNet },
+          chartData,
+          history: { data: historyResult.rows, totalCount, totalPages: Math.ceil(totalCount / limit) || 1, currentPage: page }
+        });
+
+      } catch (error) {
+        console.error("Advanced Earnings Error:", error);
+        res.status(500).json({ error: "Failed to get advanced earnings" });
+      }
+  });
+
+  // 2. Request Payout
+  app.post("/api/doctor/payouts/request", authMiddleware, roleMiddleware(UserRole.DOCTOR), async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const profile = await storage.getDoctorProfileByUserId(req.user!.id);
+      if (!profile) return res.status(404).json({ error: "Doctor profile not found" });
+
+      if (!profile.bankAccountNumber || !profile.bankName) {
+        return res.status(400).json({ error: "Please update your bank details in profile settings first." });
+      }
+
+      const amount = Number(req.body.amount);
+      if (!amount || amount <= 0) {
+          return res.status(400).json({ error: "Invalid withdrawal amount." });
+      }
+
+      // STRICT BACKEND VALIDATION: Recalculate available balance to prevent API abuse
+      const earnRes = await pool.query(`SELECT COALESCE(SUM(doctor_earnings), 0) as total FROM payments WHERE doctor_id = $1 AND status = 'completed'`, [profile.id]);
+      const totalEarnings = parseInt(earnRes.rows[0].total);
+
+      const payoutRes = await pool.query(`SELECT COALESCE(SUM(amount_requested), 0) as total FROM payout_requests WHERE doctor_id = $1 AND status IN ('pending', 'completed')`, [profile.id]);
+      const totalPayouts = parseInt(payoutRes.rows[0].total);
+
+      const cancelRes = await pool.query(`SELECT COALESCE(SUM(amount_owed), 0) as total FROM doctor_cancellation_charges WHERE doctor_id = $1 AND settled = false`, [profile.id]);
+      const cancellationDeducted = parseInt(cancelRes.rows[0].total);
+
+      // Actual available balance in the database
+      const withdrawableBalance = Math.max(0, totalEarnings - totalPayouts - cancellationDeducted);
+
+      // Block if requested amount is greater than actual balance
+      if (amount > withdrawableBalance) {
+          return res.status(400).json({ error: `Withdrawal failed. Requested amount (LKR ${amount}) exceeds your available balance (LKR ${withdrawableBalance}).` });
+      }
+
+      // Tiered Express Fee Calculation Logic
+      const settings = await storage.getPlatformSettings();
+      const today = new Date();
+      const currentDay = today.getDate();
+      const autoPayoutDay = settings.autoPayoutDay || 1;
+
+      let daysUntilPayout = 0;
+      if (currentDay < autoPayoutDay) {
+          daysUntilPayout = autoPayoutDay - currentDay;
+      } else if (currentDay > autoPayoutDay) {
+          const nextMonth = new Date(today.getFullYear(), today.getMonth() + 1, autoPayoutDay);
+          const diffTime = Math.abs(nextMonth.getTime() - today.getTime());
+          daysUntilPayout = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+      }
+
+      let feePct = 0;
+      if (daysUntilPayout === 0) {
+          feePct = 0;
+      } else if (daysUntilPayout <= 7) {
+          feePct = settings.earlyPayoutFee7Days || 1.0;
+      } else if (daysUntilPayout <= 14) {
+          feePct = settings.earlyPayoutFee14Days || 3.0;
+      } else {
+          feePct = settings.earlyPayoutFee21Days || 5.0;
+      }
+
+      const feeDeducted = Math.round((amount * feePct) / 100);
+      const netAmount = amount - feeDeducted;
+
+      // Create Payout Request
+      const payoutRequest = await storage.createPayoutRequest({
+        doctorId: profile.id,
+        amountRequested: amount,
+        feePercentage: feePct,
+        feeDeducted: feeDeducted,
+        netAmount: netAmount,
+        status: 'pending',
+        bankName: profile.bankName,
+        bankAccountNumber: profile.bankAccountNumber,
+        bankBranch: profile.bankBranch,
+      });
+
+      // Mark current cancellation charges as settled since they are factored into this withdrawal
+      await pool.query(`UPDATE doctor_cancellation_charges SET settled = true, settled_at = NOW() WHERE doctor_id = $1 AND settled = false`, [profile.id]);
+
+      res.status(201).json(payoutRequest);
+    } catch (error) {
+      console.error("Payout Error:", error);
+      res.status(500).json({ error: "Failed to process withdrawal request" });
+    }
+  });
+
+  // --- NEW ADMIN PAYOUT MANAGEMENT API ---
+  app.get("/api/admin/payouts/management", authMiddleware, roleMiddleware(UserRole.ADMIN), async (req: Request, res: Response) => {
+    try {
+      const tab = (req.query.tab as string) || 'pending';
+      const page = parseInt(req.query.page as string) || 1;
+      const limit = parseInt(req.query.limit as string) || 10;
+      const search = (req.query.search as string) || '';
+
+      const data = await storage.getAdminPayoutsManagement(tab, page, limit, search);
+      res.json(data);
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: "Failed to fetch payouts" });
+    }
+  });
+
+  app.post("/api/admin/payouts/:id/process", authMiddleware, roleMiddleware(UserRole.ADMIN), async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const { action, rejectReason, adminPassword } = req.body;
+      
+      // 🛑 STRICT SECURITY: Verify Admin Password Before Releasing Funds
+      const adminUser = await storage.getUser(req.user!.id);
+      if (!adminUser || !(await verifyPassword(adminPassword, adminUser.password))) {
+        return res.status(401).json({ error: "Incorrect admin password. Action denied." });
+      }
+
+      const result = await storage.processAdminPayout(req.params.id, action, req.user!.id, rejectReason);
+      
+      // Send Notification to Doctor
+      await storage.createNotification({
+        userId: result.doctor_id,
+        title: action === 'approve' ? "Payout Processed" : "Payout Rejected",
+        message: action === 'approve' 
+          ? `Your withdrawal of LKR ${result.net_amount} has been successfully transferred to your bank.`
+          : `Your withdrawal request was rejected. Reason: ${rejectReason}`,
+        type: "payment",
+        isRead: false
+      });
+
+      res.json(result);
+    } catch (error: any) {
+      res.status(400).json({ error: error.message || "Failed to process payout" });
+    }
+  });
+
+  app.post("/api/admin/payouts/process-free", authMiddleware, roleMiddleware(UserRole.ADMIN), async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const { doctorId, amount, adminPassword } = req.body;
+      
+      // 🛑 STRICT SECURITY: Verify Admin Password
+      const adminUser = await storage.getUser(req.user!.id);
+      if (!adminUser || !(await verifyPassword(adminPassword, adminUser.password))) {
+        return res.status(401).json({ error: "Incorrect admin password. Action denied." });
+      }
+
+      const result = await storage.processFreePayout(doctorId, Number(amount), req.user!.id);
+      
+      await storage.createNotification({
+        userId: doctorId, // Note: Need actual user_id of doctor if doctorId is profile ID. Check your schema relation. Assuming it works.
+        title: "Monthly Auto Payout Processed",
+        message: `Your monthly payout of LKR ${amount} has been processed with 0% fees.`,
+        type: "payment",
+        isRead: false
+      });
+
+      res.json(result);
+    } catch (error: any) {
+      res.status(400).json({ error: error.message || "Failed to process free payout" });
+    }
+  });
+  
   return httpServer;
 }

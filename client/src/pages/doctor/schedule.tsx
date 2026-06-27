@@ -30,6 +30,7 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { AppointmentSlot, DoctorWithDetails } from "@shared/schema";
 import { Modal } from "@/components/ui/modal";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
 const generateTimeSlots = () => {
   const slots = [];

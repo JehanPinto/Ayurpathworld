@@ -52,6 +52,8 @@ import {
   InsertAuditLog,
   AuditLog,
   hospitals,
+  InsertPayoutRequest,
+  PayoutRequest,
 } from "@shared/schema";
 import { randomUUID } from "crypto";
 
@@ -297,6 +299,11 @@ export interface IStorage {
   createAuditLog(data: InsertAuditLog): Promise<AuditLog>;
   getPaginatedAuditLogs(page: number, limit: number): Promise<any>;
   updateDoctorHospital(doctorProfileId: string, hospitalId: string, updates: Partial<InsertHospital>): Promise<Hospital | null>;
+  createPayoutRequest(data: InsertPayoutRequest): Promise<PayoutRequest>;
+  getDoctorEarningsAdvanced(doctorId: string): Promise<any>;
+  getAdminPayoutsManagement(tab: string, page: number, limit: number, search: string): Promise<any>;
+  processAdminPayout(payoutId: string, action: 'approve' | 'reject', adminId: string, rejectReason?: string): Promise<any>;
+  processFreePayout(doctorId: string, amount: number, adminId: string): Promise<any>;
 }
 
 export class MemStorage implements IStorage {

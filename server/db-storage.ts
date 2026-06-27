@@ -70,6 +70,9 @@ import {
   InsertAuditLog,
   AuditLog,
   auditLogs,
+  InsertPayoutRequest,
+  PayoutRequest,
+  payoutRequests,
 } from "@shared/schema";
 import {
   and,
@@ -164,6 +167,7 @@ function mapDoctorProfile(row: any): DoctorProfile {
 }
 
 export class DbStorage implements IStorage {
+  [x: string]: any;
   async getUser(id: string): Promise<User | undefined> {
     const result = await db
       .select()
@@ -2807,6 +2811,310 @@ export class DbStorage implements IStorage {
 
     const updated = await this.updateHospital(hospitalId, updates);
     return updated || null;
+  }
+
+  // ... (Your other db-storage methods up to getPaginatedAuditLogs)
+
+  async createPayoutRequest(data: InsertPayoutRequest): Promise<PayoutRequest> {
+    const result = await db.insert(payoutRequests).values(data).returning();
+    return result[0];
+  }
+
+  async getDoctorEarningsAdvanced(doctorId: string): Promise<any> {
+    const now = new Date();
+    // Use UTC boundaries to avoid timezone shift errors in database
+    const firstDayThisMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+    const firstDayLastMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
+
+    // Fetch raw data
+    const allPayments = await db.select().from(payments).where(eq(payments.doctorId, doctorId));
+    const allAppointments = await db.select().from(appointments).where(eq(appointments.doctorId, doctorId));
+    const unsettledCharges = await this.getDoctorUnsettledCharges(doctorId);
+
+    let totalEarnings = 0;
+    let pendingEarnings = 0;
+    let thisMonthEarnings = 0;
+    let lastMonthEarnings = 0;
+    
+    let grossFees = 0;
+    let totalPlatformFees = 0;
+    let totalTax = 0;
+    let onlineCount = 0;
+    let onlineAmount = 0;
+    
+    const monthlyHistory = new Map();
+
+    // Process Payments Safely
+    for (const p of allPayments) {
+      // Ensure all numeric values fallback to 0 if null
+      const docEarn = Number(p.doctorEarnings) || 0;
+      const consultFee = Number(p.consultationFee) || 0;
+      const platCommission = Number(p.platformCommission) || 0;
+      const paymentTax = Number(p.tax) || 0;
+      const totalAmt = Number(p.totalAmount) || 0;
+
+      if (p.status === 'completed') {
+        totalEarnings += docEarn;
+        grossFees += consultFee;
+        totalPlatformFees += platCommission;
+        totalTax += paymentTax;
+
+        if (p.method === 'online') {
+          onlineCount++;
+          onlineAmount += totalAmt;
+        }
+
+        const pDate = new Date(p.createdAt);
+        const monthKey = `${pDate.getUTCFullYear()}-${(pDate.getUTCMonth() + 1).toString().padStart(2, '0')}`;
+        
+        if (pDate >= firstDayThisMonth) {
+          thisMonthEarnings += docEarn;
+        } else if (pDate >= firstDayLastMonth && pDate < firstDayThisMonth) {
+          lastMonthEarnings += docEarn;
+        }
+
+        if (!monthlyHistory.has(monthKey)) {
+          monthlyHistory.set(monthKey, {
+            month: monthKey, earnAmount: 0, completedSessions: 0, totalSessions: 0,
+            platformFees: 0, cancellationFees: 0, tax: 0, payoutAmount: 0, status: 'Complete'
+          });
+        }
+        
+        const m = monthlyHistory.get(monthKey);
+        m.earnAmount += consultFee;
+        m.platformFees += platCommission;
+        m.tax += paymentTax;
+      } else if (p.status === 'pending') {
+        pendingEarnings += docEarn;
+      }
+    }
+
+    // Process Appointments Safely
+    for (const a of allAppointments) {
+      const aDate = new Date(a.createdAt);
+      const monthKey = `${aDate.getUTCFullYear()}-${(aDate.getUTCMonth() + 1).toString().padStart(2, '0')}`;
+      
+      if (!monthlyHistory.has(monthKey)) {
+        monthlyHistory.set(monthKey, {
+          month: monthKey, earnAmount: 0, completedSessions: 0, totalSessions: 0,
+          platformFees: 0, cancellationFees: 0, tax: 0, payoutAmount: 0, status: 'Complete'
+        });
+      }
+      
+      const m = monthlyHistory.get(monthKey);
+      m.totalSessions++;
+      if (a.status === 'completed') {
+        m.completedSessions++;
+      }
+    }
+
+    // Format History Array Safely (NOT IN USE FOR NEW UI BUT GOOD FOR REPORTS)
+    const historyArray = Array.from(monthlyHistory.values()).sort((a, b) => b.month.localeCompare(a.month)).map(m => {
+      const [year, month] = m.month.split('-');
+      const dateObj = new Date(Number(year), Number(month) - 1, 1);
+      
+      let formattedMonth = m.month;
+      try {
+        formattedMonth = dateObj.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+      } catch (e) {
+        formattedMonth = m.month;
+      }
+      
+      const cancellationRate = m.totalSessions > 0 ? Math.round(((m.totalSessions - m.completedSessions) / m.totalSessions) * 100) : 0;
+      const netPayout = m.earnAmount - m.platformFees - m.cancellationFees - m.tax;
+      const currentMonthKey = `${now.getUTCFullYear()}-${(now.getUTCMonth() + 1).toString().padStart(2, '0')}`;
+      const status = m.month === currentMonthKey ? 'Pending' : 'Complete';
+
+      return {
+        date: formattedMonth,
+        earnAmount: m.earnAmount,
+        sessions: `${m.completedSessions}/${m.totalSessions}`,
+        platformFees: m.platformFees,
+        cancellationRate: cancellationRate,
+        cancellationFees: m.cancellationFees,
+        tax: m.tax,
+        payoutAmount: Math.max(0, netPayout),
+        status: status
+      };
+    });
+
+    let momChange = 0;
+    if (lastMonthEarnings > 0) {
+      momChange = Math.round(((thisMonthEarnings - lastMonthEarnings) / lastMonthEarnings) * 100);
+    } else if (thisMonthEarnings > 0) {
+      momChange = 100;
+    }
+
+    return {
+      stats: {
+        totalEarnings,
+        pendingEarnings,
+        thisMonthEarnings,
+        lastMonthEarnings,
+        momChange,
+        cancellationsCount: unsettledCharges.count || 0,
+        cancellationDeducted: unsettledCharges.totalOwed || 0,
+        totalSessions: allAppointments.length || 0
+      },
+      breakdown: {
+        gross: grossFees,
+        platformFee: totalPlatformFees,
+        tax: totalTax,
+        net: grossFees - totalPlatformFees - totalTax
+      },
+      methods: {
+        online: { count: onlineCount, amount: onlineAmount }
+      },
+      history: historyArray
+    };
+  }
+
+  async getAdminPayoutsManagement(tab: string, page: number, limit: number, search: string): Promise<any> {
+    const offset = (page - 1) * limit;
+    
+    // TAB 1: 1st of Month (Free Payouts)
+    if (tab === 'free') {
+      let queryStr = `
+        SELECT 
+          dp.id as "doctorId", u.full_name as "doctorName", u.email as "doctorEmail", u.phone as "doctorPhone", u.profile_image as "profileImage",
+          dp.bank_name as "bankName", dp.bank_account_number as "bankAccount", dp.bank_branch as "bankBranch",
+          (
+            COALESCE((SELECT SUM(doctor_earnings) FROM payments WHERE doctor_id = dp.id AND status = 'completed'), 0)
+            - COALESCE((SELECT SUM(amount_requested) FROM payout_requests WHERE doctor_id = dp.id AND status IN ('pending', 'completed')), 0)
+            - COALESCE((SELECT SUM(amount_owed) FROM doctor_cancellation_charges WHERE doctor_id = dp.id AND settled = false), 0)
+          ) as "availableBalance"
+        FROM doctor_profiles dp
+        JOIN users u ON dp.user_id = u.id
+        WHERE dp.status = 'verified'
+      `;
+      
+      const queryParams: any[] = [];
+      if (search) {
+        queryStr += ` AND (LOWER(u.full_name) LIKE $1 OR LOWER(u.email) LIKE $1 OR LOWER(u.phone) LIKE $1)`;
+        queryParams.push(`%${search.toLowerCase()}%`);
+      }
+
+      // ONLY return doctors with a balance greater than 0
+      const result = await pool.query(`SELECT * FROM (${queryStr}) sub WHERE "availableBalance" > 0 ${search ? '' : 'ORDER BY "availableBalance" DESC'}`, queryParams);
+      
+      const paginatedData = result.rows.slice(offset, offset + limit);
+      return {
+        data: paginatedData,
+        totalCount: result.rows.length,
+        totalPages: Math.ceil(result.rows.length / limit) || 1,
+        currentPage: page
+      };
+    }
+
+    // TAB 2 & 3: Pending or History
+    let statusFilter = tab === 'pending' ? "pr.status = 'pending'" : "pr.status IN ('completed', 'rejected')";
+    
+    let queryStr = `
+      SELECT 
+        pr.*, u.full_name as "doctorName", u.email as "doctorEmail", u.phone as "doctorPhone", u.profile_image as "profileImage"
+      FROM payout_requests pr
+      JOIN doctor_profiles dp ON pr.doctor_id = dp.id
+      JOIN users u ON dp.user_id = u.id
+      WHERE ${statusFilter}
+    `;
+
+    const queryParams: any[] = [];
+    if (search) {
+      queryStr += ` AND (LOWER(u.full_name) LIKE $1 OR LOWER(u.email) LIKE $1 OR LOWER(u.phone) LIKE $1 OR LOWER(pr.id::text) LIKE $1)`;
+      queryParams.push(`%${search.toLowerCase()}%`);
+    }
+
+    const countRes = await pool.query(`SELECT COUNT(*) as count FROM (${queryStr}) sub`, queryParams);
+    const totalCount = parseInt(countRes.rows[0].count);
+
+    // ORDER BY depends on the tab
+    const orderBy = tab === 'pending' ? 'pr.requested_at ASC' : 'pr.processed_at DESC NULLS LAST';
+    
+    queryStr += ` ORDER BY ${orderBy} LIMIT $${queryParams.length + 1} OFFSET $${queryParams.length + 2}`;
+    queryParams.push(limit, offset);
+
+    const result = await pool.query(queryStr, queryParams);
+
+    return {
+      data: result.rows,
+      totalCount,
+      totalPages: Math.ceil(totalCount / limit) || 1,
+      currentPage: page
+    };
+  }
+
+  async processAdminPayout(payoutId: string, action: 'approve' | 'reject', adminId: string, rejectReason?: string): Promise<any> {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      
+      // 1. Lock the row to prevent concurrent duplicate processing
+      const reqRes = await client.query(`SELECT * FROM payout_requests WHERE id = $1 FOR UPDATE`, [payoutId]);
+      if (reqRes.rowCount === 0) throw new Error("Payout request not found");
+      
+      const payout = reqRes.rows[0];
+      if (payout.status !== 'pending') {
+        throw new Error(`This request has already been processed (Status: ${payout.status})`);
+      }
+
+      const newStatus = action === 'approve' ? 'completed' : 'rejected';
+      
+      const updateRes = await client.query(`
+        UPDATE payout_requests 
+        SET status = $1, processed_at = NOW(), processed_by = $2, reject_reason = $3
+        WHERE id = $4 RETURNING *
+      `, [newStatus, adminId, rejectReason || null, payoutId]);
+
+      await client.query("COMMIT");
+      return updateRes.rows[0];
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async processFreePayout(doctorId: string, amount: number, adminId: string): Promise<any> {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+
+      // Verify balance again strictly
+      const balRes = await client.query(`
+        SELECT (
+          COALESCE((SELECT SUM(doctor_earnings) FROM payments WHERE doctor_id = $1 AND status = 'completed'), 0)
+          - COALESCE((SELECT SUM(amount_requested) FROM payout_requests WHERE doctor_id = $1 AND status IN ('pending', 'completed')), 0)
+          - COALESCE((SELECT SUM(amount_owed) FROM doctor_cancellation_charges WHERE doctor_id = $1 AND settled = false), 0)
+        ) as balance
+      `, [doctorId]);
+
+      const actualBalance = parseInt(balRes.rows[0].balance);
+      if (amount > actualBalance || amount <= 0) {
+        throw new Error(`Invalid amount. Available balance is LKR ${actualBalance}`);
+      }
+
+      const dpRes = await client.query(`SELECT bank_name, bank_account_number, bank_branch FROM doctor_profiles WHERE id = $1`, [doctorId]);
+      const dp = dpRes.rows[0];
+
+      // Create directly as completed
+      const insertRes = await client.query(`
+        INSERT INTO payout_requests (doctor_id, amount_requested, fee_percentage, fee_deducted, net_amount, status, bank_name, bank_account_number, bank_branch, processed_at, processed_by)
+        VALUES ($1, $2, 0, 0, $2, 'completed', $3, $4, $5, NOW(), $6)
+        RETURNING *
+      `, [doctorId, amount, dp.bank_name, dp.bank_account_number, dp.bank_branch, adminId]);
+
+      // Clear any unsettled cancellation charges as they are factored into this
+      await client.query(`UPDATE doctor_cancellation_charges SET settled = true, settled_at = NOW() WHERE doctor_id = $1 AND settled = false`, [doctorId]);
+
+      await client.query("COMMIT");
+      return insertRes.rows[0];
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 }
 

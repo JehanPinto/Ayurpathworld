@@ -1,460 +1,422 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation } from "@tanstack/react-query";
 import { format } from "date-fns";
 import {
-  Users,
-  Wallet,
-  RefreshCcw,
-  CalendarClock,
-  BadgeDollarSign,
+  CheckCircle2,
+  XCircle,
+  Copy,
+  Landmark,
+  Search,
+  Loader2,
+  Eye,
+  Lock,
   X,
-  AlertTriangle,
-  Info,
-  ArrowRight,
+  ShieldCheck
 } from "lucide-react";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { LoadingPage } from "@/components/ui/loading-spinner";
+import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
+import { Modal } from "@/components/ui/modal";
+import { Pagination } from "@/components/ui/pagination";
+import { useToast } from "@/hooks/use-toast";
+import { apiRequest, queryClient } from "@/lib/queryClient";
+import { Label } from "recharts";
 
-interface DoctorPayout {
-  doctorId: string;
-  doctorName: string;
-  registrationNumber: string;
-  bankName: string | null;
-  bankAccountNumber: string | null;
-  earnAmount: number;
-  completedSessions: number;
-  totalSessions: number;
-  platformFees: number;
-  platformCommissionRate: number;
-  cancellationRate: number;
-  cancellationFees: number;
-  applicableTax: number;
-  vatEnabled: boolean;
-  withholdingTaxEnabled: boolean;
-  stampDutyEnabled: boolean;
-  vatAmount: number;
-  withholdingAmount: number;
-  stampDutyAmount: number;
-  customDoctorTaxes: { title: string; rate: number; amount: number }[];
-  payoutAmount: number;
-}
+export default function AdminPayoutsTable() {
+  const { toast } = useToast();
+  const [searchParams, setSearchParams] = useState(() => new URLSearchParams(window.location.search));
+  
+  const activeTab = searchParams.get("tab") || "pending";
+  const currentPage = parseInt(searchParams.get("page") || "1");
+  const searchQuery = searchParams.get("search") || "";
 
-interface PayoutStats {
-  pendingPayoutsCount: number;
-  totalOutstanding: number;
-  completedLastMonthAmount: number;
-  completedLastMonthCount: number;
-  nextPayoutDate: string;
-}
+  const [localSearch, setLocalSearch] = useState(searchQuery);
+  const [selectedPayout, setSelectedPayout] = useState<any>(null);
+  const [isProcessModalOpen, setIsProcessModalOpen] = useState(false);
+  const [isSecurityModalOpen, setIsSecurityModalOpen] = useState(false);
+  const [adminPassword, setAdminPassword] = useState("");
+  const [rejectReason, setRejectReason] = useState("");
+  const [actionType, setActionType] = useState<'approve' | 'reject' | 'free' | 'view'>('approve');
 
-interface PayoutData {
-  doctors: DoctorPayout[];
-  stats: PayoutStats;
-}
+  const updateParams = (updates: any) => {
+    const newParams = new URLSearchParams(searchParams);
+    Object.keys(updates).forEach(key => {
+      if (updates[key]) newParams.set(key, updates[key]);
+      else newParams.delete(key);
+    });
+    window.history.replaceState(null, "", `${window.location.pathname}?${newParams.toString()}`);
+    setSearchParams(newParams);
+  };
 
-function formatLKR(amount: number) {
-  return `LKR ${amount.toLocaleString("en-LK")}`;
-}
-
-function doctorDisplayName(name: string) {
-  return name.startsWith("Dr.") || name.startsWith("Dr ") ? name : `Dr. ${name}`;
-}
-
-function amountColor(value: number) {
-  return value > 0 ? "text-red-500" : "text-[#3746D3]";
-}
-
-function maskAccount(bankName: string | null, accountNumber: string | null) {
-  if (!bankName && !accountNumber) return null;
-  const bank = bankName ?? "";
-  const masked = accountNumber ? `****${accountNumber.slice(-4)}` : "****";
-  return `${bank} ${masked}`.trim();
-}
-
-function monthRange() {
-  const now = new Date();
-  const start = new Date(now.getFullYear(), now.getMonth(), 1);
-  const end = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-  return `${format(start, "MMMM d")}–${format(end, "d, yyyy")}`;
-}
-
-// ─── Payout Modal ────────────────────────────────────────────────────────────
-function PayoutModal({ doc, onClose }: { doc: DoctorPayout; onClose: () => void }) {
-  const [step, setStep] = useState<1 | 2>(1);
-  const [vatChecked, setVatChecked] = useState(doc.vatEnabled);
-  const [withholdingChecked, setWithholdingChecked] = useState(doc.withholdingTaxEnabled);
-
-  const customTaxTotal = (doc.customDoctorTaxes || []).reduce((s, t) => s + t.amount, 0);
-
-  const totalTaxes =
-    (vatChecked ? doc.vatAmount : 0) +
-    (withholdingChecked ? doc.withholdingAmount : 0) +
-    customTaxTotal;
-
-  const finalPayout = Math.max(
-    0,
-    doc.earnAmount - totalTaxes - doc.cancellationFees - doc.platformFees
-  );
-
-  const bankBadge = maskAccount(doc.bankName, doc.bankAccountNumber);
-
-  const CheckCircle = ({ checked }: { checked: boolean }) => (
-    <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-colors shrink-0 ${
-      checked ? "bg-emerald-500 border-emerald-500" : "border-muted-foreground/40"
-    }`}>
-      {checked && (
-        <svg width="10" height="8" viewBox="0 0 10 8" fill="none">
-          <path d="M1 4l3 3 5-6" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
-        </svg>
-      )}
-    </div>
-  );
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
-      <div className="relative bg-[#f5f5f0] dark:bg-card rounded-2xl shadow-2xl w-full max-w-md max-h-[90vh] overflow-y-auto">
-        <button
-          onClick={onClose}
-          className="absolute top-4 right-4 text-muted-foreground hover:text-foreground transition-colors"
-        >
-          <X className="w-5 h-5" />
-        </button>
-
-        <div className="p-6 space-y-5">
-          {/* Header */}
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-full bg-emerald-100 flex items-center justify-center shrink-0">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#059669" strokeWidth="2">
-                <circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>
-              </svg>
-            </div>
-            <div>
-              <p className="font-bold text-foreground">Process doctor payout</p>
-              <p className="text-xs text-muted-foreground">Monthly earning · {monthRange()}</p>
-            </div>
-          </div>
-
-          {/* Doctor card */}
-          <div className="bg-[#e8f3ef] dark:bg-primary/10 rounded-xl px-4 py-3 flex items-center justify-between">
-            <div>
-              <p className="font-semibold text-foreground">{doctorDisplayName(doc.doctorName)}</p>
-              <p className="text-xs text-muted-foreground mt-0.5">Ayurvedic Physician · {doc.registrationNumber}</p>
-            </div>
-            {bankBadge && (
-              <span className="bg-emerald-600 text-white text-xs font-semibold px-3 py-1 rounded-full shrink-0 ml-3">
-                {bankBadge}
-              </span>
-            )}
-          </div>
-
-          {/* Penalty banner */}
-          {doc.cancellationRate > 0 && (
-            <div className="flex items-start gap-2 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 rounded-lg px-3 py-2.5">
-              <AlertTriangle className="w-4 h-4 text-red-500 shrink-0 mt-0.5" />
-              <p className="text-xs text-red-600 dark:text-red-400">
-                Penalty active — cancellation rate {doc.cancellationRate}%. {formatLKR(doc.cancellationFees)} deducted.
-              </p>
-            </div>
-          )}
-
-          {/* STEP 1: tax checkboxes + breakdown */}
-          {step === 1 && (
-            <>
-              <div className="bg-white dark:bg-muted/20 rounded-xl p-4 space-y-3">
-                <div>
-                  <p className="font-semibold text-sm text-foreground">Applicable taxes</p>
-                  <p className="text-xs text-muted-foreground mt-0.5">Check to apply. Uncheck to exclude from this payout.</p>
-                </div>
-                <div className="flex items-center justify-between">
-                  <button type="button" onClick={() => setVatChecked(!vatChecked)} className="flex items-center gap-2.5">
-                    <CheckCircle checked={vatChecked} />
-                    <span className={`text-sm ${vatChecked ? "text-foreground" : "text-muted-foreground"}`}>VAT (18%)</span>
-                  </button>
-                  <span className={`text-sm font-medium ${vatChecked ? "text-red-500" : "text-muted-foreground"}`}>
-                    − {formatLKR(doc.vatAmount)}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <button type="button" onClick={() => setWithholdingChecked(!withholdingChecked)} className="flex items-center gap-2.5">
-                    <CheckCircle checked={withholdingChecked} />
-                    <span className={`text-sm ${withholdingChecked ? "text-foreground" : "text-muted-foreground"}`}>Withholding tax (5%)</span>
-                  </button>
-                  <span className={`text-sm font-medium ${withholdingChecked ? "text-red-500" : "text-muted-foreground"}`}>
-                    − {formatLKR(doc.withholdingAmount)}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between opacity-50">
-                  <div className="flex items-center gap-2.5">
-                    <div className="w-5 h-5 rounded-full border-2 border-muted-foreground/40 shrink-0" />
-                    <span className="text-sm text-muted-foreground">Stamp duty (1%)</span>
-                  </div>
-                  <span className="text-sm text-muted-foreground">− {formatLKR(doc.stampDutyAmount)}</span>
-                </div>
-                {(doc.customDoctorTaxes || []).map((t) => (
-                  <div key={t.title} className="flex items-center justify-between">
-                    <div className="flex items-center gap-2.5">
-                      <div className="w-5 h-5 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
-                        <span className="text-[9px] font-bold text-primary">%</span>
-                      </div>
-                      <span className="text-sm text-foreground">{t.title} ({t.rate}%)</span>
-                    </div>
-                    <span className="text-sm font-medium text-red-500">− {formatLKR(t.amount)}</span>
-                  </div>
-                ))}
-                <div className="border-t border-border pt-2 flex justify-between">
-                  <span className="text-sm font-medium text-foreground">Total taxes</span>
-                  <span className="text-sm font-semibold text-red-500">− {formatLKR(totalTaxes)}</span>
-                </div>
-              </div>
-
-              <div className="bg-white dark:bg-muted/20 rounded-xl overflow-hidden divide-y divide-border">
-                <div className="flex justify-between px-4 py-2.5">
-                  <span className="text-sm text-muted-foreground">Earning amount</span>
-                  <span className="text-sm font-medium text-foreground">{formatLKR(doc.earnAmount)}</span>
-                </div>
-                <div className="flex justify-between px-4 py-2.5">
-                  <span className="text-sm text-muted-foreground">Cancellation fee</span>
-                  <span className={`text-sm font-medium ${doc.cancellationFees > 0 ? "text-red-500" : "text-foreground"}`}>
-                    {doc.cancellationFees > 0 ? `− ${formatLKR(doc.cancellationFees)}` : formatLKR(0)}
-                  </span>
-                </div>
-                <div className="flex justify-between px-4 py-2.5">
-                  <span className="text-sm text-muted-foreground">AyurPath platform fee ({doc.platformCommissionRate}%)</span>
-                  <span className="text-sm font-medium text-red-500">− {formatLKR(doc.platformFees)}</span>
-                </div>
-                <div className="flex justify-between px-4 py-3 bg-muted/10">
-                  <span className="text-sm font-bold text-foreground">Payout Amount</span>
-                  <span className="text-sm font-bold text-foreground">{formatLKR(finalPayout)}</span>
-                </div>
-              </div>
-            </>
-          )}
-
-          {/* STEP 2: confirmation breakdown */}
-          {step === 2 && (
-            <div className="bg-white dark:bg-muted/20 rounded-xl overflow-hidden divide-y divide-border">
-              <div className="flex justify-between px-4 py-2.5">
-                <span className="text-sm text-muted-foreground">Earning amount</span>
-                <span className="text-sm font-medium text-foreground">{formatLKR(doc.earnAmount)}</span>
-              </div>
-              <div className="flex justify-between px-4 py-2.5">
-                <span className="text-sm text-muted-foreground">Cancellation fee</span>
-                <span className={`text-sm font-medium ${doc.cancellationFees > 0 ? "text-red-500" : "text-foreground"}`}>
-                  {doc.cancellationFees > 0 ? `− ${formatLKR(doc.cancellationFees)}` : formatLKR(0)}
-                </span>
-              </div>
-              <div className="flex justify-between px-4 py-2.5">
-                <span className="text-sm text-muted-foreground">AyurPath platform fee ({doc.platformCommissionRate}%)</span>
-                <span className="text-sm font-medium text-red-500">− {formatLKR(doc.platformFees)}</span>
-              </div>
-              <div className="flex justify-between px-4 py-2.5">
-                <span className="text-sm text-muted-foreground">Applicable tax</span>
-                <span className="text-sm font-medium text-red-500">− {formatLKR(totalTaxes)}</span>
-              </div>
-              <div className="flex justify-between px-4 py-3 bg-muted/10">
-                <span className="text-sm font-bold text-foreground">Payout Amount</span>
-                <span className="text-sm font-bold text-foreground">{formatLKR(finalPayout)}</span>
-              </div>
-            </div>
-          )}
-
-          {/* Info note */}
-          <div className="flex items-start gap-2 bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800 rounded-lg px-3 py-2.5">
-            <Info className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
-            <p className="text-xs text-amber-700 dark:text-amber-400">
-              Payout will be credited to the doctor's registered bank account within 3–5 business days.
-            </p>
-          </div>
-
-          {/* Actions */}
-          <div className="flex gap-3 pt-1">
-            <Button
-              variant="outline"
-              className="flex-1 border-red-300 text-red-600 hover:bg-red-50 dark:hover:bg-red-950/20"
-              onClick={step === 1 ? onClose : () => setStep(1)}
-            >
-              <X className="w-4 h-4 mr-1.5" />
-              Cancel
-            </Button>
-            {step === 1 ? (
-              <Button className="flex-1 bg-emerald-700 hover:bg-emerald-800 text-white" onClick={() => setStep(2)}>
-                Next <ArrowRight className="w-4 h-4 ml-1.5" />
-              </Button>
-            ) : (
-              <Button className="flex-1 bg-emerald-700 hover:bg-emerald-800 text-white gap-2">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                  <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
-                  <polyline points="22 4 12 14.01 9 11.01"/>
-                </svg>
-                Confirm Payout
-              </Button>
-            )}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── Main Page ────────────────────────────────────────────────────────────────
-export default function AdminPayoutsPage() {
-  const [selectedDoctor, setSelectedDoctor] = useState<DoctorPayout | null>(null);
-
-  const { data, isLoading, isError } = useQuery<PayoutData>({
-    queryKey: ["/api/admin/payouts"],
-    staleTime: 60 * 1000,
+  const { data, isLoading, isFetching } = useQuery({
+    queryKey: ["/api/admin/payouts/management", activeTab, currentPage, searchQuery],
+    queryFn: async () => {
+      const res = await fetch(`/api/admin/payouts/management?tab=${activeTab}&page=${currentPage}&limit=10&search=${searchQuery}`, {
+        headers: { Authorization: `Bearer ${localStorage.getItem("token")}` }
+      });
+      if (!res.ok) throw new Error("Failed to load");
+      return res.json();
+    }
   });
 
-  if (isLoading) return <LoadingPage />;
-  if (isError || !data) {
-    return (
-      <div className="p-8 text-center text-muted-foreground">
-        Failed to load payout data.
-      </div>
-    );
-  }
+  const processMutation = useMutation({
+    mutationFn: async (payload: any) => {
+      const endpoint = actionType === 'free' 
+        ? "/api/admin/payouts/process-free" 
+        : `/api/admin/payouts/${selectedPayout.id}/process`;
+      
+      return await apiRequest("POST", endpoint, payload);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/payouts/management"] });
+      toast({ title: "Success", description: "Payout action completed securely." });
+      setIsSecurityModalOpen(false);
+      setAdminPassword("");
+      setRejectReason("");
+    },
+    onError: (err: any) => {
+      toast({ title: "Action Failed", description: err.message, variant: "destructive" });
+    }
+  });
 
-  const { doctors, stats } = data;
-  const nextPayout = new Date(stats.nextPayoutDate);
+  const handleProceedToSecurity = () => {
+    if (actionType === 'reject' && !rejectReason) {
+      return toast({ title: "Reason required for rejection", variant: "destructive" });
+    }
+    setIsProcessModalOpen(false);
+    setIsSecurityModalOpen(true);
+  };
+
+  const handleProcessSubmit = () => {
+    if (!adminPassword) return toast({ title: "Password required", variant: "destructive" });
+    if (actionType === 'reject' && !rejectReason) return toast({ title: "Reason required for rejection", variant: "destructive" });
+
+    const payload = actionType === 'free' 
+      ? { doctorId: selectedPayout.doctorId, amount: selectedPayout.availableBalance, adminPassword }
+      : { action: actionType, rejectReason, adminPassword };
+      
+    processMutation.mutate(payload);
+  };
+
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text);
+    toast({ title: "Copied!", description: "Bank detail copied to clipboard." });
+  };
+
+  const formatLKR = (num: number) => new Intl.NumberFormat("en-LK", { maximumFractionDigits: 0 }).format(num || 0);
+
+  const renderTabs = () => (
+    <div className="flex space-x-2 border-b border-border pb-2 mb-4 overflow-x-auto scrollbar-thin">
+      {[
+        { id: "pending", label: "Pending Withdraws" },
+        { id: "free", label: "Monthly Free Payouts" },
+        { id: "history", label: "Payout History" }
+      ].map(t => (
+        <button
+          key={t.id}
+          onClick={() => updateParams({ tab: t.id, page: "1" })}
+          className={`px-4 py-2 text-sm font-bold rounded-full whitespace-nowrap transition-colors ${activeTab === t.id ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted/50'}`}
+        >
+          {t.label}
+        </button>
+      ))}
+    </div>
+  );
 
   return (
-    <div className="p-6 space-y-6">
-      {selectedDoctor && (
-        <PayoutModal doc={selectedDoctor} onClose={() => setSelectedDoctor(null)} />
-      )}
-
-      {/* Header */}
-      <div>
-        <h1 className="text-2xl font-bold text-foreground">Payout Dashboard</h1>
-        <p className="text-sm text-muted-foreground mt-1">
-          Review earnings and disburse payments to verified practitioners.
-        </p>
+    <div className="space-y-6">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div>
+          <h1 className="text-2xl md:text-3xl font-heading font-bold">Payout Management</h1>
+          <p className="text-muted-foreground">View and manage all payouts</p>
+        </div>
       </div>
 
-      {/* Stat Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <Card className="border border-primary/30">
-          <CardContent className="p-5 flex flex-col gap-2">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
-                <Users className="w-5 h-5 text-primary" />
-              </div>
-              <span className="text-sm text-muted-foreground font-medium">Pending Payouts</span>
-            </div>
-            <p className="text-4xl font-bold text-foreground">{stats.pendingPayoutsCount}</p>
-            <p className="text-sm text-primary font-medium">{formatLKR(stats.totalOutstanding)} in queue</p>
-          </CardContent>
-        </Card>
+      <Card className="border-border shadow-sm rounded-3xl overflow-hidden bg-card">
+        <CardHeader className="bg-muted/20 border-b border-border py-4 px-6 flex flex-col lg:flex-row gap-4 items-start justify-between">
+          <div>
+            <CardTitle className="text-lg font-bold text-foreground">Doctor Payouts</CardTitle>
+            <p className="text-sm text-muted-foreground">Securely process withdrawals to doctor bank accounts</p>
+          </div>
+          <div className="relative w-full max-w-[400px]">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            {
+              localSearch && (
+                <X className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground cursor-pointer" 
+                  onClick={() => { setLocalSearch(""); updateParams({ search: "", page: "1" }); }}
+                />
+              )
+            }
+            <Input 
+              placeholder="Search Name, Email, Phone or Payout ID..."
+              className="pl-9 rounded-full bg-background border-border h-10"
+              value={localSearch}
+              onChange={(e) => setLocalSearch(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') updateParams({ search: localSearch, page: "1" }); }}
+              onBlur={() => updateParams({ search: localSearch, page: "1" })}
+            />
+          </div>
+        </CardHeader>
 
-        <Card className="border border-primary/30">
-          <CardContent className="p-5 flex flex-col gap-2">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
-                <BadgeDollarSign className="w-5 h-5 text-primary" />
-              </div>
-              <span className="text-sm text-muted-foreground font-medium">Total outstanding</span>
-            </div>
-            <p className="text-2xl font-bold text-foreground whitespace-nowrap">{formatLKR(stats.totalOutstanding)}</p>
-            <p className="text-sm text-muted-foreground">Ready for payout</p>
-          </CardContent>
-        </Card>
+        <CardContent className="p-6">
+          {renderTabs()}
 
-        <Card className="border border-primary/30">
-          <CardContent className="p-5 flex flex-col gap-2">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
-                <RefreshCcw className="w-5 h-5 text-primary" />
+          <div className="overflow-x-auto relative min-h-[300px]">
+            {isFetching && (
+              <div className="absolute inset-0 bg-background/50 backdrop-blur-[1px] z-10 flex items-center justify-center">
+                <Loader2 className="w-8 h-8 animate-spin text-primary" />
               </div>
-              <span className="text-sm text-muted-foreground font-medium">Completed last month</span>
-            </div>
-            <p className="text-2xl font-bold text-foreground whitespace-nowrap">{formatLKR(stats.completedLastMonthAmount)}</p>
-            <p className="text-sm text-muted-foreground">{stats.completedLastMonthCount} successful transfers</p>
-          </CardContent>
-        </Card>
+            )}
 
-        <Card className="border border-primary/30">
-          <CardContent className="p-5 flex flex-col gap-2">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
-                <CalendarClock className="w-5 h-5 text-primary" />
-              </div>
-              <span className="text-sm text-muted-foreground font-medium">Next payout date</span>
-            </div>
-            <p className="text-2xl font-bold text-foreground whitespace-nowrap">{format(nextPayout, "MMM d, yyyy")}</p>
-            <p className="text-sm text-muted-foreground">Scheduled · Friday</p>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Payout Table */}
-      <Card className="border border-primary/20">
-        <CardContent className="p-0">
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="border-b border-border bg-muted/40">
-                <th className="text-left px-3 py-2.5 font-semibold text-foreground whitespace-nowrap">Doctor Name</th>
-                <th className="text-right px-3 py-2.5 font-semibold text-foreground whitespace-nowrap">Earn Amount</th>
-                <th className="text-center px-3 py-2.5 font-semibold text-foreground whitespace-nowrap">Sessions</th>
-                <th className="text-right px-3 py-2.5 font-semibold text-foreground whitespace-nowrap">Platform Fees</th>
-                <th className="text-center px-3 py-2.5 font-semibold text-foreground whitespace-nowrap">Cancel Rate</th>
-                <th className="text-right px-3 py-2.5 font-semibold text-foreground whitespace-nowrap">Cancel Fees</th>
-                <th className="text-right px-3 py-2.5 font-semibold text-foreground whitespace-nowrap">Applicable Tax</th>
-                <th className="text-right px-3 py-2.5 font-semibold text-foreground whitespace-nowrap">Payout Amount</th>
-                <th className="text-center px-3 py-2.5 font-semibold text-foreground whitespace-nowrap">Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {doctors.length === 0 ? (
+            <table className="w-full min-w-[1000px] text-sm text-left">
+              <thead className="text-xs uppercase bg-muted/40 text-muted-foreground border-b border-border">
                 <tr>
-                  <td colSpan={9} className="text-center py-12 text-muted-foreground">
-                    No payout data available for this month.
-                  </td>
+                  <th className="px-4 py-3 font-bold tracking-wider sticky left-0 z-10 border-r border-border bg-muted">#</th>
+                  <th className="px-4 py-3 font-bold tracking-wider">Doctor</th>
+                  <th className="px-4 py-3 font-bold tracking-wider">Bank Info</th>
+                  <th className="px-4 py-3 font-bold tracking-wider text-right">Amount / Details</th>
+                  <th className="px-4 py-3 font-bold tracking-wider text-center">Status</th>
+                  <th className="px-4 py-3 font-bold tracking-wider text-center">Action</th>
                 </tr>
-              ) : (
-                doctors.map((doc) => (
-                  <tr key={doc.doctorId} className="border-b border-border hover:bg-muted/20 transition-colors">
-                    <td className="px-3 py-2.5 font-medium text-foreground whitespace-nowrap">
-                      {doctorDisplayName(doc.doctorName)}
+              </thead>
+              <tbody className="divide-y divide-border">
+                {data?.data?.map((row: any) => (
+                  <tr key={row.id || row.doctorId} className="hover:bg-muted/10 transition-colors">
+                    <td className="px-4 py-4 font-mono text-xs text-muted-foreground sticky left-0 z-10 border-r border-border bg-muted">
+                      {data?.data?.indexOf(row) + 1}
                     </td>
-                    <td className="px-3 py-2.5 text-right text-foreground whitespace-nowrap">
-                      {formatLKR(doc.earnAmount)}
+                    <td className="px-4 py-4">
+                      <div className="font-bold text-foreground">{row.doctorName}</div>
+                      <div className="text-xs text-muted-foreground">{row.doctorEmail}</div>
+                      {row.requested_at && <div className="text-[10px] text-muted-foreground mt-1">Req: {format(new Date(row.requested_at), "MMM dd, yyyy")}</div>}
+                      {row.processed_at && <div className="text-[10px] text-primary mt-1">Processed: {format(new Date(row.processed_at), "MMM dd, yyyy")}</div>}
                     </td>
-                    <td className="px-3 py-2.5 text-center text-foreground whitespace-nowrap">
-                      {doc.completedSessions}/{doc.totalSessions}
+                    
+                    <td className="px-4 py-4">
+                      {row.bankName || row.bank_name ? (
+                        <div className="space-y-1">
+                          <div className="text-xs font-semibold">{row.bankName || row.bank_name} - {row.bankBranch || row.bank_branch}</div>
+                          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                            Acc: {row.bankAccount || row.bank_account_number}
+                            <button onClick={() => copyToClipboard(row.bankAccount || row.bank_account_number)} className="hover:text-primary transition-colors"><Copy className="w-3 h-3"/></button>
+                          </div>
+                        </div>
+                      ) : (
+                        <span className="text-xs text-destructive italic">Not Provided</span>
+                      )}
                     </td>
-                    <td className={`px-3 py-2.5 text-right whitespace-nowrap font-medium ${amountColor(doc.platformFees)}`}>
-                      {formatLKR(doc.platformFees)}
+
+                    <td className="px-4 py-4 text-right">
+                      {activeTab === 'free' ? (
+                        <div>
+                          <div className="font-black text-primary text-base">LKR {formatLKR(row.availableBalance)}</div>
+                          <div className="text-[10px] text-muted-foreground uppercase">Eligible Balance</div>
+                        </div>
+                      ) : (
+                        <div>
+                          <div className="text-xs text-muted-foreground line-through">LKR {formatLKR(row.amount_requested)}</div>
+                          <div className="font-black text-foreground text-base">LKR {formatLKR(row.net_amount)}</div>
+                          <div className="text-[10px] text-destructive uppercase">Fee: {row.fee_percentage}% (-LKR {formatLKR(row.fee_deducted)})</div>
+                        </div>
+                      )}
                     </td>
-                    <td className={`px-3 py-2.5 text-center whitespace-nowrap font-medium ${amountColor(doc.cancellationRate)}`}>
-                      {doc.cancellationRate}%
+
+                    <td className="px-4 py-4 text-center">
+                      {activeTab === 'free' ? (
+                        <Badge variant="outline" className="bg-primary/10 text-primary border-primary/20">Ready</Badge>
+                      ) : (
+                        <Badge variant="outline" className={
+                          row.status === 'completed' ? 'bg-primary/10 text-primary border-primary/20' : 
+                          row.status === 'rejected' ? 'bg-destructive/10 text-destructive border-destructive/20' : 
+                          'bg-secondary/10 text-secondary border-secondary/20'
+                        }>
+                          {row.status.toUpperCase()}
+                        </Badge>
+                      )}
                     </td>
-                    <td className={`px-3 py-2.5 text-right whitespace-nowrap font-medium ${amountColor(doc.cancellationFees)}`}>
-                      {formatLKR(doc.cancellationFees)}
-                    </td>
-                    <td className={`px-3 py-2.5 text-right whitespace-nowrap font-medium ${amountColor(doc.applicableTax)}`}>
-                      {formatLKR(doc.applicableTax)}
-                    </td>
-                    <td className="px-3 py-2.5 text-right font-semibold text-foreground whitespace-nowrap">
-                      {formatLKR(doc.payoutAmount)}
-                    </td>
-                    <td className="px-3 py-2.5 text-center whitespace-nowrap">
-                      <Button
-                        size="sm"
-                        className="bg-orange-500 hover:bg-orange-600 text-white text-xs px-3 h-7 rounded-md"
-                        disabled={doc.payoutAmount === 0}
-                        onClick={() => setSelectedDoctor(doc)}
+
+                    <td className="px-4 py-4 text-center">
+                      <Button 
+                        variant="outline" 
+                        size="sm" 
+                        className="rounded-full text-xs font-bold border-border hover:bg-primary/10 hover:text-primary"
+                        onClick={() => {
+                          setSelectedPayout(row);
+                          setActionType(activeTab === 'free' ? 'free' : activeTab === 'pending' ? 'approve' : 'view');
+                          setIsProcessModalOpen(true);
+                        }}
                       >
-                        <Wallet className="w-3 h-3 mr-1" />
-                        Pay Now
+                        <Eye className="w-3 h-3 mr-1" /> {activeTab === 'history' ? 'View Details' : 'Process'}
                       </Button>
                     </td>
                   </tr>
-                ))
-              )}
-            </tbody>
-          </table>
+                ))}
+
+                {data?.data?.length === 0 && !isLoading && (
+                  <tr>
+                    <td colSpan={5} className="text-center py-12">
+                      <Landmark className="w-12 h-12 mx-auto text-muted-foreground/30 mb-3" />
+                      <p className="font-medium text-foreground">No records found</p>
+                      <p className="text-sm text-muted-foreground">There are no payouts in this category currently.</p>
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          {data?.totalPages > 1 && (
+            <div className="mt-6 flex justify-center">
+              <Pagination currentPage={currentPage} totalPages={data.totalPages} onPageChange={(p) => updateParams({ page: p.toString() })} />
+            </div>
+          )}
         </CardContent>
+
+        {/* SECURITY PROCESSING MODAL */}
+        <Modal
+          isOpen={isProcessModalOpen}
+          onClose={() => { setIsProcessModalOpen(false); setAdminPassword(""); setRejectReason(""); }}
+          title={actionType === 'view' ? "Payout Details" : "Process Doctor Payout"}
+          description={actionType === 'view' ? "Review the history of this payout." : "Review details and authorize transfer securely."}
+          icon={actionType === 'view' ? <Landmark className="w-6 h-6 text-primary" /> : <Lock className="w-6 h-6 text-destructive" />}
+        >
+          {selectedPayout && (
+            <div className="space-y-6 pt-2">
+              
+              {/* Calculation Overview */}
+              <div className="bg-muted/30 border border-border rounded-xl p-4 space-y-3">
+                <h4 className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider mb-2">Calculation Overview</h4>
+                {actionType === 'free' ? (
+                  <div className="flex justify-between items-center text-lg font-black">
+                    <span>Net Transfer (0% Fee)</span>
+                    <span className="text-primary">LKR {formatLKR(selectedPayout.availableBalance)}</span>
+                  </div>
+                ) : (
+                  <>
+                    <div className="flex justify-between text-sm">
+                      <span className="text-muted-foreground">Requested Amount</span>
+                      <span className="font-bold">LKR {formatLKR(selectedPayout.amount_requested)}</span>
+                    </div>
+                    <div className="flex justify-between text-sm text-destructive border-b border-border/50 pb-3">
+                      <span>Express Fee ({selectedPayout.fee_percentage}%)</span>
+                      <span>-LKR {formatLKR(selectedPayout.fee_deducted)}</span>
+                    </div>
+                    <div className="flex justify-between items-center text-lg pt-1">
+                      <span className="font-bold">Net Bank Transfer</span>
+                      <span className="font-black text-primary">LKR {formatLKR(selectedPayout.net_amount)}</span>
+                    </div>
+                  </>
+                )}
+              </div>
+
+              {/* Bank Details Panel (Easy Copy) */}
+              <div className="bg-primary/5 border border-primary/20 rounded-xl p-4">
+                <h4 className="text-[10px] font-bold text-primary uppercase tracking-wider mb-3">Target Bank Account</h4>
+                <div className="space-y-2">
+                  <div className="flex justify-between items-center">
+                    <span className="text-xs text-muted-foreground">Bank & Branch</span>
+                    <span className="text-sm font-bold">{selectedPayout.bankName || selectedPayout.bank_name} - {selectedPayout.bankBranch || selectedPayout.bank_branch}</span>
+                  </div>
+                  <div className="flex justify-between items-center bg-background border border-border px-3 py-2 rounded-lg">
+                    <span className="text-sm font-mono font-bold tracking-widest">{selectedPayout.bankAccount || selectedPayout.bank_account_number}</span>
+                    <Button variant="ghost" size="sm" className="h-6 px-2 text-xs font-bold hover:text-primary" onClick={() => copyToClipboard(selectedPayout.bankAccount || selectedPayout.bank_account_number)}>
+                      <Copy className="w-3 h-3 mr-1"/> Copy
+                    </Button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Reject Reason Display (If viewing history of rejected payout) */}
+              {actionType === 'view' && selectedPayout.status === 'rejected' && (
+                <div className="bg-destructive/10 border border-destructive/20 rounded-xl p-4">
+                  <h4 className="text-[10px] font-bold text-destructive uppercase tracking-wider mb-1">Rejection Reason</h4>
+                  <p className="text-sm font-medium text-destructive/90">{selectedPayout.reject_reason || "No reason provided."}</p>
+                </div>
+              )}
+
+              {/* Action Toggles (Only for Pending Requests) */}
+              {activeTab === 'pending' && actionType !== 'view' && (
+                <div className="flex gap-2">
+                  <Button type="button" variant={actionType === 'approve' ? 'default' : 'outline'} className={`flex-1 rounded-full font-bold ${actionType==='approve' ? 'bg-primary text-primary-foreground' : 'border-border text-muted-foreground'}`} onClick={() => setActionType('approve')}><CheckCircle2 className="w-4 h-4 mr-2"/> Approve</Button>
+                  <Button type="button" variant={actionType === 'reject' ? 'default' : 'outline'} className={`flex-1 rounded-full font-bold ${actionType==='reject' ? 'bg-destructive text-destructive-foreground' : 'border-border text-muted-foreground'}`} onClick={() => setActionType('reject')}><XCircle className="w-4 h-4 mr-2"/> Reject</Button>
+                </div>
+              )}
+
+              {/* Reject Input */}
+              {actionType === 'reject' && (
+                <div className="space-y-2">
+                  <Label className="font-bold text-destructive">Reason for Rejection <span className="text-destructive">*</span></Label>
+                  <Input value={rejectReason} onChange={e => setRejectReason(e.target.value)} placeholder="e.g. Invalid bank details provided" className="bg-background border-destructive/50 focus-visible:ring-destructive"/>
+                </div>
+              )}
+
+              {/* Admin Security Password (Hidden if just viewing history) */}
+              {actionType !== 'view' ? (
+                <Button 
+                  onClick={handleProceedToSecurity} 
+                  disabled={actionType === 'reject' && !rejectReason}
+                  className={`w-full rounded-full font-bold h-12 ${actionType === 'reject' ? 'bg-destructive hover:bg-destructive/90 text-destructive-foreground' : 'bg-primary hover:bg-primary/90 text-primary-foreground'}`}
+                >
+                  Proceed to Authorization
+                </Button>
+              ) : (
+                <Button onClick={() => setIsProcessModalOpen(false)} className="w-full rounded-full font-bold bg-secondary hover:bg-secondary/90 text-secondary-foreground">
+                  Close Window
+                </Button>
+              )}
+            </div>
+          )}
+        </Modal>
+
+        <Modal
+          isOpen={isSecurityModalOpen}
+          onClose={() => { setIsSecurityModalOpen(false); setAdminPassword(""); }}
+          title=""
+          description=""
+        >
+          <div className="space-y-6 pt-2">
+            <div className="flex flex-col items-center justify-center text-center space-y-4">
+              <div className={`w-20 h-20 rounded-full flex items-center justify-center ${actionType === 'reject' ? 'bg-destructive/10 text-destructive' : 'bg-primary/10 text-primary'}`}>
+                <ShieldCheck className="w-10 h-10" />
+              </div>
+              <div>
+                <h3 className="font-bold text-xl text-foreground">Security Authorization</h3>
+                <p className="text-sm text-muted-foreground mt-2">
+                  You are about to <strong className={actionType === 'reject' ? 'text-destructive' : 'text-primary'}>{actionType === 'reject' ? 'reject' : 'authorize'}</strong> a transaction for<br/>
+                  <span className="font-bold text-foreground text-base">{selectedPayout?.doctorName}</span>
+                </p>
+              </div>
+            </div>
+            
+            <div className="space-y-3 pb-2">
+              <Label className="font-bold text-foreground flex items-center gap-2">
+                <Lock className="w-3.5 h-3.5 text-muted-foreground"/> Admin Password
+              </Label>
+              <Input 
+                type="password" 
+                value={adminPassword} 
+                onChange={(e) => setAdminPassword(e.target.value)} 
+                placeholder="••••••••" 
+                className={`h-12 text-center text-xl tracking-[0.3em] font-mono bg-background focus-visible:ring-2 ${actionType === 'reject' ? 'border-destructive/30 focus-visible:ring-destructive' : 'border-border focus-visible:ring-primary'}`}
+                autoFocus
+              />
+            </div>
+
+            <div className="flex gap-3 pt-2">
+              <Button variant="outline" className="flex-1 rounded-full font-bold border-border hover:bg-accent" onClick={() => { setIsSecurityModalOpen(false); setAdminPassword(""); }}>
+                Cancel
+              </Button>
+              <Button 
+                onClick={handleProcessSubmit} 
+                disabled={processMutation.isPending || !adminPassword}
+                className={`flex-1 rounded-full font-bold ${actionType === 'reject' ? 'bg-destructive hover:bg-destructive/90 text-destructive-foreground' : 'bg-primary hover:bg-primary/90 text-primary-foreground'}`}
+              >
+                {processMutation.isPending ? <Loader2 className="w-5 h-5 animate-spin" /> : 'Confirm Action'}
+              </Button>
+            </div>
+          </div>
+        </Modal>
       </Card>
     </div>
   );

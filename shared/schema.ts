@@ -424,6 +424,27 @@ export const insertDoctorCancellationChargeSchemaDb = createInsertSchema(
 export type DoctorCancellationCharge = typeof doctorCancellationCharges.$inferSelect;
 export type InsertDoctorCancellationCharge = z.infer<typeof insertDoctorCancellationChargeSchemaDb>;
 
+export const payoutRequests = pgTable("payout_requests", {
+  id: varchar("id", { length: 50 }).primaryKey().default(sql`gen_random_uuid()`),
+  doctorId: varchar("doctor_id", { length: 50 }).notNull().references(() => doctorProfiles.id, { onDelete: "cascade" }),
+  amountRequested: integer("amount_requested").notNull(),
+  feePercentage: real("fee_percentage").notNull().default(0),
+  feeDeducted: integer("fee_deducted").notNull().default(0),
+  netAmount: integer("net_amount").notNull(),
+  status: varchar("status", { length: 20 }).notNull().default('pending'),
+  bankName: varchar("bank_name", { length: 100 }),
+  bankAccountNumber: varchar("bank_account_number", { length: 50 }),
+  bankBranch: varchar("bank_branch", { length: 100 }),
+  requestedAt: timestamp("requested_at").defaultNow().notNull(),
+  processedAt: timestamp("processed_at"),
+  processedBy: varchar("processed_by", { length: 50 }),
+  rejectReason: text("reject_reason"),
+});
+
+export const insertPayoutRequestSchemaDb = createInsertSchema(payoutRequests).omit({ id: true, requestedAt: true, processedAt: true });
+export type PayoutRequest = typeof payoutRequests.$inferSelect;
+export type InsertPayoutRequest = z.infer<typeof insertPayoutRequestSchemaDb>;
+
 export const platformSettings = pgTable("platform_settings", {
   id: varchar("id", { length: 50 })
     .primaryKey()
@@ -458,6 +479,10 @@ export const platformSettings = pgTable("platform_settings", {
   stampDutyEnabled: boolean("stamp_duty_enabled").default(false),
   vatEnabled: boolean("vat_enabled").default(true),
   withholdingTaxEnabled: boolean("withholding_tax_enabled").default(true),
+  autoPayoutDay: integer("auto_payout_day").notNull().default(1),
+  earlyPayoutFee21Days: real("early_payout_fee_21_days").notNull().default(5.0),
+  earlyPayoutFee14Days: real("early_payout_fee_14_days").notNull().default(3.0),
+  earlyPayoutFee7Days: real("early_payout_fee_7_days").notNull().default(1.0),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
@@ -932,6 +957,10 @@ export const insertPlatformSettingsSchema = z.object({
   stampDutyEnabled: z.boolean().default(false),
   vatEnabled: z.boolean().default(true),
   withholdingTaxEnabled: z.boolean().default(true),
+  autoPayoutDay: z.number().min(1).max(28).default(1),
+  earlyPayoutFee21Days: z.number().min(0).default(5.0),
+  earlyPayoutFee14Days: z.number().min(0).default(3.0),
+  earlyPayoutFee7Days: z.number().min(0).default(1.0),
 });
 
 export type InsertPlatformSettings = z.infer<
