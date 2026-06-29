@@ -87,7 +87,7 @@ import {
 import { randomUUID } from "crypto";
 import { db, pool } from "./db";
 
-import type { IStorage } from "./storage";
+import type { DoctorDetailedAnalytics, IStorage } from "./storage";
 
 function toISOString(date: Date | null): string {
   return date ? date.toISOString() : new Date().toISOString();
@@ -2750,7 +2750,7 @@ export class DbStorage implements IStorage {
         .where(eq(payments.id, refundRecord.paymentId));
     }
 
-    //  AUTO AUDIT LOG FOR REFUNDS
+    // AUTO AUDIT LOG FOR REFUNDS
     if (refundRecord) {
       try {
         await this.createAuditLog({
@@ -2997,6 +2997,51 @@ export class DbStorage implements IStorage {
 
     const updated = await this.updateHospital(hospitalId, updates);
     return updated || null;
+  }
+
+  async getDoctorDetailedAnalytics(doctorId: string): Promise<DoctorDetailedAnalytics> {
+    // 1. Appointments breakdown
+    const apts = await db.select({ status: appointments.status }).from(appointments).where(eq(appointments.doctorId, doctorId));
+    const aptCounts = { pending: 0, confirmed: 0, completed: 0, cancelled: 0, no_show: 0 };
+    apts.forEach(a => { if (a.status in aptCounts) aptCounts[a.status as keyof typeof aptCounts]++; });
+
+    const appointmentStats = [
+      { name: 'Completed', value: aptCounts.completed, color: '#10b981' }, 
+      { name: 'Pending/Confirmed', value: aptCounts.pending + aptCounts.confirmed, color: '#f59e0b' },
+      { name: 'Cancelled', value: aptCounts.cancelled, color: '#ef4444' }, 
+      { name: 'No Show', value: aptCounts.no_show, color: '#6b7280' }, 
+    ].filter(s => s.value > 0);
+
+    // 2. Payments (Revenue)
+    const pays = await db.select({ amount: payments.doctorEarnings, createdAt: payments.createdAt })
+      .from(payments).where(and(eq(payments.doctorId, doctorId), eq(payments.status, 'completed')));
+    const totalRevenue = pays.reduce((sum, p) => sum + p.amount, 0);
+
+    // Group by month for the last 6 months
+    const revenueByMonth: Record<string, number> = {};
+    const now = new Date();
+    for(let i=5; i>=0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      revenueByMonth[d.toLocaleString('default', { month: 'short' })] = 0;
+    }
+    pays.forEach(p => {
+       const m = new Date(p.createdAt).toLocaleString('default', { month: 'short' });
+       if(revenueByMonth[m] !== undefined) revenueByMonth[m] += p.amount;
+    });
+    const revenueData = Object.keys(revenueByMonth).map(k => ({ month: k, revenue: revenueByMonth[k] }));
+
+    // 3. Ratings
+    const revs = await db.select({ rating: reviews.rating }).from(reviews).where(eq(reviews.doctorId, doctorId));
+    const ratingCounts = { '5': 0, '4': 0, '3': 0, '2': 0, '1': 0 };
+    revs.forEach(r => { if(r.rating.toString() in ratingCounts) ratingCounts[r.rating.toString() as keyof typeof ratingCounts]++; });
+    const ratingDistribution = Object.keys(ratingCounts).reverse().map(k => ({ rating: `${k} Star`, count: ratingCounts[k as keyof typeof ratingCounts] }));
+
+    return {
+      appointmentStats: appointmentStats.length ? appointmentStats : [{name: 'No Data', value: 1, color: '#e5e7eb'}],
+      revenueData,
+      ratingDistribution,
+      totals: { revenue: totalRevenue, appointments: apts.length, cancelled: aptCounts.cancelled }
+    };
   }
 }
 

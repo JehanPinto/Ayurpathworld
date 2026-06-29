@@ -553,7 +553,12 @@ export const insertUserSchema = z.object({
     .regex(/[0-9]/, "Password must contain at least one number")
     .regex(/[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/, "Password must contain at least one special character"),
   fullName: z.string().min(2, "Full name is required"),
-  phone: z.string().regex(/^07[0-9]{8}$/, "Please enter a valid Sri Lankan mobile number (07XXXXXXXX)"),
+  phone: z
+  .string()
+  .regex(
+    /^\+947[0-9]{8}$/,
+    "Please enter a valid Sri Lankan mobile number (+947XXXXXXXX)"
+  ),
   role: z.enum([UserRole.PATIENT, UserRole.DOCTOR]),
   nic: z.string().optional(),
   gender: z.enum([Gender.MALE, Gender.FEMALE, Gender.OTHER]).optional(),

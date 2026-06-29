@@ -1914,14 +1914,14 @@ export async function registerRoutes(
           await storage.createAuditLog({
             actorId, actorRole,
             action: 'REGISTRATION_SESSION', status: 'failed',
-            entityType: 'system', entityId: 'N/A', 
+            entityType: 'system', entityId: 'N/A',
             ipAddress, device, location, sessionId: 'N/A',
-            metadata: { 
-              providedEmail: email, reason: 'Rate limit exceeded', 
-              timeline: { 
-                requestReceivedAt: tRequestReceived, 
-                completedAt: tFailed 
-              } 
+            metadata: {
+              providedEmail: email, reason: 'Rate limit exceeded',
+              timeline: {
+                requestReceivedAt: tRequestReceived,
+                completedAt: tFailed
+              }
             }
           });
         } catch (e) {}
@@ -5207,7 +5207,9 @@ export async function registerRoutes(
         }
 
         if (updates.phone && !/^07[0-9]{8}$/.test(updates.phone)) {
-          return res.status(400).json({ error: "Please enter a valid Sri Lankan mobile number (07XXXXXXXX)" });
+            return res.status(400).json({
+                error: "Please enter a valid Sri Lankan mobile number (07XXXXXXXX)"
+            });
         }
 
         const user = await storage.updateUser(req.user!.id, updates);
@@ -7014,76 +7016,17 @@ export async function registerRoutes(
     }
   );
 
-  // INITIATE REFUND REQUEST (From Admin Payments Page)
-  app.post(
-    "/api/admin/refund-requests/create",
+  app.get(
+    "/api/admin/doctors/:id/analytics",
     authMiddleware,
     roleMiddleware(UserRole.ADMIN),
     async (req: Request, res: Response) => {
-      const tRequestReceived = new Date().toISOString();
       try {
-        // refundAmount fetch
-        const { paymentId, refundReason, refundAmount } = req.body; 
-        
-        const payment = await storage.getPayment(paymentId);
-        if (!payment) {
-          return res.status(404).json({ error: "Payment not found" });
-        }
-
-        const existingRefunds = await db.select().from(refunds).where(eq(refunds.paymentId, paymentId));
-        if (existingRefunds.length > 0) {
-          return res.status(400).json({ error: "A refund request already exists for this payment." });
-        }
-
-        // Calculate Refund Amount Based on Reason
-        let calculatedRefundAmount = payment.totalAmount; // Default: Full Refund
-
-        if (refundReason.startsWith("Patient Cancellation")) {
-          // Patient Cancel 
-          calculatedRefundAmount = payment.consultationFee;
-        } else if (refundReason.startsWith("Other")) {
-          // Other
-          calculatedRefundAmount = Number(refundAmount) || 0;
-          
-          if (calculatedRefundAmount <= 0) {
-            return res.status(400).json({ error: "Custom refund amount must be greater than 0" });
-          }
-          if (calculatedRefundAmount > payment.totalAmount) {
-            return res.status(400).json({ error: "Refund amount cannot exceed the total payment amount" });
-          }
-        }
-
-        // Create a Pending Refund Request
-        const pendingRefund = await storage.createRefundRequest({
-          paymentId: payment.id,
-          appointmentId: payment.appointmentId,
-          patientId: payment.patientId,
-          amount: calculatedRefundAmount,
-          reason: refundReason,
-          status: "pending", 
-        });
-
-        // Audit Log
-        const { ipAddress, device, location, sessionId } = getReqInfo(req);
-        const { actorId, actorRole } = await getActorInfo(req);
-        await storage.createAuditLog({
-          actorId, actorRole,
-          action: 'REFUND_REQUEST_INITIATED', status: 'success',
-          entityType: 'refund', entityId: pendingRefund.id,
-          ipAddress, device, location, sessionId: sessionId || 'N/A',
-          metadata: {
-            auditType: 'PAYMENT',
-            originalAmount: payment.totalAmount,
-            calculatedRefundAmount: calculatedRefundAmount,
-            reason: refundReason,
-            timeline: { requestReceivedAt: tRequestReceived, completedAt: new Date().toISOString() }
-          }
-        });
-
-        res.status(201).json(pendingRefund);
+        const analytics = await storage.getDoctorDetailedAnalytics(req.params.id);
+        res.json(analytics);
       } catch (error) {
-        console.error("Refund Request Error:", error);
-        res.status(500).json({ error: "Failed to create refund request" });
+        console.error("Analytics Error:", error);
+        res.status(500).json({ error: "Failed to fetch detailed analytics" });
       }
     }
   );

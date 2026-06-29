@@ -56,6 +56,13 @@ import {
 } from "@shared/schema";
 import { randomUUID } from "crypto";
 
+export interface DoctorDetailedAnalytics {
+  appointmentStats: { name: string; value: number; color: string }[];
+  revenueData: { month: string; revenue: number }[];
+  ratingDistribution: { rating: string; count: number }[];
+  totals: { revenue: number; appointments: number; cancelled: number };
+}
+
 export interface IStorage {
   getUser(id: string): Promise<User | undefined>;
   getUserByEmail(email: string): Promise<User | undefined>;
@@ -315,6 +322,7 @@ export interface IStorage {
   createAuditLog(data: InsertAuditLog): Promise<AuditLog>;
   getPaginatedAuditLogs(page: number, limit: number): Promise<any>;
   updateDoctorHospital(doctorProfileId: string, hospitalId: string, updates: Partial<InsertHospital>): Promise<Hospital | null>;
+  getDoctorDetailedAnalytics(doctorId: string): Promise<DoctorDetailedAnalytics>;
 }
 
 export class MemStorage implements IStorage {
@@ -1894,7 +1902,6 @@ export class MemStorage implements IStorage {
     return result[0];
   }
 
-  // MemStorage ඇතුළත:
   async createAuditLog(data: InsertAuditLog): Promise<AuditLog> {
     return { ...data, id: "mock-id", createdAt: new Date() } as AuditLog;
   }
