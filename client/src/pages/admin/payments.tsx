@@ -141,7 +141,7 @@ export default function AdminPaymentsPage() {
     return {
       totalRevenue: completed.reduce((sum: number, p: any) => sum + p.totalAmount, 0),
       platformEarnings: completed.reduce((sum: number, p: any) => sum + (p.platformCommission || 0), 0),
-      pendingAmount: pending.reduce((sum: number, p: any) => sum + p.totalAmount, 0),
+      totalPayoutsOwed: completed.reduce((sum: number, p: any) => sum + (p.doctorEarnings || 0), 0),
       refundedAmount: refunded.reduce((sum: number, p: any) => sum + (p.refundAmount || 0), 0),
     };
   };
@@ -215,8 +215,8 @@ export default function AdminPaymentsPage() {
           <CardContent className="p-4">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-muted-foreground">Pending</p>
-                <p className="text-2xl font-bold">{formatFee(stats.pendingAmount)}</p>
+                <p className="text-sm text-muted-foreground">Total Payouts Owed</p>
+                <p className="text-2xl font-bold">{formatFee(stats.totalPayoutsOwed)}</p>
               </div>
               <div className="p-3 rounded-full bg-amber-100 dark:bg-amber-900/30">
                 <CreditCard className="h-5 w-5 text-amber-600 dark:text-amber-400" />
