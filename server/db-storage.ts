@@ -433,42 +433,72 @@ export class DbStorage implements IStorage {
     }
 
     const profiles = await query;
+
+    // In-memory filters first (specialization / consultation type) so we only
+    // batch-load related data for the doctors we will actually return.
+    const mappedProfiles = profiles
+      .map((p) => mapDoctorProfile(p))
+      .filter((mappedProfile) => {
+        if (
+          filters?.specializationId &&
+          !mappedProfile.specializationIds.includes(filters.specializationId)
+        ) {
+          return false;
+        }
+        if (
+          filters?.consultationType &&
+          !mappedProfile.consultationTypes.includes(
+            filters.consultationType as any,
+          )
+        ) {
+          return false;
+        }
+        return true;
+      });
+
+    if (mappedProfiles.length === 0) return [];
+
+    // Batch-load users (one IN query) and the shared specialization/hospital
+    // lists once — instead of calling getDoctorWithDetails (4 queries) per doctor.
+    const userIds = [...new Set(mappedProfiles.map((p) => p.userId))];
+    const [userRows, allSpecs, allHospitals] = await Promise.all([
+      db.select().from(users).where(inArray(users.id, userIds)),
+      this.getAllSpecializations(),
+      this.getAllHospitals(),
+    ]);
+    const userMap = new Map(
+      (userRows as any[]).map((r) => [r.id, mapSafeUser(r)]),
+    );
+
     const doctors: DoctorWithDetails[] = [];
+    for (const mappedProfile of mappedProfiles) {
+      const user = userMap.get(mappedProfile.userId);
+      if (!user) continue;
 
-    for (const profile of profiles) {
-      const mappedProfile = mapDoctorProfile(profile);
+      const doctor: DoctorWithDetails = {
+        ...mappedProfile,
+        user,
+        specializations: allSpecs.filter((s) =>
+          mappedProfile.specializationIds.includes(s.id),
+        ),
+        hospitals: allHospitals.filter((h) =>
+          mappedProfile.hospitalIds.includes(h.id),
+        ),
+      };
 
-      if (
-        filters?.specializationId &&
-        !mappedProfile.specializationIds.includes(filters.specializationId)
-      ) {
-        continue;
-      }
-      if (
-        filters?.consultationType &&
-        !mappedProfile.consultationTypes.includes(
-          filters.consultationType as any,
-        )
-      ) {
-        continue;
-      }
-
-      const doctor = await this.getDoctorWithDetails(mappedProfile.id);
-      if (doctor) {
-        if (filters?.city) {
-          if (
-            doctor.user.city
-              ?.toLowerCase()
-              .includes(filters.city.toLowerCase()) ||
-            doctor.hospitals.some((h) =>
-              h.city.toLowerCase().includes(filters.city!.toLowerCase()),
-            )
-          ) {
-            doctors.push(doctor);
-          }
-        } else {
+      if (filters?.city) {
+        if (
+          doctor.user.city
+            ?.toLowerCase()
+            .includes(filters.city.toLowerCase()) ||
+          doctor.hospitals.some((h) =>
+            h.city.toLowerCase().includes(filters.city!.toLowerCase()),
+          )
+        ) {
           doctors.push(doctor);
         }
+      } else {
+        doctors.push(doctor);
       }
     }
 
@@ -1757,6 +1787,12 @@ export class DbStorage implements IStorage {
       .where(eq(appointments.doctorId, doctorId))
       .orderBy(desc(appointments.appointmentDate));
 
+    if (doctorAppointments.length === 0) return [];
+
+    // Batch-load every appointment's details (patient included) in one pass,
+    // instead of calling getUser + getAppointmentWithDetails per appointment.
+    const detailed = await this.buildAppointmentsWithDetails(doctorAppointments);
+
     const patientMap = new Map<
       string,
       {
@@ -1767,30 +1803,23 @@ export class DbStorage implements IStorage {
       }
     >();
 
-    for (const apt of doctorAppointments) {
-      const patientId = apt.patientId;
+    for (const apt of detailed) {
+      const patient = apt.patient;
+      if (!patient) continue;
 
-      if (!patientMap.has(patientId)) {
-        const patient = await this.getUser(patientId);
-        if (patient) {
-          const { password: _pw, ...safePatient } = patient;
-          patientMap.set(patientId, {
-            patient: safePatient as SafeUser,
-            lastVisit: apt.appointmentDate,
-            totalVisits: 0,
-            appointments: [],
-          });
-        }
+      let patientData = patientMap.get(apt.patientId);
+      if (!patientData) {
+        // Appointments are ordered newest-first, so the first seen is the last visit.
+        patientData = {
+          patient,
+          lastVisit: apt.appointmentDate,
+          totalVisits: 0,
+          appointments: [],
+        };
+        patientMap.set(apt.patientId, patientData);
       }
-
-      const patientData = patientMap.get(patientId);
-      if (patientData) {
-        patientData.totalVisits++;
-        const fullApt = await this.getAppointmentWithDetails(apt.id);
-        if (fullApt) {
-          patientData.appointments.push(fullApt);
-        }
-      }
+      patientData.totalVisits++;
+      patientData.appointments.push(apt);
     }
 
     return Array.from(patientMap.values());
