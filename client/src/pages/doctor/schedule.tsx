@@ -119,6 +119,9 @@ export default function DoctorSchedule() {
 
   const currentAvailableStartTimes = getAvailableStartTimes(newSlot.date);
 
+  // End time must come after the selected start time
+  const validEndTimes = timeSlots.filter((time) => time > newSlot.startTime);
+
   useEffect(() => {
     const availableForDate = getAvailableStartTimes(newSlot.date);
     if (!availableForDate.includes(newSlot.startTime)) {
