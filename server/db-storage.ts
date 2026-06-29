@@ -56,6 +56,7 @@ import {
   type Payment,
   type PlatformSettings,
   type TaxEntry,
+  type FeeEntry,
   type Prescription,
   type Review,
   type ReviewWithDoctor,
@@ -1804,23 +1805,87 @@ export class DbStorage implements IStorage {
       .where(eq(payments.doctorId, doctorId))
       .orderBy(desc(payments.createdAt));
 
-    const paymentsWithDetails: (Payment & {
-      appointment?: AppointmentWithDetails;
-    })[] = [];
-    for (const p of result) {
-      const payment = {
-        ...p,
-        createdAt: toISOString(p.createdAt),
-        updatedAt: toISOString(p.updatedAt),
-      } as Payment;
+    if (result.length === 0) return [];
 
-      const appointment = await this.getAppointmentWithDetails(p.appointmentId);
-      paymentsWithDetails.push({
-        ...payment,
-        appointment: appointment || undefined,
-      });
+    // Batch-load all related appointments in a few parallel queries instead of
+    // calling getAppointmentWithDetails (~8 sequential queries) per payment.
+    const appointmentIds = [...new Set(result.map((p) => p.appointmentId))];
+    const appointmentRows = await db
+      .select()
+      .from(appointments)
+      .where(inArray(appointments.id, appointmentIds));
+    const detailed = await this.buildAppointmentsWithDetails(appointmentRows);
+    const appointmentMap = new Map(detailed.map((a) => [a.id, a]));
+
+    return result.map((p) => ({
+      ...p,
+      createdAt: toISOString(p.createdAt),
+      updatedAt: toISOString(p.updatedAt),
+      appointment: appointmentMap.get(p.appointmentId) || undefined,
+    })) as (Payment & { appointment?: AppointmentWithDetails })[];
+  }
+
+  async getDoctorEarningsSummary(doctorId: string): Promise<{
+    totalEarnings: number;
+    pendingEarnings: number;
+    completedPayments: number;
+    pendingPayments: number;
+    thisMonthEarnings: number;
+    lastMonthEarnings: number;
+  }> {
+    const rows = await db
+      .select()
+      .from(payments)
+      .where(eq(payments.doctorId, doctorId));
+
+    const now = new Date();
+    const thisMonth = now.getMonth();
+    const thisYear = now.getFullYear();
+    const lastMonthDate = new Date(thisYear, thisMonth - 1, 1);
+    const lastMonth = lastMonthDate.getMonth();
+    const lastMonthYear = lastMonthDate.getFullYear();
+
+    let totalEarnings = 0;
+    let pendingEarnings = 0;
+    let completedPayments = 0;
+    let pendingPayments = 0;
+    let thisMonthEarnings = 0;
+    let lastMonthEarnings = 0;
+
+    for (const p of rows) {
+      const earnings = p.doctorEarnings ?? 0;
+      if (p.status === PaymentStatus.COMPLETED) {
+        totalEarnings += earnings;
+        completedPayments += 1;
+
+        const created = p.createdAt ? new Date(p.createdAt) : null;
+        if (created) {
+          if (
+            created.getMonth() === thisMonth &&
+            created.getFullYear() === thisYear
+          ) {
+            thisMonthEarnings += earnings;
+          } else if (
+            created.getMonth() === lastMonth &&
+            created.getFullYear() === lastMonthYear
+          ) {
+            lastMonthEarnings += earnings;
+          }
+        }
+      } else if (p.status === PaymentStatus.PENDING) {
+        pendingEarnings += earnings;
+        pendingPayments += 1;
+      }
     }
-    return paymentsWithDetails;
+
+    return {
+      totalEarnings,
+      pendingEarnings,
+      completedPayments,
+      pendingPayments,
+      thisMonthEarnings,
+      lastMonthEarnings,
+    };
   }
 
   async respondToReview(
@@ -2039,6 +2104,91 @@ export class DbStorage implements IStorage {
       id,
     ]);
     return (result.rowCount ?? 0) > 0;
+  }
+
+  private async ensureFeeEntriesTable(): Promise<void> {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS fee_entries (
+        id VARCHAR(50) PRIMARY KEY DEFAULT gen_random_uuid()::text,
+        title VARCHAR(255) NOT NULL,
+        fee_type VARCHAR(20) NOT NULL DEFAULT 'amount',
+        rate INTEGER NOT NULL DEFAULT 0,
+        applicable_to VARCHAR(20) DEFAULT 'doctors',
+        enabled BOOLEAN NOT NULL DEFAULT true,
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+  }
+
+  private mapFeeRow(r: any): FeeEntry {
+    return {
+      id: r.id,
+      title: r.title,
+      feeType: (r.fee_type ?? "amount") as "amount" | "percentage",
+      rate: r.rate,
+      applicableTo: (r.applicable_to ?? "doctors") as
+        | "doctors"
+        | "patients"
+        | "both",
+      enabled: r.enabled ?? true,
+      createdAt: r.created_at,
+    };
+  }
+
+  async getFeeEntries(): Promise<FeeEntry[]> {
+    await this.ensureFeeEntriesTable();
+    const result = await pool.query(
+      `SELECT id, title, fee_type, rate, applicable_to, enabled, created_at
+       FROM fee_entries ORDER BY created_at ASC`,
+    );
+    return result.rows.map((r: any) => this.mapFeeRow(r));
+  }
+
+  async createFeeEntry(
+    title: string,
+    feeType: "amount" | "percentage",
+    rate: number,
+    applicableTo: "doctors" | "patients" | "both",
+  ): Promise<FeeEntry> {
+    await this.ensureFeeEntriesTable();
+    const result = await pool.query(
+      `INSERT INTO fee_entries (title, fee_type, rate, applicable_to)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id, title, fee_type, rate, applicable_to, enabled, created_at`,
+      [title, feeType, rate, applicableTo],
+    );
+    return this.mapFeeRow(result.rows[0]);
+  }
+
+  async updateFeeEntryEnabled(
+    id: string,
+    enabled: boolean,
+  ): Promise<FeeEntry | undefined> {
+    await this.ensureFeeEntriesTable();
+    const result = await pool.query(
+      `UPDATE fee_entries SET enabled = $1 WHERE id = $2
+       RETURNING id, title, fee_type, rate, applicable_to, enabled, created_at`,
+      [enabled, id],
+    );
+    if (result.rows.length === 0) return undefined;
+    return this.mapFeeRow(result.rows[0]);
+  }
+
+  async deleteFeeEntry(id: string): Promise<boolean> {
+    const result = await pool.query(`DELETE FROM fee_entries WHERE id = $1`, [
+      id,
+    ]);
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  // Median consultation fee — a robust cap for flat-amount fees that isn't
+  // distorted by a few outlier doctors with very high consultation fees.
+  async getFeeAmountCap(): Promise<number> {
+    const result = await pool.query(
+      `SELECT COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY consultation_fee), 0) AS median_fee
+       FROM doctor_profiles WHERE consultation_fee > 0`,
+    );
+    return Math.round(Number(result.rows[0]?.median_fee ?? 0));
   }
 
   async createBlogSubmission(
@@ -2397,6 +2547,17 @@ export class DbStorage implements IStorage {
       count: rows.length,
       totalOwed: rows.reduce((sum, r) => sum + r.amountOwed, 0),
     };
+  }
+
+  // Outstanding cancellation charges a patient owes to AyurPath. There is no
+  // patient cancellation-charge flow yet (patients can't self-cancel), so this
+  // returns nothing for now — it is the single seam to wire up when that
+  // feature lands. The "Owed to AyurPath" banner reads this and stays hidden
+  // while totalOwed is 0.
+  async getPatientUnsettledCharges(
+    _patientId: string,
+  ): Promise<{ count: number; totalOwed: number }> {
+    return { count: 0, totalOwed: 0 };
   }
 
   async settleDoctorCharges(doctorId: string): Promise<void> {

@@ -805,6 +805,8 @@ export const insertPaymentSchema = z.object({
     rate: z.number(),
     amount: z.number(),
     applicableTo: z.enum(["doctors", "patients", "both", "platform"]),
+    kind: z.enum(["tax", "fee"]).optional(),
+    feeType: z.enum(["amount", "percentage"]).optional(),
   })).optional(),
   platformCommission: z.number().min(0).default(0),
   doctorEarnings: z.number().min(0),
@@ -950,11 +952,23 @@ export interface TaxEntry {
   createdAt: string;
 }
 
+export interface FeeEntry {
+  id: string;
+  title: string;
+  feeType: "amount" | "percentage";
+  rate: number;
+  applicableTo: "doctors" | "patients" | "both";
+  enabled: boolean;
+  createdAt: string;
+}
+
 export interface TaxBreakdownItem {
   title: string;
   rate: number;
   amount: number;
   applicableTo: "doctors" | "patients" | "both" | "platform";
+  kind?: "tax" | "fee";
+  feeType?: "amount" | "percentage";
 }
 
 // ================== AUTH SCHEMAS ==================
