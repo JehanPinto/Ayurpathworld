@@ -6,6 +6,7 @@ import { type Server } from "http";
 import path from "path";
 import { db, pool } from "./db";
 import { storage } from "./storage";
+import { getMaintenanceStatus, updateMaintenanceCache } from "./maintenance";
 import { sendApplicationEmail, sendDoctorVerifiedEmail, sendPasswordResetOtpEmail } from "./util/email";
 
 import {
@@ -488,6 +489,11 @@ export async function registerRoutes(
   httpServer: Server,
   app: Express,
 ): Promise<Server> {
+  // Public — no auth required, used by maintenance page to poll status
+  app.get("/api/maintenance-status", (_req: Request, res: Response) => {
+    res.json(getMaintenanceStatus());
+  });
+
   app.use(passport.initialize());
   passport.serializeUser((user: any, done) => {
     done(null, user);
@@ -1037,6 +1043,12 @@ export async function registerRoutes(
         }
 
         const tCredentialsVerified = new Date().toISOString();
+
+        // Block non-admin logins during maintenance
+        const { isActive: maintenanceActive } = getMaintenanceStatus();
+        if (maintenanceActive && user.role !== UserRole.ADMIN) {
+          return res.status(503).json({ error: "Platform is currently under maintenance. Please try again later." });
+        }
 
         if (user.provider && user.provider !== AuthProvider.LOCAL) {
           const providerName = user.provider.charAt(0).toUpperCase() + user.provider.slice(1);
@@ -4836,6 +4848,12 @@ export async function registerRoutes(
             ),
           );
         }
+
+        // Sync in-memory maintenance cache
+        updateMaintenanceCache(
+          settings.maintenanceMode,
+          settings.maintenanceEndTime ?? null,
+        );
 
         console.log("Settings updated successfully:", settings);
 

@@ -2015,6 +2015,8 @@ export class DbStorage implements IStorage {
         allowClinicPayments: result[0].allowClinicPayments ?? false,
         defaultLanguage: result[0].defaultLanguage ?? "english",
         maintenanceMode: result[0].maintenanceMode ?? false,
+        maintenanceStartTime: result[0].maintenanceStartTime ? toISOString(result[0].maintenanceStartTime) : null,
+        maintenanceEndTime: result[0].maintenanceEndTime ? toISOString(result[0].maintenanceEndTime) : null,
         cancellationFee: result[0].cancellationFee ?? 300,
         stampDutyEnabled: result[0].stampDutyEnabled ?? false,
         vatEnabled: result[0].vatEnabled ?? true,
@@ -2064,9 +2066,17 @@ export class DbStorage implements IStorage {
     // Ensure settings exist first
     await this.getPlatformSettings();
 
+    const { maintenanceStartTime, maintenanceEndTime, ...rest } = updates;
+    const dbUpdates: any = {
+      ...rest,
+      updatedAt: new Date(),
+      ...(maintenanceStartTime !== undefined && { maintenanceStartTime: maintenanceStartTime ? new Date(maintenanceStartTime) : null }),
+      ...(maintenanceEndTime !== undefined && { maintenanceEndTime: maintenanceEndTime ? new Date(maintenanceEndTime) : null }),
+    };
+
     const result = await db
       .update(platformSettings)
-      .set({ ...updates, updatedAt: new Date() })
+      .set(dbUpdates)
       .where(eq(platformSettings.id, "default"))
       .returning();
 
@@ -2088,6 +2098,8 @@ export class DbStorage implements IStorage {
       allowClinicPayments: result[0].allowClinicPayments ?? false,
       defaultLanguage: result[0].defaultLanguage ?? "english",
       maintenanceMode: result[0].maintenanceMode ?? false,
+      maintenanceStartTime: result[0].maintenanceStartTime ? toISOString(result[0].maintenanceStartTime) : null,
+      maintenanceEndTime: result[0].maintenanceEndTime ? toISOString(result[0].maintenanceEndTime) : null,
       cancellationFee: result[0].cancellationFee ?? 300,
       stampDutyEnabled: result[0].stampDutyEnabled ?? false,
       vatEnabled: result[0].vatEnabled ?? true,
