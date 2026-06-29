@@ -1926,14 +1926,14 @@ export async function registerRoutes(
           await storage.createAuditLog({
             actorId, actorRole,
             action: 'REGISTRATION_SESSION', status: 'failed',
-            entityType: 'system', entityId: 'N/A', 
+            entityType: 'system', entityId: 'N/A',
             ipAddress, device, location, sessionId: 'N/A',
-            metadata: { 
-              providedEmail: email, reason: 'Rate limit exceeded', 
-              timeline: { 
-                requestReceivedAt: tRequestReceived, 
-                completedAt: tFailed 
-              } 
+            metadata: {
+              providedEmail: email, reason: 'Rate limit exceeded',
+              timeline: {
+                requestReceivedAt: tRequestReceived,
+                completedAt: tFailed
+              }
             }
           });
         } catch (e) {}
@@ -3204,9 +3204,10 @@ export async function registerRoutes(
           consultationFee = doctor.homeVisitFee;
         }
 
-        const [platformSettings, allCustomTaxes] = await Promise.all([
+        const [platformSettings, allCustomTaxes, allFees] = await Promise.all([
           storage.getPlatformSettings(),
           storage.getTaxEntries(),
+          storage.getFeeEntries(),
         ]);
         const bookingCharges = platformSettings.bookingCharges;
         const stampDutyAmt = platformSettings.stampDutyEnabled
@@ -3222,22 +3223,40 @@ export async function registerRoutes(
           (sum, t) => sum + Math.round(consultationFee * (t.rate / 100)), 0
         );
 
+        // Custom fees (enabled only). Amount fees are flat LKR; percentage fees scale with the consultation fee.
+        const enabledFees = allFees.filter((f) => f.enabled);
+        const feeAmount = (f: { feeType: string; rate: number }) =>
+          f.feeType === "percentage" ? Math.round(consultationFee * (f.rate / 100)) : f.rate;
+        const patientFees = enabledFees.filter(
+          (f) => f.applicableTo === "patients" || f.applicableTo === "both"
+        );
+        const doctorFees = enabledFees.filter(
+          (f) => f.applicableTo === "doctors" || f.applicableTo === "both"
+        );
+        const patientFeeAmt = patientFees.reduce((sum, f) => sum + feeAmount(f), 0);
+        const doctorFeeAmt = doctorFees.reduce((sum, f) => sum + feeAmount(f), 0);
+
         const tax = baseTaxAmt + stampDutyAmt + customPatientTaxAmt;
 
         // Build full breakdown for patient invoice
-        const taxBreakdown: { title: string; rate: number; amount: number; applicableTo: string }[] = [];
-        if (baseTaxAmt > 0) taxBreakdown.push({ title: `Government Tax`, rate: platformSettings.taxRate, amount: baseTaxAmt, applicableTo: "patients" });
-        if (stampDutyAmt > 0) taxBreakdown.push({ title: "Stamp Duty", rate: 1, amount: stampDutyAmt, applicableTo: "patients" });
+        const taxBreakdown: { title: string; rate: number; amount: number; applicableTo: "doctors" | "patients" | "both" | "platform"; kind?: "tax" | "fee"; feeType?: "amount" | "percentage" }[] = [];
+        if (baseTaxAmt > 0) taxBreakdown.push({ title: `Government Tax`, rate: platformSettings.taxRate, amount: baseTaxAmt, applicableTo: "patients", kind: "tax" });
+        if (stampDutyAmt > 0) taxBreakdown.push({ title: "Stamp Duty", rate: 1, amount: stampDutyAmt, applicableTo: "patients", kind: "tax" });
         for (const t of patientCustomTaxes) {
           const amt = Math.round(consultationFee * (t.rate / 100));
-          taxBreakdown.push({ title: t.title, rate: t.rate, amount: amt, applicableTo: t.applicableTo });
+          taxBreakdown.push({ title: t.title, rate: t.rate, amount: amt, applicableTo: t.applicableTo, kind: "tax" });
+        }
+        // Patient-facing custom fees appear on the invoice
+        for (const f of patientFees) {
+          taxBreakdown.push({ title: f.title, rate: f.rate, amount: feeAmount(f), applicableTo: f.applicableTo, kind: "fee", feeType: f.feeType });
         }
 
         const platformCommission = Math.round(
           consultationFee * (platformSettings.platformCommissionRate / 100),
         );
-        const doctorEarnings = consultationFee - platformCommission;
-        const totalAmount = consultationFee + bookingCharges + tax;
+        // Doctor-facing custom fees are deducted from the doctor's payout (never below 0)
+        const doctorEarnings = Math.max(0, consultationFee - platformCommission - doctorFeeAmt);
+        const totalAmount = consultationFee + bookingCharges + tax + patientFeeAmt;
 
         const paymentData = {
           appointmentId: appointment.id,
@@ -3770,6 +3789,7 @@ export async function registerRoutes(
 
         res.json({ summary, payments, cancellationCharges: unsettled });
       } catch (error) {
+        console.error("Failed to get doctor earnings:", error);
         res.status(500).json({ error: "Failed to get earnings" });
       }
     },
@@ -4128,6 +4148,23 @@ export async function registerRoutes(
         res.json(prescription);
       } catch (error) {
         res.status(500).json({ error: "Failed to get prescription" });
+      }
+    },
+  );
+
+  // Outstanding cancellation charges the patient owes to AyurPath.
+  // Drives the "Owed to AyurPath" banner on the My Appointments page.
+  app.get(
+    "/api/patient/owed-charges",
+    authMiddleware,
+    roleMiddleware(UserRole.PATIENT),
+    async (req: AuthenticatedRequest, res: Response) => {
+      try {
+        const owed = await storage.getPatientUnsettledCharges(req.user!.id);
+        res.json(owed);
+      } catch (error) {
+        console.error("Failed to get patient owed charges:", error);
+        res.status(500).json({ error: "Failed to get owed charges" });
       }
     },
   );
@@ -4717,6 +4754,11 @@ export async function registerRoutes(
         const now = Date.now();
         const threshold = 48 * 60 * 60 * 1000;
         const admins = await storage.getAllUsers("admin");
+        // Fetch the admin's notifications once — the dedup check below is keyed
+        // per doctor (relatedId), so a single snapshot is correct and avoids an
+        // N+1 (one getUserNotifications call per pending doctor).
+        const existingNotifs = await storage.getUserNotifications(req.user!.id);
+        const last24h = now - 24 * 60 * 60 * 1000;
 
         for (const doctor of pendingDoctors) {
           const createdAt = new Date(doctor.createdAt).getTime();
@@ -4726,11 +4768,6 @@ export async function registerRoutes(
             (now - createdAt) / (24 * 60 * 60 * 1000),
           );
           const expectedTitle = `Verification pending — ${daysOverdue} ${daysOverdue === 1 ? "day" : "days"} overdue`;
-
-          const existingNotifs = await storage.getUserNotifications(
-            req.user!.id,
-          );
-          const last24h = now - 24 * 60 * 60 * 1000;
 
           const alreadyUpToDate = existingNotifs.some(
             (n) =>
@@ -4861,6 +4898,67 @@ export async function registerRoutes(
     } catch { res.status(500).json({ error: "Failed to delete tax entry" }); }
   });
 
+  app.get("/api/admin/fee-entries", authMiddleware, roleMiddleware(UserRole.ADMIN), async (_req: Request, res: Response) => {
+    try {
+      const entries = await storage.getFeeEntries();
+      res.json(entries);
+    } catch { res.status(500).json({ error: "Failed to get fee entries" }); }
+  });
+
+  // Public endpoint so the patient invoice / book-appointment page can fetch without admin auth
+  app.get("/api/fee-entries", publicApiLimiter, async (_req: Request, res: Response) => {
+    try {
+      const entries = await storage.getFeeEntries();
+      res.json(entries);
+    } catch { res.status(500).json({ error: "Failed to get fee entries" }); }
+  });
+
+  // Data-driven limits for fee inputs: amount fees are capped at the highest
+  // consultation fee in the system; percentage fees are capped at 100%.
+  app.get("/api/admin/fee-limits", authMiddleware, roleMiddleware(UserRole.ADMIN), async (_req: Request, res: Response) => {
+    try {
+      const maxAmount = await storage.getFeeAmountCap();
+      res.json({ maxAmount, maxPercentage: 100 });
+    } catch { res.status(500).json({ error: "Failed to get fee limits" }); }
+  });
+
+  app.post("/api/admin/fee-entries", authMiddleware, roleMiddleware(UserRole.ADMIN), async (req: Request, res: Response) => {
+    try {
+      const { title, feeType, rate, applicableTo } = req.body;
+      if (!title?.trim() || rate === undefined || rate === null || rate === "") return res.status(400).json({ error: "Title and rate are required" });
+      if (!["amount", "percentage"].includes(feeType)) return res.status(400).json({ error: "feeType must be amount or percentage" });
+      if (!["doctors", "patients", "both"].includes(applicableTo)) return res.status(400).json({ error: "applicableTo must be doctors, patients, or both" });
+      const numericRate = Number(rate);
+      if (Number.isNaN(numericRate) || numericRate < 0) return res.status(400).json({ error: "rate must be a non-negative number" });
+      if (feeType === "percentage" && numericRate > 100) return res.status(400).json({ error: "percentage rate cannot exceed 100" });
+      if (feeType === "amount") {
+        const maxAmount = await storage.getFeeAmountCap();
+        if (maxAmount > 0 && numericRate > maxAmount) {
+          return res.status(400).json({ error: `Amount fee cannot exceed the typical consultation fee (LKR ${maxAmount.toLocaleString()})` });
+        }
+      }
+      const entry = await storage.createFeeEntry(title.trim(), feeType, numericRate, applicableTo);
+      res.status(201).json(entry);
+    } catch { res.status(500).json({ error: "Failed to create fee entry" }); }
+  });
+
+  app.patch("/api/admin/fee-entries/:id", authMiddleware, roleMiddleware(UserRole.ADMIN), async (req: Request, res: Response) => {
+    try {
+      const { enabled } = req.body;
+      if (typeof enabled !== "boolean") return res.status(400).json({ error: "enabled (boolean) is required" });
+      const entry = await storage.updateFeeEntryEnabled(req.params.id, enabled);
+      if (!entry) return res.status(404).json({ error: "Fee entry not found" });
+      res.json(entry);
+    } catch { res.status(500).json({ error: "Failed to update fee entry" }); }
+  });
+
+  app.delete("/api/admin/fee-entries/:id", authMiddleware, roleMiddleware(UserRole.ADMIN), async (req: Request, res: Response) => {
+    try {
+      await storage.deleteFeeEntry(req.params.id);
+      res.json({ success: true });
+    } catch { res.status(500).json({ error: "Failed to delete fee entry" }); }
+  });
+
   // Payout Dashboard
   app.get(
     "/api/admin/payouts",
@@ -4900,32 +4998,53 @@ export async function registerRoutes(
 
         const doctorPayouts = [];
 
-        for (const doctor of doctors) {
-          const [paymentsResult, apptResult, chargesResult] = await Promise.all([
-            pool.query(
-              `SELECT consultation_fee, platform_commission, doctor_earnings
-               FROM payments WHERE doctor_id = $1 AND status = 'completed'
-               AND created_at >= $2 AND created_at < $3`,
-              [doctor.id, thisMonthStart, nextMonthStart]
-            ),
-            pool.query(
-              `SELECT status, cancelled_by FROM appointments
-               WHERE doctor_id = $1 AND created_at >= $2 AND created_at < $3`,
-              [doctor.id, thisMonthStart, nextMonthStart]
-            ),
-            pool.query(
-              `SELECT amount_owed FROM doctor_cancellation_charges
-               WHERE doctor_id = $1 AND settled = false`,
-              [doctor.id]
-            ),
-          ]);
+        // Aggregate every doctor's figures in 3 grouped queries instead of 3 per doctor.
+        const [paymentsAgg, apptAgg, chargesAgg] = await Promise.all([
+          pool.query(
+            `SELECT doctor_id, COALESCE(SUM(consultation_fee), 0) AS earn_amount
+             FROM payments
+             WHERE status = 'completed' AND created_at >= $1 AND created_at < $2
+             GROUP BY doctor_id`,
+            [thisMonthStart, nextMonthStart]
+          ),
+          pool.query(
+            `SELECT doctor_id,
+                    COUNT(*) AS total_appts,
+                    COUNT(*) FILTER (WHERE status = 'completed') AS completed_appts
+             FROM appointments
+             WHERE created_at >= $1 AND created_at < $2
+             GROUP BY doctor_id`,
+            [thisMonthStart, nextMonthStart]
+          ),
+          pool.query(
+            `SELECT doctor_id, COALESCE(SUM(amount_owed), 0) AS cancellation_fees
+             FROM doctor_cancellation_charges
+             WHERE settled = false
+             GROUP BY doctor_id`
+          ),
+        ]);
 
-          const earnAmount = paymentsResult.rows.reduce((sum: number, p: any) => sum + (p.consultation_fee || 0), 0);
+        const earnMap = new Map<string, number>(
+          paymentsAgg.rows.map((r: any) => [r.doctor_id, Number(r.earn_amount) || 0])
+        );
+        const apptMap = new Map<string, { total: number; completed: number }>(
+          apptAgg.rows.map((r: any) => [
+            r.doctor_id,
+            { total: Number(r.total_appts) || 0, completed: Number(r.completed_appts) || 0 },
+          ])
+        );
+        const chargesMap = new Map<string, number>(
+          chargesAgg.rows.map((r: any) => [r.doctor_id, Number(r.cancellation_fees) || 0])
+        );
+
+        for (const doctor of doctors) {
+          const earnAmount = earnMap.get(doctor.id) || 0;
           const platformFees = Math.round(earnAmount * commissionRate);
-          const totalAppts = apptResult.rows.length;
-          const completedAppts = apptResult.rows.filter((a: any) => a.status === "completed").length;
+          const apptCounts = apptMap.get(doctor.id) || { total: 0, completed: 0 };
+          const totalAppts = apptCounts.total;
+          const completedAppts = apptCounts.completed;
           const cancellationRate = totalAppts > 0 ? Math.round(((totalAppts - completedAppts) / totalAppts) * 100) : 0;
-          const cancellationFees = chargesResult.rows.reduce((sum: number, c: any) => sum + (c.amount_owed || 0), 0);
+          const cancellationFees = chargesMap.get(doctor.id) || 0;
           const applicableTax = Math.round(earnAmount * totalTaxRate);
           const payoutAmount = Math.max(0, earnAmount - platformFees - cancellationFees - applicableTax);
 
@@ -5106,7 +5225,9 @@ export async function registerRoutes(
         }
 
         if (updates.phone && !/^07[0-9]{8}$/.test(updates.phone)) {
-          return res.status(400).json({ error: "Please enter a valid Sri Lankan mobile number (07XXXXXXXX)" });
+            return res.status(400).json({
+                error: "Please enter a valid Sri Lankan mobile number (07XXXXXXXX)"
+            });
         }
 
         const user = await storage.updateUser(req.user!.id, updates);
@@ -6913,76 +7034,17 @@ export async function registerRoutes(
     }
   );
 
-  // INITIATE REFUND REQUEST (From Admin Payments Page)
-  app.post(
-    "/api/admin/refund-requests/create",
+  app.get(
+    "/api/admin/doctors/:id/analytics",
     authMiddleware,
     roleMiddleware(UserRole.ADMIN),
     async (req: Request, res: Response) => {
-      const tRequestReceived = new Date().toISOString();
       try {
-        // refundAmount fetch
-        const { paymentId, refundReason, refundAmount } = req.body; 
-        
-        const payment = await storage.getPayment(paymentId);
-        if (!payment) {
-          return res.status(404).json({ error: "Payment not found" });
-        }
-
-        const existingRefunds = await db.select().from(refunds).where(eq(refunds.paymentId, paymentId));
-        if (existingRefunds.length > 0) {
-          return res.status(400).json({ error: "A refund request already exists for this payment." });
-        }
-
-        // Calculate Refund Amount Based on Reason
-        let calculatedRefundAmount = payment.totalAmount; // Default: Full Refund
-
-        if (refundReason.startsWith("Patient Cancellation")) {
-          // Patient Cancel 
-          calculatedRefundAmount = payment.consultationFee;
-        } else if (refundReason.startsWith("Other")) {
-          // Other
-          calculatedRefundAmount = Number(refundAmount) || 0;
-          
-          if (calculatedRefundAmount <= 0) {
-            return res.status(400).json({ error: "Custom refund amount must be greater than 0" });
-          }
-          if (calculatedRefundAmount > payment.totalAmount) {
-            return res.status(400).json({ error: "Refund amount cannot exceed the total payment amount" });
-          }
-        }
-
-        // Create a Pending Refund Request
-        const pendingRefund = await storage.createRefundRequest({
-          paymentId: payment.id,
-          appointmentId: payment.appointmentId,
-          patientId: payment.patientId,
-          amount: calculatedRefundAmount,
-          reason: refundReason,
-          status: "pending", 
-        });
-
-        // Audit Log
-        const { ipAddress, device, location, sessionId } = getReqInfo(req);
-        const { actorId, actorRole } = await getActorInfo(req);
-        await storage.createAuditLog({
-          actorId, actorRole,
-          action: 'REFUND_REQUEST_INITIATED', status: 'success',
-          entityType: 'refund', entityId: pendingRefund.id,
-          ipAddress, device, location, sessionId: sessionId || 'N/A',
-          metadata: {
-            auditType: 'PAYMENT',
-            originalAmount: payment.totalAmount,
-            calculatedRefundAmount: calculatedRefundAmount,
-            reason: refundReason,
-            timeline: { requestReceivedAt: tRequestReceived, completedAt: new Date().toISOString() }
-          }
-        });
-
-        res.status(201).json(pendingRefund);
+        const analytics = await storage.getDoctorDetailedAnalytics(req.params.id);
+        res.json(analytics);
       } catch (error) {
-        console.error("Refund Request Error:", error);
-        res.status(500).json({ error: "Failed to create refund request" });
+        console.error("Analytics Error:", error);
+        res.status(500).json({ error: "Failed to fetch detailed analytics" });
       }
     }
   );

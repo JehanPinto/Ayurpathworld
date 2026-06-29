@@ -555,7 +555,12 @@ export const insertUserSchema = z.object({
     .regex(/[0-9]/, "Password must contain at least one number")
     .regex(/[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/, "Password must contain at least one special character"),
   fullName: z.string().min(2, "Full name is required"),
-  phone: z.string().regex(/^07[0-9]{8}$/, "Please enter a valid Sri Lankan mobile number (07XXXXXXXX)"),
+  phone: z
+  .string()
+  .regex(
+    /^\+947[0-9]{8}$/,
+    "Please enter a valid Sri Lankan mobile number (+947XXXXXXXX)"
+  ),
   role: z.enum([UserRole.PATIENT, UserRole.DOCTOR]),
   nic: z.string().optional(),
   gender: z.enum([Gender.MALE, Gender.FEMALE, Gender.OTHER]).optional(),
@@ -807,6 +812,8 @@ export const insertPaymentSchema = z.object({
     rate: z.number(),
     amount: z.number(),
     applicableTo: z.enum(["doctors", "patients", "both", "platform"]),
+    kind: z.enum(["tax", "fee"]).optional(),
+    feeType: z.enum(["amount", "percentage"]).optional(),
   })).optional(),
   platformCommission: z.number().min(0).default(0),
   doctorEarnings: z.number().min(0),
@@ -954,11 +961,23 @@ export interface TaxEntry {
   createdAt: string;
 }
 
+export interface FeeEntry {
+  id: string;
+  title: string;
+  feeType: "amount" | "percentage";
+  rate: number;
+  applicableTo: "doctors" | "patients" | "both";
+  enabled: boolean;
+  createdAt: string;
+}
+
 export interface TaxBreakdownItem {
   title: string;
   rate: number;
   amount: number;
   applicableTo: "doctors" | "patients" | "both" | "platform";
+  kind?: "tax" | "fee";
+  feeType?: "amount" | "percentage";
 }
 
 // ================== AUTH SCHEMAS ==================

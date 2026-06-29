@@ -42,6 +42,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { LoadingPage, LoadingSpinner } from "@/components/ui/loading-spinner";
@@ -116,6 +117,12 @@ export default function DoctorSettings() {
   const [, navigate] = useLocation();
   const [activeTab, setActiveTab] = useState("profile");
   const [isUploadingImage, setIsUploadingImage] = useState(false);
+
+  // Cancellation Policy (UI-only for now — not yet wired to the backend)
+  const [cancellationFeeEnabled, setCancellationFeeEnabled] = useState(false);
+  const [cancellationFeeType, setCancellationFeeType] = useState<"" | "amount" | "percentage">("");
+  const [cancellationFeeAmount, setCancellationFeeAmount] = useState("");
+  const [cancellationWindow, setCancellationWindow] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [showAddLocationForm, setShowAddLocationForm] = useState(false);
   const [newHospName, setNewHospName] = useState("");
@@ -1135,6 +1142,100 @@ export default function DoctorSettings() {
                     />
                   </div>
                 </div>
+              </div>
+
+              {/* Cancellation Policy (UI only for now) */}
+              <div className="rounded-xl bg-[#e8f3ef] dark:bg-[#1e2e29] p-5 space-y-5">
+                <div>
+                  <p className="font-semibold text-base">Cancellation Policy</p>
+                  <p className="text-sm text-muted-foreground mt-0.5">Charge a fee when patients cancel close to the appointment time.</p>
+                </div>
+
+                {/* Enable toggle */}
+                <div className="flex items-center justify-between gap-4 rounded-lg border border-primary/20 bg-white dark:bg-background p-4">
+                  <div>
+                    <p className="font-medium text-sm">Enable cancellation fee</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">When on, the fee below applies to late cancellations.</p>
+                  </div>
+                  <Switch
+                    checked={cancellationFeeEnabled}
+                    onCheckedChange={setCancellationFeeEnabled}
+                    data-testid="switch-cancellation-fee"
+                  />
+                </div>
+
+                {cancellationFeeEnabled && (
+                  <>
+                    <div className="grid sm:grid-cols-2 gap-4">
+                      {/* Fee amount Type */}
+                      <div className="space-y-1.5">
+                        <p className="text-xs font-medium text-muted-foreground">Fee amount Type</p>
+                        <Select value={cancellationFeeType} onValueChange={(v) => setCancellationFeeType(v as "amount" | "percentage")}>
+                          <SelectTrigger className="bg-white dark:bg-background rounded-lg" data-testid="select-cancellation-fee-type">
+                            <SelectValue placeholder="Select Type" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="amount">Amount</SelectItem>
+                            <SelectItem value="percentage">Percentage</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      {/* Fee amount */}
+                      <div className="space-y-1.5">
+                        <p className="text-xs font-medium text-muted-foreground">Fee amount</p>
+                        <div className="relative">
+                          {cancellationFeeType !== "percentage" && (
+                            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">Rs.</span>
+                          )}
+                          <Input
+                            type="number"
+                            min="0"
+                            placeholder={cancellationFeeType === "percentage" ? "0" : "500.00"}
+                            value={cancellationFeeAmount}
+                            onChange={(e) => setCancellationFeeAmount(e.target.value)}
+                            className={`${cancellationFeeType !== "percentage" ? "pl-10" : ""} bg-white dark:bg-background rounded-lg`}
+                            data-testid="input-cancellation-fee-amount"
+                          />
+                          {cancellationFeeType === "percentage" && (
+                            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">%</span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Apply fee if cancelled within */}
+                    <div className="space-y-1.5">
+                      <p className="text-xs font-medium text-muted-foreground">Apply fee if cancelled within</p>
+                      <Select value={cancellationWindow} onValueChange={setCancellationWindow}>
+                        <SelectTrigger className="bg-white dark:bg-background rounded-lg" data-testid="select-cancellation-window">
+                          <SelectValue placeholder="Select window" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="7 days">7 days</SelectItem>
+                          <SelectItem value="6 days">6 days</SelectItem>
+                          <SelectItem value="5 days">5 days</SelectItem>
+                          <SelectItem value="4 days">4 days</SelectItem>
+                          <SelectItem value="36 Hours">36 Hours</SelectItem>
+                          <SelectItem value="24 Hours">24 Hours</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    {/* Live preview */}
+                    {cancellationWindow && cancellationFeeAmount && (
+                      <div className="rounded-lg border border-primary/20 bg-white dark:bg-background p-4" data-testid="text-cancellation-preview">
+                        <p className="text-sm">
+                          <span className="font-semibold">Preview:</span>{" "}
+                          Patients who cancel within <span className="font-semibold">{cancellationWindow}</span> of their appointment will be charged{" "}
+                          <span className="font-semibold">
+                            {cancellationFeeType === "percentage" ? `${cancellationFeeAmount}%` : `Rs. ${cancellationFeeAmount}`}
+                          </span>.
+                        </p>
+                      </div>
+                    )}
+                  </>
+                )}
               </div>
 
               {/* Save button */}
