@@ -11,6 +11,7 @@ import {
   XCircle,
   CalendarPlus,
   User,
+  Info,
 } from "lucide-react";
 import { format, parseISO, isToday, addHours, isBefore } from "date-fns";
 import { Card, CardContent } from "@/components/ui/card";
@@ -38,6 +39,7 @@ import {
   DialogTitle,
   DialogDescription,
 } from "@/components/ui/dialog";
+import { Textarea } from "@/components/ui/textarea";
 
 // Generate 24/7h time slots
 const timeSlots = [
@@ -83,6 +85,15 @@ export default function DoctorSchedule() {
   const { data: profile } = useQuery<DoctorWithDetails>({
     queryKey: ["/api/doctor/profile"],
   });
+
+  const { data: settings } = useQuery<any>({
+    queryKey: ["/api/booking-settings"],
+  });
+
+  const cancellationFee = settings?.cancellationFee || 300;
+  
+  const [slotToCancel, setSlotToCancel] = useState<AppointmentSlot | null>(null);
+  const [cancelReason, setCancelReason] = useState("");
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [slotToDelete, setSlotToDelete] = useState<AppointmentSlot | null>(null);
@@ -194,6 +205,24 @@ export default function DoctorSchedule() {
     },
   });
 
+  // Mutation for cancelling a booked slot
+  const cancelBookedSlotMutation = useMutation({
+    mutationFn: async ({ slotId, reason }: { slotId: string; reason: string }) => {
+      // NOTE: Ensure your backend endpoint for slot cancellation handles the booked status correctly. 
+      // It should ideally find the connected appointment and cancel it.
+      return apiRequest("PATCH", `/api/slots/${slotId}/cancel-booking`, { reason });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/doctor/slots"] });
+      toast({ title: "Appointment cancelled successfully" });
+      setSlotToCancel(null);
+      setCancelReason("");
+    },
+    onError: (err: any) => {
+      toast({ title: err?.message || "Failed to cancel appointment", variant: "destructive" });
+    },
+  });
+
   const handleAddSlot = () => {
     if (newSlot.consultationType === "in_person" && !newSlot.clinicLocation) {
       toast({ title: "Please select a location", variant: "destructive" });
@@ -219,7 +248,7 @@ export default function DoctorSchedule() {
 
     // Include buffer time when checking overlaps with existing slots
     const buffer = profile?.bufferTimeMinutes || 0;
-    const existingSlotsOnDate = slots.filter((s) => s.date === newSlot.date && !s.isBlocked);
+    const existingSlotsOnDate = slots.filter((s) => s.date === newSlot.date);
     
     // We check if the NEW slot overlaps with any EXISTING slot + its buffer
     const overlappingSlot = existingSlotsOnDate.find((existingSlot) => {
@@ -393,7 +422,18 @@ export default function DoctorSchedule() {
 
                       {/* Right: Actions & Status */}
                       <div className="flex items-center justify-end gap-3 border-t sm:border-t-0 pt-3 sm:pt-0 mt-2 sm:mt-0">
-                        {slot.isBooked ? (
+                        {slot.isBlocked ? (
+                          <div className="flex flex-col items-end gap-1.5">
+                            <Badge variant="outline" className="border-red-200 text-red-600 bg-red-50 dark:bg-red-900/20 uppercase tracking-wider px-3 py-1 flex items-center gap-1.5">
+                              <XCircle className="w-3.5 h-3.5" />
+                              CANCELLED
+                            </Badge>
+                            <span className="text-[11px] font-medium text-red-500/80 flex items-center gap-1 px-1">
+                              <AlertCircle className="w-3 h-3" />
+                              Rs. {cancellationFee} deducted from payouts
+                            </span>
+                          </div>
+                        ) : slot.isBooked ? (
                           <>
                             <Badge className="bg-blue-100 text-blue-700 hover:bg-blue-100 dark:bg-blue-900/40 dark:text-blue-300 uppercase tracking-wider px-3 py-1 flex items-center gap-1.5">
                               <User className="w-3.5 h-3.5" />
@@ -402,14 +442,10 @@ export default function DoctorSchedule() {
                             <Button 
                               variant="outline" 
                               size="sm" 
-                              className="text-orange-600 border-orange-200 hover:bg-orange-50 dark:hover:bg-orange-950/20"
-                              onClick={() => toast({ 
-                                title: "Update Soon!", 
-                                description: "Slot cancellation feature is currently under development.",
-                                variant: "default"
-                              })}
+                              className="text-red-600 border-red-200 hover:bg-red-50 dark:hover:bg-red-950/20"
+                              onClick={() => setSlotToCancel(slot)}
                             >
-                              Cancel
+                              <XCircle className="w-4 h-4 mr-1.5" /> Cancel
                             </Button>
                           </>
                         ) : (
@@ -438,6 +474,74 @@ export default function DoctorSchedule() {
           })}
         </div>
       </div>
+
+      {/* Cancel Confirmation Dialog */}
+      <Dialog open={!!slotToCancel} onOpenChange={(open) => { 
+        if (!open) { 
+          setSlotToCancel(null); 
+          setCancelReason(""); 
+        } 
+      }}>
+        <DialogContent className="max-w-md rounded-2xl">
+          <DialogHeader>
+            <DialogTitle className="text-lg font-bold text-red-600 flex items-center gap-2">
+              <AlertCircle className="w-5 h-5" /> Cancel Appointment
+            </DialogTitle>
+            <DialogDescription className="text-sm text-muted-foreground pt-1">
+              {slotToCancel && (
+                <span className="block font-medium text-foreground mb-2">
+                  {format(parseISO(slotToCancel.date), "EEE, MMM d")} {" · "} 
+                  {formatTimeAMPM(slotToCancel.startTime)} – {formatTimeAMPM(slotToCancel.endTime)}
+                </span>
+              )}
+              You are about to cancel a confirmed booking. Please provide a reason for the patient.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-3">
+            {/* Cancellation Fee Warning Box */}
+            <div className="bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-900/50 rounded-xl p-4 flex gap-3 items-start">
+              <Info className="w-5 h-5 text-red-600 dark:text-red-400 shrink-0 mt-0.5" />
+              <div>
+                <h4 className="text-sm font-semibold text-red-800 dark:text-red-300">Cancellation Fee Applies</h4>
+                <p className="text-sm text-red-600 dark:text-red-400/80 mt-1 leading-snug">
+                  Rs. {cancellationFee} will be deducted from your payouts for cancelling this booked session.
+                </p>
+              </div>
+            </div>
+
+            {/* Reason Textarea */}
+            <div className="space-y-2">
+              <Label htmlFor="cancel-reason" className="text-foreground">Reason for Cancellation <span className="text-red-500">*</span></Label>
+              <Textarea
+                id="cancel-reason"
+                placeholder="E.g., Unexpected personal emergency, clinic closure..."
+                value={cancelReason}
+                onChange={(e) => setCancelReason(e.target.value)}
+                className="resize-none"
+                rows={3}
+              />
+            </div>
+          </div>
+
+          <DialogFooter className="flex gap-2 pt-2">
+            <Button variant="outline" className="flex-1" onClick={() => { setSlotToCancel(null); setCancelReason(""); }}>
+              Keep Booking
+            </Button>
+            <Button
+              className="flex-1 bg-red-600 hover:bg-red-700 text-white"
+              disabled={cancelBookedSlotMutation.isPending || cancelReason.trim().length < 5}
+              onClick={() => {
+                if (slotToCancel) {
+                  cancelBookedSlotMutation.mutate({ slotId: slotToCancel.id, reason: cancelReason });
+                }
+              }}
+            >
+              {cancelBookedSlotMutation.isPending ? "Cancelling..." : "Confirm Cancellation"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Delete Confirmation Dialog */}
       <Dialog open={!!slotToDelete} onOpenChange={(open) => { if (!open) setSlotToDelete(null); }}>

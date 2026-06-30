@@ -7049,5 +7049,51 @@ export async function registerRoutes(
     }
   );
 
+  app.patch(
+    "/api/slots/:id/cancel-booking",
+    authMiddleware,
+    roleMiddleware(UserRole.DOCTOR),
+    async (req: AuthenticatedRequest, res: Response) => {
+      try {
+        const slotId = req.params.id;
+        const { reason } = req.body;
+
+        if (!reason) {
+          return res.status(400).json({ error: "Cancellation reason is required" });
+        }
+
+        const profile = await storage.getDoctorProfileByUserId(req.user!.id);
+        if (!profile) {
+          return res.status(404).json({ error: "Doctor profile not found" });
+        }
+
+        const slot = await storage.getAppointmentSlot(slotId);
+        if (!slot || slot.doctorId !== profile.id) {
+          return res.status(403).json({ error: "Not authorized" });
+        }
+
+        // 1. Get the active appointment linked to this slot
+        const appointment = await storage.getAppointmentBySlotId(slotId);
+        if (!appointment) {
+          return res.status(404).json({ error: "No active appointment found for this slot" });
+        }
+
+        // 2. Cancel the appointment (Handles refunds and notifications)
+        const cancelled = await storage.cancelAppointment(
+          appointment.id,
+          reason,
+          req.user!.role
+        );
+
+        await storage.blockSlot(slotId);
+
+        res.json({ success: true, appointment: cancelled });
+      } catch (error) {
+        console.error("Error cancelling booked slot:", error);
+        res.status(500).json({ error: "Failed to cancel appointment" });
+      }
+    }
+  );
+
   return httpServer;
 }

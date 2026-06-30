@@ -323,6 +323,7 @@ export interface IStorage {
   getPaginatedAuditLogs(page: number, limit: number): Promise<any>;
   updateDoctorHospital(doctorProfileId: string, hospitalId: string, updates: Partial<InsertHospital>): Promise<Hospital | null>;
   getDoctorDetailedAnalytics(doctorId: string): Promise<DoctorDetailedAnalytics>;
+  getAppointmentBySlotId(slotId: string): Promise<Appointment | undefined>;
 }
 
 export class MemStorage implements IStorage {
