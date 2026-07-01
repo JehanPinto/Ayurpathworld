@@ -31,6 +31,7 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogDescription,
   DialogFooter,
 } from "@/components/ui/dialog";
 
@@ -130,6 +131,8 @@ export default function AdminSettingsPage() {
   const [newFeeType, setNewFeeType] = useState<"" | "amount" | "percentage">("");
   const [newFeeRate, setNewFeeRate] = useState("");
   const [newFeeApplicableTo, setNewFeeApplicableTo] = useState<"" | "doctors" | "patients" | "both">("");
+  // Fee pending delete confirmation (SCRUM-49)
+  const [feeToDelete, setFeeToDelete] = useState<FeeEntry | null>(null);
 
   const [systemTaxes, setSystemTaxes] = useState([
     { id: "vat", title: "VAT", rate: 18, description: "Value-added tax on consultation fees", applicableTo: "doctors", enabled: true },
@@ -283,7 +286,11 @@ export default function AdminSettingsPage() {
       apiRequest("DELETE", `/api/admin/fee-entries/${id}`),
     onSuccess: () => {
       invalidateFees();
+      setFeeToDelete(null);
       toast({ title: "Fee Removed", description: "Custom fee has been deleted." });
+    },
+    onError: () => {
+      setFeeToDelete(null);
     },
   });
 
@@ -778,7 +785,7 @@ export default function AdminSettingsPage() {
                           data-testid={`switch-fee-${fee.id}`}
                         />
                         <button
-                          onClick={() => deleteFeeMutation.mutate(fee.id)}
+                          onClick={() => setFeeToDelete(fee)}
                           disabled={deleteFeeMutation.isPending}
                           className="text-destructive hover:text-destructive/70 transition-colors shrink-0"
                           data-testid={`button-delete-fee-${fee.id}`}
@@ -791,6 +798,37 @@ export default function AdminSettingsPage() {
                 </div>
               </div>
             </div>
+
+            {/* Delete Fee confirmation (SCRUM-49) */}
+            <Dialog open={!!feeToDelete} onOpenChange={(open) => { if (!open) setFeeToDelete(null); }}>
+              <DialogContent className="max-w-sm rounded-2xl">
+                <DialogHeader>
+                  <DialogTitle className="text-lg font-bold">Delete this fee?</DialogTitle>
+                  <DialogDescription className="text-sm text-muted-foreground pt-1">
+                    Are you sure you want to delete{" "}
+                    <span className="font-semibold text-foreground">{feeToDelete?.title}</span>? This action cannot be undone.
+                  </DialogDescription>
+                </DialogHeader>
+                <DialogFooter className="flex gap-2 pt-2">
+                  <Button
+                    variant="outline"
+                    className="flex-1"
+                    onClick={() => setFeeToDelete(null)}
+                    data-testid="button-cancel-delete-fee"
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    className="flex-1 bg-red-600 hover:bg-red-700 text-white"
+                    disabled={deleteFeeMutation.isPending}
+                    onClick={() => { if (feeToDelete) deleteFeeMutation.mutate(feeToDelete.id); }}
+                    data-testid="button-confirm-delete-fee"
+                  >
+                    {deleteFeeMutation.isPending ? "Deleting..." : "Delete"}
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
 
           </div>
 
