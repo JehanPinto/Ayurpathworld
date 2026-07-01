@@ -3891,6 +3891,36 @@ export async function registerRoutes(
     },
   );
 
+  app.patch(
+    "/api/doctor/appointments/:id/confirm",
+    authMiddleware,
+    roleMiddleware(UserRole.DOCTOR),
+    async (req: AuthenticatedRequest, res: Response) => {
+      try {
+        const appointment = await storage.getAppointment(req.params.id);
+        if (!appointment) {
+          return res.status(404).json({ error: "Appointment not found" });
+        }
+
+        const profile = await storage.getDoctorProfileByUserId(req.user!.id);
+        if (!profile || appointment.doctorId !== profile.id) {
+          return res.status(403).json({ error: "Forbidden" });
+        }
+
+        if (appointment.status !== AppointmentStatus.PENDING) {
+          return res.status(400).json({ error: "Only pending appointments can be confirmed" });
+        }
+
+        const updated = await storage.updateAppointment(req.params.id, {
+          status: AppointmentStatus.CONFIRMED,
+        });
+        res.json(updated);
+      } catch (error) {
+        res.status(500).json({ error: "Failed to confirm appointment" });
+      }
+    },
+  );
+
   app.get(
     "/api/appointments",
     authMiddleware,
