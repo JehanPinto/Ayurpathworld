@@ -97,6 +97,7 @@ export default function AdminSettingsPage() {
   };
 
   const [maintenanceDialog, setMaintenanceDialog] = useState(false);
+  const [maintenanceDisableDialog, setMaintenanceDisableDialog] = useState(false);
   const [maintStartTime, setMaintStartTime] = useState(toLocalDatetimeValue(new Date()));
   const [maintEndTime, setMaintEndTime] = useState("");
 
@@ -131,7 +132,7 @@ export default function AdminSettingsPage() {
   const [newFeeType, setNewFeeType] = useState<"" | "amount" | "percentage">("");
   const [newFeeRate, setNewFeeRate] = useState("");
   const [newFeeApplicableTo, setNewFeeApplicableTo] = useState<"" | "doctors" | "patients" | "both">("");
-  // Fee pending delete confirmation (SCRUM-49)
+  // Fee pending delete confirmation
   const [feeToDelete, setFeeToDelete] = useState<FeeEntry | null>(null);
 
   const [systemTaxes, setSystemTaxes] = useState([
@@ -326,14 +327,19 @@ export default function AdminSettingsPage() {
       setMaintEndTime("");
       setMaintenanceDialog(true);
     } else {
-      // Turn off immediately — no popup needed
-      update("maintenanceMode", false);
-      saveMutation.mutate({
-        maintenanceMode: false,
-        maintenanceStartTime: null,
-        maintenanceEndTime: null,
-      });
+      // Turning off is high-impact — confirm before saving
+      setMaintenanceDisableDialog(true);
     }
+  };
+
+  const handleMaintenanceDisableConfirm = () => {
+    setMaintenanceDisableDialog(false);
+    update("maintenanceMode", false);
+    saveMutation.mutate({
+      maintenanceMode: false,
+      maintenanceStartTime: null,
+      maintenanceEndTime: null,
+    });
   };
 
   const handleMaintenanceConfirm = () => {
@@ -799,7 +805,7 @@ export default function AdminSettingsPage() {
               </div>
             </div>
 
-            {/* Delete Fee confirmation (SCRUM-49) */}
+            {/* Delete Fee confirmation */}
             <Dialog open={!!feeToDelete} onOpenChange={(open) => { if (!open) setFeeToDelete(null); }}>
               <DialogContent className="max-w-sm rounded-2xl">
                 <DialogHeader>
@@ -1068,6 +1074,29 @@ export default function AdminSettingsPage() {
           <Button variant="outline" onClick={() => setMaintenanceDialog(false)}>Cancel</Button>
           <Button variant="destructive" onClick={handleMaintenanceConfirm} disabled={saveMutation.isPending}>
             {saveMutation.isPending ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Enabling...</> : "Enable Maintenance"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    {/* Confirm before turning maintenance off */}
+    <Dialog open={maintenanceDisableDialog} onOpenChange={setMaintenanceDisableDialog}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2 text-destructive">
+            <AlertTriangle className="h-5 w-5" />
+            Turn off Maintenance Mode?
+          </DialogTitle>
+        </DialogHeader>
+        <div className="py-2">
+          <p className="text-sm text-muted-foreground">
+            Turning off Maintenance Mode will make the platform live to <strong>all users</strong> immediately. Continue?
+          </p>
+        </div>
+        <DialogFooter className="gap-2">
+          <Button variant="outline" onClick={() => setMaintenanceDisableDialog(false)} data-testid="button-cancel-disable-maintenance">Cancel</Button>
+          <Button variant="destructive" onClick={handleMaintenanceDisableConfirm} disabled={saveMutation.isPending} data-testid="button-confirm-disable-maintenance">
+            {saveMutation.isPending ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Saving...</> : "Turn Off Maintenance"}
           </Button>
         </DialogFooter>
       </DialogContent>
