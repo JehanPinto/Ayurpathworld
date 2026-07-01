@@ -3385,6 +3385,16 @@ export async function registerRoutes(
               isRead: false,
               relatedId: appointment.id,
             });
+
+            // Patient-facing reminder for the upcoming consultation
+            await storage.createNotification({
+              userId: req.user!.id,
+              title: `Upcoming consultation on ${formattedBookingDate} at ${formattedStartTime}`,
+              message: `Reminder: your consultation with Dr. ${doctorName} is on ${formattedBookingDate} at ${formattedStartTime}. Please be available on time.`,
+              type: "reminder",
+              isRead: false,
+              relatedId: appointment.id,
+            });
           }
         }
 
