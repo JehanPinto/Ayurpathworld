@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { format, isToday, isYesterday, subDays } from "date-fns";
+import { format, isToday, isYesterday } from "date-fns";
 import { ArrowUpRight, CheckCheck } from "lucide-react";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
@@ -24,10 +24,6 @@ const FILTERS: { key: FilterType; label: string }[] = [
   { key: "doctor",       label: "Doctor" },
   { key: "reminder",     label: "Reminder" },
 ];
-
-const yesterday   = subDays(new Date(), 1).toISOString();
-const threeDaysAgo = subDays(new Date(), 3).toISOString();
-const fourDaysAgo  = subDays(new Date(), 4).toISOString();
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -134,11 +130,7 @@ export function NotificationPanel({ open, onOpenChange }: Props) {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/notifications"] }),
   });
 
-  // Merge real notifications with demos (demo shown only when no real equivalent exists)
-  const realTitles = new Set(apiNotifications.map((n) => n.title));
-  const notifications = [
-    ...apiNotifications.filter((d) => !realTitles.has(d.title)),
-  ];
+  const notifications = apiNotifications;
 
   const unreadCount = notifications.filter((n) => !n.isRead).length;
 
