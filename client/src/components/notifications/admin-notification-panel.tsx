@@ -68,10 +68,9 @@ function getBadgeLabel(n: Notification): string {
 
 function getButton(n: Notification) {
   const text  = (n.title + " " + n.message).toLowerCase();
-  const isDemo = n.id.startsWith("demo-");
   if (text.includes("registration"))             return { label: "Review Doctor",   href: "/admin/doctors" };
   if (text.includes("failed") || text.includes("declined"))
-                                                  return { label: "Resolve Issue",   href: isDemo ? null : "/admin/payments" };
+                                                  return { label: "Resolve Issue",   href: "/admin/payments" };
   if (text.includes("reset") || text.includes("unrecognised")) return null;
   if (text.includes("pending") || text.includes("overdue"))
                                                   return { label: "Review Doctor",   href: "/admin" };
