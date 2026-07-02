@@ -7049,5 +7049,65 @@ export async function registerRoutes(
     }
   );
 
+  app.post(
+    "/api/doctor/export",
+    authMiddleware,
+    roleMiddleware(UserRole.DOCTOR),
+    async (req: AuthenticatedRequest, res: Response) => {
+      try {
+        const { startDate, endDate, reportType, format } = req.body;
+        
+        const profile = await storage.getDoctorProfileByUserId(req.user!.id);
+        if (!profile) return res.status(404).json({ error: "Doctor profile not found" });
+
+        const data = await storage.getDoctorExportData(profile.id, startDate, endDate);
+
+        if (format === "json") {
+          return res.json({
+            reportGeneratedAt: new Date().toISOString(),
+            dateRange: { startDate, endDate },
+            data: {
+              ...(reportType === "earnings" || reportType === "all" ? { payments: data.payments } : {}),
+              ...(reportType === "appointments" || reportType === "all" ? { appointments: data.appointments } : {}),
+            }
+          });
+        }
+
+        // Generate CSV format
+        if (format === "csv") {
+          let csvContent = `Report Generated: ${new Date().toISOString()}\nDate Range: ${startDate} to ${endDate}\n\n`;
+
+          if (reportType === "earnings" || reportType === "all") {
+            csvContent += "--- EARNINGS REPORT ---\n";
+            csvContent += "Date,Status,Method,Total Amount (LKR),Platform Commission (LKR),Your Earnings (LKR)\n";
+            data.payments.forEach(p => {
+              csvContent += `"${p.createdAt.split('T')[0]}","${p.status}","${p.method}","${p.totalAmount}","${p.platformCommission}","${p.doctorEarnings}"\n`;
+            });
+            csvContent += "\n";
+          }
+
+          if (reportType === "appointments" || reportType === "all") {
+            csvContent += "--- APPOINTMENTS REPORT ---\n";
+            csvContent += "Date,Time,Patient Name,Type,Status,Symptoms\n";
+            data.appointments.forEach(a => {
+              // Wrap strings in quotes to avoid CSV breaking on commas inside text
+              const safeSymptoms = a.symptoms.replace(/"/g, '""');
+              csvContent += `"${a.appointmentDate}","${a.appointmentTime}","${a.patient.fullName}","${a.consultationType}","${a.status}","${safeSymptoms}"\n`;
+            });
+          }
+
+          res.setHeader('Content-Type', 'text/csv');
+          res.setHeader('Content-Disposition', `attachment; filename=doctor_report_${startDate}_to_${endDate}.csv`);
+          return res.status(200).send(csvContent);
+        }
+
+        res.status(400).json({ error: "Invalid format requested" });
+      } catch (error) {
+        console.error("Export Error:", error);
+        res.status(500).json({ error: "Failed to generate report" });
+      }
+    }
+  );
+
   return httpServer;
 }
