@@ -120,6 +120,18 @@ function validateBankDetails(acc?: string | null, branch?: string | null) {
   return null;
 }
 
+// Format a "HH:MM" or "HH:MM:SS" time string to 12-hour form, e.g. "14:30:00" -> "2:30 PM"
+function formatTime12h(time?: string | null): string {
+  if (!time) return "";
+  const [hStr, mStr] = time.split(":");
+  const h = parseInt(hStr, 10);
+  const m = parseInt(mStr ?? "0", 10);
+  if (Number.isNaN(h) || Number.isNaN(m)) return time;
+  const period = h >= 12 ? "PM" : "AM";
+  const hour12 = h % 12 === 0 ? 12 : h % 12;
+  return `${hour12}:${m.toString().padStart(2, "0")} ${period}`;
+}
+
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: process.env.NODE_ENV === "production" ? 10 : 100,
@@ -919,6 +931,25 @@ export async function registerRoutes(
           throw profileError;
         }
 
+        // Notify all admins about the new doctor registration awaiting verification
+        try {
+          const regAdmins = await storage.getAllUsers("admin");
+          await Promise.all(
+            regAdmins.map((a) =>
+              storage.createNotification({
+                userId: a.id,
+                title: "New doctor registration",
+                message: `${user.fullName} has registered as a doctor and is awaiting verification.`,
+                type: "system",
+                isRead: false,
+                relatedId: user.id,
+              }),
+            ),
+          );
+        } catch (notifyError) {
+          console.error("Failed to notify admins of doctor registration:", notifyError);
+        }
+
         const { token, jti } = generateToken({
           id: user.id, email: user.email, role: user.role, fullName: user.fullName,
         });
@@ -1599,6 +1630,27 @@ export async function registerRoutes(
           });
 
           await storage.createDoctorProfile(doctorData);
+
+          // Notify all admins about the new doctor registration awaiting verification
+          try {
+            const newDoctorName = updatedUser.fullName;
+            const newDoctorId = updatedUser.id;
+            const regAdmins = await storage.getAllUsers("admin");
+            await Promise.all(
+              regAdmins.map((a) =>
+                storage.createNotification({
+                  userId: a.id,
+                  title: "New doctor registration",
+                  message: `${newDoctorName} has registered as a doctor and is awaiting verification.`,
+                  type: "system",
+                  isRead: false,
+                  relatedId: newDoctorId,
+                }),
+              ),
+            );
+          } catch (notifyError) {
+            console.error("Failed to notify admins of doctor registration:", notifyError);
+          }
         }
 
         updatedUser = (await storage.getUser(user.id)) || updatedUser;
@@ -3278,18 +3330,20 @@ export async function registerRoutes(
 
         await storage.createPayment(paymentData);
 
-        if (bookingData.paymentMethod === PaymentMethod.AT_CLINIC) {
+        // Notify patient, doctor and admins for every booking (online + at-clinic)
+        {
           const doctorUser = await storage.getUser(doctor.userId);
           const doctorName = doctorUser?.fullName || "your doctor";
           const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
           const dateParts = typeof slotData.date === 'string' ? slotData.date.split("-") : new Date(slotData.date).toISOString().split('T')[0].split("-");
           const formattedBookingDate = `${parseInt(dateParts[2])} ${months[parseInt(dateParts[1]) - 1]}`;
           const formattedAmount = `LKR ${totalAmount.toLocaleString("en-LK")}`;
+          const formattedStartTime = formatTime12h(slotData.startTime);
 
           await storage.createNotification({
             userId: req.user!.id,
             title: "Appointment Booked",
-            message: `Your appointment with Dr. ${doctorName} has been booked for ${formattedBookingDate} at ${slotData.startTime}. Total: ${formattedAmount}.`,
+            message: `Your appointment with Dr. ${doctorName} has been booked for ${formattedBookingDate} at ${formattedStartTime}. Total: ${formattedAmount}.`,
             type: "appointment",
             isRead: false,
             relatedId: appointment.id,
@@ -3298,11 +3352,26 @@ export async function registerRoutes(
           await storage.createNotification({
             userId: doctor.userId,
             title: "New appointment booked",
-            message: `${req.user!.fullName} has booked a consultation for ${formattedBookingDate} at ${slotData.startTime}. Chief complaint: ${bookingData.symptoms.substring(0, 150)}.`,
+            message: `${req.user!.fullName} has booked a consultation for ${formattedBookingDate} at ${formattedStartTime}. Chief complaint: ${bookingData.symptoms.substring(0, 150)}.`,
             type: "appointment",
             isRead: false,
             relatedId: appointment.id,
           });
+
+          // Notify all admins about the new appointment
+          const bookingAdmins = await storage.getAllUsers("admin");
+          await Promise.all(
+            bookingAdmins.map((a) =>
+              storage.createNotification({
+                userId: a.id,
+                title: "New appointment booked",
+                message: `${req.user!.fullName} booked a consultation with Dr. ${doctorName} on ${formattedBookingDate} at ${formattedStartTime}. Total: ${formattedAmount}.`,
+                type: "system",
+                isRead: false,
+                relatedId: appointment.id,
+              }),
+            ),
+          );
 
           const today = new Date().toISOString().split("T")[0];
           const slotDateStr = Array.isArray(dateParts) ? dateParts.join("-") : String(slotData.date);
@@ -3310,8 +3379,18 @@ export async function registerRoutes(
           if (slotDateStr > today) {
             await storage.createNotification({
               userId: doctor.userId,
-              title: `Consultation on ${formattedBookingDate} at ${slotData.startTime}`,
+              title: `Consultation on ${formattedBookingDate} at ${formattedStartTime}`,
               message: `You have an upcoming consultation with ${req.user!.fullName} on ${formattedBookingDate}. Review their case notes beforehand.`,
+              type: "reminder",
+              isRead: false,
+              relatedId: appointment.id,
+            });
+
+            // Patient-facing reminder for the upcoming consultation
+            await storage.createNotification({
+              userId: req.user!.id,
+              title: `Upcoming consultation on ${formattedBookingDate} at ${formattedStartTime}`,
+              message: `Reminder: your consultation with Dr. ${doctorName} is on ${formattedBookingDate} at ${formattedStartTime}. Please be available on time.`,
               type: "reminder",
               isRead: false,
               relatedId: appointment.id,
@@ -3569,7 +3648,7 @@ export async function registerRoutes(
           ];
           const [, mo, dy] = existing.appointmentDate.split("-");
           const formattedDate = `${parseInt(dy)} ${months[parseInt(mo) - 1]}`;
-          const formattedTime = existing.appointmentTime;
+          const formattedTime = formatTime12h(existing.appointmentTime);
 
           // Notify patient
           await storage.createNotification({
@@ -3592,6 +3671,22 @@ export async function registerRoutes(
               relatedId: appointment.id,
             });
           }
+
+          // Notify all admins about the cancelled appointment
+          const cancelAdmins = await storage.getAllUsers("admin");
+          const cancelledBy = req.user!.role === UserRole.DOCTOR ? `Dr. ${doctorName}` : patientName;
+          await Promise.all(
+            cancelAdmins.map((a) =>
+              storage.createNotification({
+                userId: a.id,
+                title: "Appointment cancelled",
+                message: `${cancelledBy} cancelled the ${formattedDate} at ${formattedTime} appointment (${patientName} with Dr. ${doctorName}).`,
+                type: "system",
+                isRead: false,
+                relatedId: appointment.id,
+              }),
+            ),
+          );
         }
 
         res.json(appointment);
@@ -3887,6 +3982,36 @@ export async function registerRoutes(
         res
           .status(500)
           .json({ error: "Failed to mark appointment as no-show" });
+      }
+    },
+  );
+
+  app.patch(
+    "/api/doctor/appointments/:id/confirm",
+    authMiddleware,
+    roleMiddleware(UserRole.DOCTOR),
+    async (req: AuthenticatedRequest, res: Response) => {
+      try {
+        const appointment = await storage.getAppointment(req.params.id);
+        if (!appointment) {
+          return res.status(404).json({ error: "Appointment not found" });
+        }
+
+        const profile = await storage.getDoctorProfileByUserId(req.user!.id);
+        if (!profile || appointment.doctorId !== profile.id) {
+          return res.status(403).json({ error: "Forbidden" });
+        }
+
+        if (appointment.status !== AppointmentStatus.PENDING) {
+          return res.status(400).json({ error: "Only pending appointments can be confirmed" });
+        }
+
+        const updated = await storage.updateAppointment(req.params.id, {
+          status: AppointmentStatus.CONFIRMED,
+        });
+        res.json(updated);
+      } catch (error) {
+        res.status(500).json({ error: "Failed to confirm appointment" });
       }
     },
   );

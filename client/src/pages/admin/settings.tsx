@@ -31,6 +31,7 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogDescription,
   DialogFooter,
 } from "@/components/ui/dialog";
 
@@ -96,6 +97,7 @@ export default function AdminSettingsPage() {
   };
 
   const [maintenanceDialog, setMaintenanceDialog] = useState(false);
+  const [maintenanceDisableDialog, setMaintenanceDisableDialog] = useState(false);
   const [maintStartTime, setMaintStartTime] = useState(toLocalDatetimeValue(new Date()));
   const [maintEndTime, setMaintEndTime] = useState("");
 
@@ -130,6 +132,8 @@ export default function AdminSettingsPage() {
   const [newFeeType, setNewFeeType] = useState<"" | "amount" | "percentage">("");
   const [newFeeRate, setNewFeeRate] = useState("");
   const [newFeeApplicableTo, setNewFeeApplicableTo] = useState<"" | "doctors" | "patients" | "both">("");
+  // Fee pending delete confirmation
+  const [feeToDelete, setFeeToDelete] = useState<FeeEntry | null>(null);
 
   const [systemTaxes, setSystemTaxes] = useState([
     { id: "vat", title: "VAT", rate: 18, description: "Value-added tax on consultation fees", applicableTo: "doctors", enabled: true },
@@ -283,7 +287,11 @@ export default function AdminSettingsPage() {
       apiRequest("DELETE", `/api/admin/fee-entries/${id}`),
     onSuccess: () => {
       invalidateFees();
+      setFeeToDelete(null);
       toast({ title: "Fee Removed", description: "Custom fee has been deleted." });
+    },
+    onError: () => {
+      setFeeToDelete(null);
     },
   });
 
@@ -319,14 +327,19 @@ export default function AdminSettingsPage() {
       setMaintEndTime("");
       setMaintenanceDialog(true);
     } else {
-      // Turn off immediately — no popup needed
-      update("maintenanceMode", false);
-      saveMutation.mutate({
-        maintenanceMode: false,
-        maintenanceStartTime: null,
-        maintenanceEndTime: null,
-      });
+      // Turning off is high-impact — confirm before saving
+      setMaintenanceDisableDialog(true);
     }
+  };
+
+  const handleMaintenanceDisableConfirm = () => {
+    setMaintenanceDisableDialog(false);
+    update("maintenanceMode", false);
+    saveMutation.mutate({
+      maintenanceMode: false,
+      maintenanceStartTime: null,
+      maintenanceEndTime: null,
+    });
   };
 
   const handleMaintenanceConfirm = () => {
@@ -778,7 +791,7 @@ export default function AdminSettingsPage() {
                           data-testid={`switch-fee-${fee.id}`}
                         />
                         <button
-                          onClick={() => deleteFeeMutation.mutate(fee.id)}
+                          onClick={() => setFeeToDelete(fee)}
                           disabled={deleteFeeMutation.isPending}
                           className="text-destructive hover:text-destructive/70 transition-colors shrink-0"
                           data-testid={`button-delete-fee-${fee.id}`}
@@ -791,6 +804,37 @@ export default function AdminSettingsPage() {
                 </div>
               </div>
             </div>
+
+            {/* Delete Fee confirmation */}
+            <Dialog open={!!feeToDelete} onOpenChange={(open) => { if (!open) setFeeToDelete(null); }}>
+              <DialogContent className="max-w-sm rounded-2xl">
+                <DialogHeader>
+                  <DialogTitle className="text-lg font-bold">Delete this fee?</DialogTitle>
+                  <DialogDescription className="text-sm text-muted-foreground pt-1">
+                    Are you sure you want to delete{" "}
+                    <span className="font-semibold text-foreground">{feeToDelete?.title}</span>? This action cannot be undone.
+                  </DialogDescription>
+                </DialogHeader>
+                <DialogFooter className="flex gap-2 pt-2">
+                  <Button
+                    variant="outline"
+                    className="flex-1"
+                    onClick={() => setFeeToDelete(null)}
+                    data-testid="button-cancel-delete-fee"
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    className="flex-1 bg-red-600 hover:bg-red-700 text-white"
+                    disabled={deleteFeeMutation.isPending}
+                    onClick={() => { if (feeToDelete) deleteFeeMutation.mutate(feeToDelete.id); }}
+                    data-testid="button-confirm-delete-fee"
+                  >
+                    {deleteFeeMutation.isPending ? "Deleting..." : "Delete"}
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
 
           </div>
 
@@ -1030,6 +1074,29 @@ export default function AdminSettingsPage() {
           <Button variant="outline" onClick={() => setMaintenanceDialog(false)}>Cancel</Button>
           <Button variant="destructive" onClick={handleMaintenanceConfirm} disabled={saveMutation.isPending}>
             {saveMutation.isPending ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Enabling...</> : "Enable Maintenance"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    {/* Confirm before turning maintenance off */}
+    <Dialog open={maintenanceDisableDialog} onOpenChange={setMaintenanceDisableDialog}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2 text-destructive">
+            <AlertTriangle className="h-5 w-5" />
+            Turn off Maintenance Mode?
+          </DialogTitle>
+        </DialogHeader>
+        <div className="py-2">
+          <p className="text-sm text-muted-foreground">
+            Turning off Maintenance Mode will make the platform live to <strong>all users</strong> immediately. Continue?
+          </p>
+        </div>
+        <DialogFooter className="gap-2">
+          <Button variant="outline" onClick={() => setMaintenanceDisableDialog(false)} data-testid="button-cancel-disable-maintenance">Cancel</Button>
+          <Button variant="destructive" onClick={handleMaintenanceDisableConfirm} disabled={saveMutation.isPending} data-testid="button-confirm-disable-maintenance">
+            {saveMutation.isPending ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Saving...</> : "Turn Off Maintenance"}
           </Button>
         </DialogFooter>
       </DialogContent>
