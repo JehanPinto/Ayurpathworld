@@ -13,68 +13,175 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Separator } from "@/components/ui/separator";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { LoadingPage } from "@/components/ui/loading-spinner";
-import type { PlatformSettings, TaxEntry } from "@shared/schema";
+import type { PlatformSettings, TaxEntry, FeeEntry } from "@shared/schema";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "@/components/ui/dialog";
 
-function SpinnerBox({
+function EditSettingCard({
   label,
   value,
   unit,
   description,
-  onChange,
+  dialogTitle,
+  onSave,
   min = 0,
-  max = 100,
-  step = 1,
+  max,
   testId,
 }: {
   label: string;
   value: string;
   unit: "%" | "LKR";
   description: string;
-  onChange: (val: string) => void;
+  dialogTitle: string;
+  onSave: (val: string) => void;
   min?: number;
   max?: number;
-  step?: number;
   testId?: string;
 }) {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState(value);
+
   const num = parseFloat(value) || 0;
   const display = unit === "%" ? `${num}%` : String(num);
 
+  // Always pre-fill the popup with the current saved value when it opens
+  const openPopup = () => {
+    setDraft(value);
+    setOpen(true);
+  };
+
+  const draftNum = parseFloat(draft);
+  const isValid =
+    draft.trim() !== "" &&
+    !Number.isNaN(draftNum) &&
+    draftNum >= min &&
+    (max === undefined || draftNum <= max);
+
+  const handleSaveClick = () => {
+    if (!isValid) return;
+    onSave(String(draftNum));
+    setOpen(false);
+  };
+
   return (
-    <div className="flex-1 bg-[#e8f3ef] dark:bg-primary/10 rounded-xl px-6 py-5 flex flex-col gap-3">
-      <p className="text-sm font-medium text-center text-foreground">{label}</p>
-      <div className="flex items-center justify-center gap-3">
-        <p className="text-4xl font-bold text-foreground">{display}</p>
-        <div className="flex flex-col gap-0.5">
-          <button
-            type="button"
-            onClick={() => onChange(String(Math.min(max, +(num + step).toFixed(2))))}
-            className="text-foreground/60 hover:text-foreground transition-colors"
-          >
-            <ChevronUp className="h-4 w-4" />
-          </button>
-          <button
-            type="button"
-            onClick={() => onChange(String(Math.max(min, +(num - step).toFixed(2))))}
-            className="text-foreground/60 hover:text-foreground transition-colors"
-          >
-            <ChevronDown className="h-4 w-4" />
-          </button>
+    <>
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={openPopup}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            openPopup();
+          }
+        }}
+        className="flex-1 bg-[#e8f3ef] dark:bg-primary/10 rounded-xl px-6 py-5 flex flex-col gap-3 cursor-pointer hover:bg-[#ddeee8] dark:hover:bg-primary/15 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+        data-testid={testId ? `card-${testId}` : undefined}
+      >
+        <p className="text-sm font-medium text-center text-foreground">{label}</p>
+        <div className="flex items-center justify-center gap-3">
+          <p className="text-4xl font-bold text-foreground">{display}</p>
+          <div className="flex flex-col gap-0.5">
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); openPopup(); }}
+              aria-label={`Edit ${label}`}
+              className="text-foreground/60 hover:text-foreground transition-colors"
+            >
+              <ChevronUp className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); openPopup(); }}
+              aria-label={`Edit ${label}`}
+              className="text-foreground/60 hover:text-foreground transition-colors"
+            >
+              <ChevronDown className="h-4 w-4" />
+            </button>
+          </div>
         </div>
+        <p className="text-xs text-muted-foreground text-center">{description}</p>
+        <input type="hidden" data-testid={testId} value={value} />
       </div>
-      <p className="text-xs text-muted-foreground text-center">{description}</p>
-      <input type="hidden" data-testid={testId} value={value} />
-    </div>
+
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{dialogTitle}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-2 py-2">
+            <Label htmlFor={`edit-${testId}`} className="text-sm font-medium">
+              {description}
+            </Label>
+            <div className="relative">
+              <Input
+                id={`edit-${testId}`}
+                type="number"
+                inputMode="decimal"
+                min={min}
+                max={max}
+                value={draft}
+                autoFocus
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") handleSaveClick(); }}
+                data-testid={`dialog-input-${testId}`}
+                className={unit === "%" ? "pr-8" : "pr-14"}
+              />
+              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground pointer-events-none">
+                {unit}
+              </span>
+            </div>
+            {draft.trim() !== "" && !isValid && (
+              <p className="text-xs text-destructive" data-testid={`dialog-error-${testId}`}>
+                Enter a valid non-negative number{max !== undefined ? ` (0–${max})` : ""}.
+              </p>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setOpen(false)} data-testid={`dialog-cancel-${testId}`}>
+              Cancel
+            </Button>
+            <Button onClick={handleSaveClick} disabled={!isValid} data-testid={`dialog-save-${testId}`}>
+              Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 
 export default function AdminSettingsPage() {
   const { toast } = useToast();
   const { tab: activeTab } = useSettingsTab();
+
+  const toLocalDatetimeValue = (date: Date) => {
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  };
+
+  const [maintenanceDialog, setMaintenanceDialog] = useState(false);
+  const [maintenanceDisableDialog, setMaintenanceDisableDialog] = useState(false);
+  const [maintStartTime, setMaintStartTime] = useState(toLocalDatetimeValue(new Date()));
+  const [maintEndTime, setMaintEndTime] = useState("");
 
   const [settings, setSettings] = useState({
     platformCommissionRate: "10",
@@ -101,7 +208,14 @@ export default function AdminSettingsPage() {
 
   const [newTaxTitle, setNewTaxTitle] = useState("");
   const [newTaxRate, setNewTaxRate] = useState("");
-  const [newTaxApplicableTo, setNewTaxApplicableTo] = useState("");
+  const [newTaxApplicableTo, setNewTaxApplicableTo] = useState<"doctors" | "patients" | "both">("doctors");
+
+  const [newFeeTitle, setNewFeeTitle] = useState("");
+  const [newFeeType, setNewFeeType] = useState<"" | "amount" | "percentage">("");
+  const [newFeeRate, setNewFeeRate] = useState("");
+  const [newFeeApplicableTo, setNewFeeApplicableTo] = useState<"" | "doctors" | "patients" | "both">("");
+  // Fee pending delete confirmation
+  const [feeToDelete, setFeeToDelete] = useState<FeeEntry | null>(null);
 
   const [systemTaxes, setSystemTaxes] = useState([
     { id: "vat", title: "VAT", rate: 18, description: "Value-added tax on consultation fees", applicableTo: "doctors", enabled: true },
@@ -119,6 +233,29 @@ export default function AdminSettingsPage() {
   const { data: taxEntries = [], isLoading: taxLoading } = useQuery<TaxEntry[]>({
     queryKey: ["/api/admin/tax-entries"],
   });
+
+  const { data: feeEntries = [], isLoading: feeLoading } = useQuery<FeeEntry[]>({
+    queryKey: ["/api/admin/fee-entries"],
+  });
+
+  const { data: feeLimits } = useQuery<{ maxAmount: number; maxPercentage: number }>({
+    queryKey: ["/api/admin/fee-limits"],
+  });
+  const maxFeeAmount = feeLimits?.maxAmount ?? 0;
+  const maxFeePercentage = feeLimits?.maxPercentage ?? 100;
+
+  // Live validation message for the fee rate field
+  const feeRateError = (() => {
+    if (!newFeeRate || !newFeeType) return "";
+    const rate = parseFloat(newFeeRate);
+    if (isNaN(rate)) return "";
+    if (rate <= 0) return "Rate must be greater than 0";
+    if (newFeeType === "percentage" && rate > maxFeePercentage)
+      return `Percentage cannot exceed ${maxFeePercentage}%`;
+    if (newFeeType === "amount" && maxFeeAmount > 0 && rate > maxFeeAmount)
+      return `Amount cannot exceed LKR ${maxFeeAmount.toLocaleString()} (typical consultation fee)`;
+    return "";
+  })();
 
   useEffect(() => {
     if (serverSettings) {
@@ -142,6 +279,9 @@ export default function AdminSettingsPage() {
         maintenanceMode: serverSettings.maintenanceMode,
         cancellationFee: String(serverSettings.cancellationFee ?? 300),
       }));
+      if (serverSettings.maintenanceEndTime) {
+        setMaintEndTime(toLocalDatetimeValue(new Date(serverSettings.maintenanceEndTime)));
+      }
       setSystemTaxes((prev) =>
         prev.map((t) => {
           if (t.id === "vat") return { ...t, enabled: serverSettings.vatEnabled ?? true };
@@ -167,13 +307,14 @@ export default function AdminSettingsPage() {
   });
 
   const addTaxMutation = useMutation({
-    mutationFn: async ({ title, rate }: { title: string; rate: number }) =>
-      apiRequest("POST", "/api/admin/tax-entries", { title, rate }),
+    mutationFn: async ({ title, rate, applicableTo }: { title: string; rate: number; applicableTo: "doctors" | "patients" | "both" }) =>
+      apiRequest("POST", "/api/admin/tax-entries", { title, rate, applicableTo }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/tax-entries"] });
       queryClient.invalidateQueries({ queryKey: ["/api/tax-entries"] });
       setNewTaxTitle("");
       setNewTaxRate("");
+      setNewTaxApplicableTo("doctors");
       toast({ title: "Tax Added", description: "Custom tax entry has been added." });
     },
     onError: (error: Error) => {
@@ -191,15 +332,67 @@ export default function AdminSettingsPage() {
     },
   });
 
+  const invalidateFees = () => {
+    queryClient.invalidateQueries({ queryKey: ["/api/admin/fee-entries"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/fee-entries"] });
+  };
+
+  const addFeeMutation = useMutation({
+    mutationFn: async ({ title, feeType, rate, applicableTo }: { title: string; feeType: "amount" | "percentage"; rate: number; applicableTo: "doctors" | "patients" | "both" }) =>
+      apiRequest("POST", "/api/admin/fee-entries", { title, feeType, rate, applicableTo }),
+    onSuccess: () => {
+      invalidateFees();
+      setNewFeeTitle("");
+      setNewFeeType("");
+      setNewFeeRate("");
+      setNewFeeApplicableTo("");
+      toast({ title: "Fee Added", description: "Custom fee has been added." });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message || "Failed to add fee", variant: "destructive" });
+    },
+  });
+
+  const toggleFeeMutation = useMutation({
+    mutationFn: async ({ id, enabled }: { id: string; enabled: boolean }) =>
+      apiRequest("PATCH", `/api/admin/fee-entries/${id}`, { enabled }),
+    onSuccess: () => {
+      invalidateFees();
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message || "Failed to update fee", variant: "destructive" });
+    },
+  });
+
+  const deleteFeeMutation = useMutation({
+    mutationFn: async (id: string) =>
+      apiRequest("DELETE", `/api/admin/fee-entries/${id}`),
+    onSuccess: () => {
+      invalidateFees();
+      setFeeToDelete(null);
+      toast({ title: "Fee Removed", description: "Custom fee has been deleted." });
+    },
+    onError: () => {
+      setFeeToDelete(null);
+    },
+  });
+
+  // Parse an integer, falling back to the default only when the value is not a
+  // number (so a legitimate 0 is preserved instead of being coerced away).
+  const toInt = (v: string, fallback: number) => {
+    const n = parseInt(v, 10);
+    return Number.isNaN(n) ? fallback : n;
+  };
+
   const handleSave = () => {
     saveMutation.mutate({
-      platformCommissionRate: parseInt(settings.platformCommissionRate) || 10,
-      bookingCharges: parseInt(settings.bookingCharges) || 100,
-      taxRate: parseInt(settings.taxRate) || 4,
-      maxAdvanceBookingDays: parseInt(settings.maxAdvanceBookingDays) || 30,
-      minBookingNoticeHours: parseInt(settings.minBookingNoticeHours) || 2,
-      defaultSlotDuration: parseInt(settings.defaultSlotDuration) || 30,
-      defaultBufferTime: parseInt(settings.defaultBufferTime) || 10,
+      platformCommissionRate: toInt(settings.platformCommissionRate, 10),
+      bookingCharges: toInt(settings.bookingCharges, 100),
+      taxRate: toInt(settings.taxRate, 4),
+      maxAdvanceBookingDays: toInt(settings.maxAdvanceBookingDays, 30),
+      minBookingNoticeHours: toInt(settings.minBookingNoticeHours, 2),
+      defaultSlotDuration: toInt(settings.defaultSlotDuration, 30),
+      defaultBufferTime: toInt(settings.defaultBufferTime, 10),
       emailNotifications: settings.emailNotifications,
       smsNotifications: settings.smsNotifications,
       pushNotifications: settings.pushNotifications,
@@ -209,10 +402,46 @@ export default function AdminSettingsPage() {
       allowClinicPayments: settings.allowClinicPayments,
       defaultLanguage: settings.defaultLanguage,
       maintenanceMode: settings.maintenanceMode,
-      cancellationFee: parseInt(settings.cancellationFee) || 300,
+      cancellationFee: toInt(settings.cancellationFee, 300),
       stampDutyEnabled: systemTaxes.find((t) => t.id === "stamp")?.enabled ?? false,
       vatEnabled: systemTaxes.find((t) => t.id === "vat")?.enabled ?? true,
       withholdingTaxEnabled: systemTaxes.find((t) => t.id === "withholding")?.enabled ?? true,
+    });
+  };
+
+  const handleMaintenanceToggle = (value: boolean) => {
+    if (value) {
+      // Show confirmation popup — don't activate yet
+      setMaintStartTime(toLocalDatetimeValue(new Date()));
+      setMaintEndTime("");
+      setMaintenanceDialog(true);
+    } else {
+      // Turning off is high-impact — confirm before saving
+      setMaintenanceDisableDialog(true);
+    }
+  };
+
+  const handleMaintenanceDisableConfirm = () => {
+    setMaintenanceDisableDialog(false);
+    update("maintenanceMode", false);
+    saveMutation.mutate({
+      maintenanceMode: false,
+      maintenanceStartTime: null,
+      maintenanceEndTime: null,
+    });
+  };
+
+  const handleMaintenanceConfirm = () => {
+    if (!maintEndTime) {
+      toast({ title: "End time required", description: "Please set an expected end time.", variant: "destructive" });
+      return;
+    }
+    setMaintenanceDialog(false);
+    update("maintenanceMode", true);
+    saveMutation.mutate({
+      maintenanceMode: true,
+      maintenanceStartTime: new Date(maintStartTime).toISOString(),
+      maintenanceEndTime: new Date(maintEndTime).toISOString(),
     });
   };
 
@@ -227,11 +456,71 @@ export default function AdminSettingsPage() {
       toast({ title: "Error", description: "Please enter a valid tax rate", variant: "destructive" });
       return;
     }
-    addTaxMutation.mutate({ title, rate });
+    addTaxMutation.mutate({ title, rate, applicableTo: newTaxApplicableTo });
   };
+
+  const handleAddFee = () => {
+    const title = newFeeTitle.trim();
+    const rate = parseFloat(newFeeRate);
+    if (!title) {
+      toast({ title: "Error", description: "Please enter a fee title", variant: "destructive" });
+      return;
+    }
+    if (!newFeeType) {
+      toast({ title: "Error", description: "Please select a fee type", variant: "destructive" });
+      return;
+    }
+    if (isNaN(rate) || rate <= 0) {
+      toast({ title: "Error", description: "Please enter a valid fee rate", variant: "destructive" });
+      return;
+    }
+    if (newFeeType === "percentage" && rate > maxFeePercentage) {
+      toast({ title: "Error", description: `Percentage rate cannot exceed ${maxFeePercentage}%`, variant: "destructive" });
+      return;
+    }
+    if (newFeeType === "amount" && maxFeeAmount > 0 && rate > maxFeeAmount) {
+      toast({ title: "Error", description: `Amount cannot exceed LKR ${maxFeeAmount.toLocaleString()} (the highest consultation fee)`, variant: "destructive" });
+      return;
+    }
+    if (!newFeeApplicableTo) {
+      toast({ title: "Error", description: "Please select to whom the fee applies", variant: "destructive" });
+      return;
+    }
+    addFeeMutation.mutate({ title, feeType: newFeeType, rate, applicableTo: newFeeApplicableTo });
+  };
+
+  // Human-readable description based on who the fee applies to
+  const feeDescription = (applicableTo: "doctors" | "patients" | "both") =>
+    applicableTo === "doctors"
+      ? "Deducted from doctor payouts"
+      : applicableTo === "patients"
+      ? "Added to patient invoice"
+      : "Deducted from doctors and added to patient invoice";
+
+  // Display value: amount as "Rs. X", percentage as "X%"
+  const feeValueLabel = (fee: FeeEntry) =>
+    fee.feeType === "percentage"
+      ? `${fee.rate}%`
+      : `Rs. ${fee.rate.toLocaleString()}`;
 
   const update = (key: string, value: unknown) =>
     setSettings((prev) => ({ ...prev, [key]: value }));
+
+  // Save a single payment/commission field via the edit popup: update the card
+  // immediately (optimistic), persist just that field, and revert on failure.
+  const saveSingleSetting = (
+    key: "platformCommissionRate" | "bookingCharges" | "taxRate" | "cancellationFee",
+    value: string,
+  ) => {
+    const numeric = parseInt(value, 10);
+    if (Number.isNaN(numeric) || numeric < 0) return;
+    const prev = settings[key];
+    update(key, String(numeric));
+    saveMutation.mutate(
+      { [key]: numeric } as Partial<PlatformSettings>,
+      { onError: () => update(key, prev) },
+    );
+  };
 
   if (isLoading) return <LoadingPage message="Loading settings..." />;
 
@@ -245,6 +534,7 @@ export default function AdminSettingsPage() {
   }
 
   return (
+    <>
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl md:text-3xl font-heading font-bold">Platform Settings</h1>
@@ -269,46 +559,48 @@ export default function AdminSettingsPage() {
 
             {/* 3 spinner boxes */}
             <div className="flex gap-4">
-              <SpinnerBox
+              <EditSettingCard
                 label="Platform Commission (%)"
                 value={settings.platformCommissionRate}
                 unit="%"
                 description="Percentage charged on each consultation"
-                onChange={(v) => update("platformCommissionRate", v)}
+                dialogTitle="Edit Platform Commission"
+                onSave={(v) => saveSingleSetting("platformCommissionRate", v)}
                 min={0}
                 max={100}
                 testId="input-commission"
               />
-              <SpinnerBox
+              <EditSettingCard
                 label="Booking Charges (LKR)"
                 value={settings.bookingCharges}
                 unit="LKR"
                 description="Fixed fee per appointment booking"
-                onChange={(v) => update("bookingCharges", v)}
+                dialogTitle="Edit Booking Charges"
+                onSave={(v) => saveSingleSetting("bookingCharges", v)}
                 min={0}
                 max={10000}
-                step={50}
                 testId="input-booking-charges"
               />
-              <SpinnerBox
+              <EditSettingCard
                 label="Tax Rate (%)"
                 value={settings.taxRate}
                 unit="%"
                 description="Tax percentage on consultation fees"
-                onChange={(v) => update("taxRate", v)}
+                dialogTitle="Edit Tax Rate"
+                onSave={(v) => saveSingleSetting("taxRate", v)}
                 min={0}
                 max={50}
                 testId="input-tax"
               />
-              <SpinnerBox
+              <EditSettingCard
                 label="Cancellation fees (LKR)"
                 value={settings.cancellationFee}
                 unit="LKR"
                 description="Fixed fee per consultation"
-                onChange={(v) => update("cancellationFee", v)}
+                dialogTitle="Edit Cancellation Fees"
+                onSave={(v) => saveSingleSetting("cancellationFee", v)}
                 min={0}
                 max={10000}
-                step={50}
                 testId="input-cancellation-fee"
               />
             </div>
@@ -348,17 +640,30 @@ export default function AdminSettingsPage() {
                     data-testid="input-new-tax-rate"
                   />
                 </div>
-                <div className="w-40 space-y-1.5">
+                <div className="w-44 space-y-1.5">
                   <Label className="text-xs font-medium">To whom</Label>
-                  <select
-                    value={newTaxApplicableTo}
-                    onChange={(e) => setNewTaxApplicableTo(e.target.value)}
-                    className="flex h-9 w-full rounded-md border border-primary/30 bg-transparent px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-primary text-foreground"
-                  >
-                    <option value="">Select</option>
-                    <option value="doctors">Doctors</option>
-                    <option value="patients">Patients</option>
-                  </select>
+                  <Select value={newTaxApplicableTo} onValueChange={(v) => setNewTaxApplicableTo(v as "doctors" | "patients" | "both")}>
+                    <SelectTrigger className="border-primary/30 h-9">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="doctors">
+                        <span className="flex items-center gap-2">
+                          <span className="px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-700 border border-purple-200">Doctors</span>
+                        </span>
+                      </SelectItem>
+                      <SelectItem value="patients">
+                        <span className="flex items-center gap-2">
+                          <span className="px-2 py-0.5 rounded text-xs font-medium bg-pink-100 text-pink-600 border border-pink-200">Patients</span>
+                        </span>
+                      </SelectItem>
+                      <SelectItem value="both">
+                        <span className="flex items-center gap-2">
+                          <span className="px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-700 border border-orange-200">Both</span>
+                        </span>
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
                 <Button
                   onClick={handleAddTax}
@@ -418,20 +723,33 @@ export default function AdminSettingsPage() {
 
                   {/* User-added dynamic taxes */}
                   {!taxLoading && taxEntries.map((entry) => (
-                    <div key={entry.id} className="flex items-center justify-between py-3 gap-4">
+                    <div key={entry.id} className="flex items-center py-3">
                       <div className="flex-1 min-w-0">
                         <span className="text-sm font-semibold text-foreground">
                           {entry.title} ({entry.rate}%)
                         </span>
                       </div>
-                      <button
-                        onClick={() => deleteTaxMutation.mutate(entry.id)}
-                        disabled={deleteTaxMutation.isPending}
-                        className="text-destructive hover:text-destructive/70 transition-colors shrink-0"
-                        data-testid={`button-delete-tax-${entry.id}`}
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
+                      <div className="flex-1 flex justify-center">
+                        <span className={`px-4 py-1 rounded-md text-sm font-medium ${
+                          entry.applicableTo === "doctors"
+                            ? "bg-purple-100 text-purple-700 border border-purple-200"
+                            : entry.applicableTo === "patients"
+                            ? "bg-pink-100 text-pink-600 border border-pink-200"
+                            : "bg-orange-100 text-orange-700 border border-orange-200"
+                        }`}>
+                          {entry.applicableTo === "doctors" ? "Doctors" : entry.applicableTo === "patients" ? "Patients" : "Both"}
+                        </span>
+                      </div>
+                      <div className="flex-1 flex justify-end">
+                        <button
+                          onClick={() => deleteTaxMutation.mutate(entry.id)}
+                          disabled={deleteTaxMutation.isPending}
+                          className="text-destructive hover:text-destructive/70 transition-colors shrink-0"
+                          data-testid={`button-delete-tax-${entry.id}`}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -440,41 +758,191 @@ export default function AdminSettingsPage() {
 
             <Separator />
 
-            {/* Allow Online Payments */}
-            <div className="flex items-center justify-between py-1">
-              <div>
-                <div className="flex items-center gap-2">
-                  <p className="font-medium">Allow Online Payments</p>
-                  {settings.allowOnlinePayments && (
-                    <span className="flex items-center gap-1 text-xs text-primary font-medium bg-primary/10 px-2 py-0.5 rounded-full">
-                      <span className="h-1.5 w-1.5 rounded-full bg-primary inline-block" />
-                      Enabled
-                    </span>
-                  )}
+            {/* Add new Fee */}
+            <div className="border border-primary/30 rounded-xl p-5 space-y-4">
+              <h3 className="font-semibold text-sm">Add new Fee</h3>
+              <div className="flex gap-3 items-end">
+                <div className="flex-1 space-y-1.5">
+                  <Label htmlFor="feeTitle" className="text-xs font-medium">
+                    Fee Title<span className="text-destructive">*</span>
+                  </Label>
+                  <Input
+                    id="feeTitle"
+                    placeholder="Booking Charges"
+                    value={newFeeTitle}
+                    onChange={(e) => setNewFeeTitle(e.target.value)}
+                    className="border-primary/30"
+                    data-testid="input-fee-title"
+                  />
                 </div>
-                <p className="text-sm text-muted-foreground mt-0.5">Enable online payment processing</p>
+                <div className="w-40 space-y-1.5">
+                  <Label className="text-xs font-medium">
+                    Fee Type<span className="text-destructive">*</span>
+                  </Label>
+                  <Select value={newFeeType} onValueChange={(v) => setNewFeeType(v as "amount" | "percentage")}>
+                    <SelectTrigger className="border-primary/30 h-9" data-testid="select-fee-type">
+                      <SelectValue placeholder="Select type" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="amount">Amount</SelectItem>
+                      <SelectItem value="percentage">Percentage</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="w-40 space-y-1.5">
+                  <Label htmlFor="newFeeRate" className="text-xs font-medium">
+                    Fee Rate<span className="text-destructive">*</span>
+                  </Label>
+                  <Input
+                    id="newFeeRate"
+                    type="number"
+                    placeholder={newFeeType === "percentage" ? "0%" : "0"}
+                    min={0}
+                    max={newFeeType === "percentage" ? maxFeePercentage : (maxFeeAmount > 0 ? maxFeeAmount : undefined)}
+                    value={newFeeRate}
+                    onChange={(e) => setNewFeeRate(e.target.value)}
+                    className={`border-primary/30 ${feeRateError ? "border-destructive focus-visible:ring-destructive" : ""}`}
+                    data-testid="input-new-fee-rate"
+                  />
+                </div>
+                <div className="w-40 space-y-1.5">
+                  <Label className="text-xs font-medium">
+                    To whom<span className="text-destructive">*</span>
+                  </Label>
+                  <Select value={newFeeApplicableTo} onValueChange={(v) => setNewFeeApplicableTo(v as "doctors" | "patients" | "both")}>
+                    <SelectTrigger className="border-primary/30 h-9" data-testid="select-fee-applicable">
+                      <SelectValue placeholder="Select" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="doctors">
+                        <span className="flex items-center gap-2">
+                          <span className="px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-700 border border-purple-200">Doctors</span>
+                        </span>
+                      </SelectItem>
+                      <SelectItem value="patients">
+                        <span className="flex items-center gap-2">
+                          <span className="px-2 py-0.5 rounded text-xs font-medium bg-pink-100 text-pink-600 border border-pink-200">Patients</span>
+                        </span>
+                      </SelectItem>
+                      <SelectItem value="both">
+                        <span className="flex items-center gap-2">
+                          <span className="px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-700 border border-orange-200">Both</span>
+                        </span>
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <Button
+                  onClick={handleAddFee}
+                  disabled={addFeeMutation.isPending || !!feeRateError}
+                  className="gap-1.5 shrink-0"
+                  data-testid="button-add-fee"
+                >
+                  {addFeeMutation.isPending ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <>Add Fee <Plus className="h-4 w-4" /></>
+                  )}
+                </Button>
               </div>
-              <Switch
-                checked={settings.allowOnlinePayments}
-                onCheckedChange={(v) => update("allowOnlinePayments", v)}
-                data-testid="switch-online-payments"
-              />
+
+              {feeRateError ? (
+                <p className="text-xs text-destructive" data-testid="text-fee-rate-error">{feeRateError}</p>
+              ) : newFeeType === "amount" && maxFeeAmount > 0 ? (
+                <p className="text-xs text-muted-foreground">Max amount: LKR {maxFeeAmount.toLocaleString()} (typical consultation fee)</p>
+              ) : newFeeType === "percentage" ? (
+                <p className="text-xs text-muted-foreground">Max percentage: {maxFeePercentage}%</p>
+              ) : null}
+
+              {/* Recently Added Fees */}
+              <div className="pt-1">
+                <h3 className="text-sm font-semibold text-foreground mb-1">Recently Added Fees</h3>
+                <div className="divide-y divide-border">
+                  {!feeLoading && feeEntries.length === 0 && (
+                    <p className="text-xs text-muted-foreground py-3">No fees added yet.</p>
+                  )}
+                  {!feeLoading && feeEntries.map((fee) => (
+                    <div key={fee.id} className="flex items-center py-3">
+                      {/* Left: name + value + enabled badge + description */}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-sm font-semibold text-foreground">
+                            {fee.title} ({feeValueLabel(fee)})
+                          </span>
+                          {fee.enabled && (
+                            <span className="inline-flex items-center gap-1 text-xs font-medium text-green-700 bg-green-100 px-2 py-0.5 rounded-full border border-green-200">
+                              <span className="h-1.5 w-1.5 rounded-full bg-green-500 inline-block" />
+                              Enabled
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs text-muted-foreground mt-0.5">{feeDescription(fee.applicableTo)}</p>
+                      </div>
+                      {/* Center: To whom pill */}
+                      <div className="flex-1 flex justify-center">
+                        <span className={`px-4 py-1 rounded-md text-sm font-medium ${
+                          fee.applicableTo === "doctors"
+                            ? "bg-purple-100 text-purple-700 border border-purple-200"
+                            : fee.applicableTo === "patients"
+                            ? "bg-pink-100 text-pink-600 border border-pink-200"
+                            : "bg-orange-100 text-orange-700 border border-orange-200"
+                        }`}>
+                          {fee.applicableTo === "doctors" ? "Doctors" : fee.applicableTo === "patients" ? "Patients" : "Both"}
+                        </span>
+                      </div>
+                      {/* Right: toggle + delete */}
+                      <div className="flex-1 flex justify-end items-center gap-3">
+                        <Switch
+                          checked={fee.enabled}
+                          onCheckedChange={(v) => toggleFeeMutation.mutate({ id: fee.id, enabled: v })}
+                          data-testid={`switch-fee-${fee.id}`}
+                        />
+                        <button
+                          onClick={() => setFeeToDelete(fee)}
+                          disabled={deleteFeeMutation.isPending}
+                          className="text-destructive hover:text-destructive/70 transition-colors shrink-0"
+                          data-testid={`button-delete-fee-${fee.id}`}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
             </div>
 
-            <Separator />
+            {/* Delete Fee confirmation */}
+            <Dialog open={!!feeToDelete} onOpenChange={(open) => { if (!open) setFeeToDelete(null); }}>
+              <DialogContent className="max-w-sm rounded-2xl">
+                <DialogHeader>
+                  <DialogTitle className="text-lg font-bold">Delete this fee?</DialogTitle>
+                  <DialogDescription className="text-sm text-muted-foreground pt-1">
+                    Are you sure you want to delete{" "}
+                    <span className="font-semibold text-foreground">{feeToDelete?.title}</span>? This action cannot be undone.
+                  </DialogDescription>
+                </DialogHeader>
+                <DialogFooter className="flex gap-2 pt-2">
+                  <Button
+                    variant="outline"
+                    className="flex-1"
+                    onClick={() => setFeeToDelete(null)}
+                    data-testid="button-cancel-delete-fee"
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    className="flex-1 bg-red-600 hover:bg-red-700 text-white"
+                    disabled={deleteFeeMutation.isPending}
+                    onClick={() => { if (feeToDelete) deleteFeeMutation.mutate(feeToDelete.id); }}
+                    data-testid="button-confirm-delete-fee"
+                  >
+                    {deleteFeeMutation.isPending ? "Deleting..." : "Delete"}
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
 
-            {/* Auto-generate Invoices */}
-            <div className="flex items-center justify-between py-1">
-              <div>
-                <p className="font-medium">Auto-generate Invoices</p>
-                <p className="text-sm text-muted-foreground mt-0.5">Send PDF invoices to patients after each payment</p>
-              </div>
-              <Switch
-                checked={settings.autoGenerateInvoices}
-                onCheckedChange={(v) => update("autoGenerateInvoices", v)}
-                data-testid="switch-auto-invoices"
-              />
-            </div>
           </div>
 
           <div className="flex justify-end">
@@ -607,18 +1075,53 @@ export default function AdminSettingsPage() {
               <p className="text-sm text-muted-foreground mt-1">These settings can affect platform availability</p>
             </div>
 
-            <div className="flex items-center justify-between py-1">
-              <div>
-                <p className="font-medium">Maintenance Mode</p>
-                <p className="text-sm text-muted-foreground mt-0.5">
-                  Temporarily disable the platform for maintenance. Users will see a maintenance page.
-                </p>
+            <div className="space-y-3">
+              <div className="flex items-center justify-between py-1">
+                <div>
+                  <p className="font-medium">Maintenance Mode</p>
+                  <p className="text-sm text-muted-foreground mt-0.5">
+                    Temporarily disable the platform for maintenance. Users will see a maintenance page.
+                  </p>
+                </div>
+                <Switch
+                  checked={settings.maintenanceMode}
+                  onCheckedChange={handleMaintenanceToggle}
+                  data-testid="switch-maintenance"
+                />
               </div>
-              <Switch
-                checked={settings.maintenanceMode}
-                onCheckedChange={(v) => update("maintenanceMode", v)}
-                data-testid="switch-maintenance"
-              />
+              {settings.maintenanceMode && (
+                <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg p-4 space-y-3">
+                  <p className="text-sm font-medium text-amber-800 dark:text-amber-300">Maintenance is currently active</p>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <Label className="text-xs">End Time</Label>
+                      <input
+                        type="datetime-local"
+                        value={maintEndTime}
+                        onChange={(e) => setMaintEndTime(e.target.value)}
+                        className="w-full text-sm rounded-md border border-input bg-background px-3 py-1.5 text-foreground"
+                      />
+                    </div>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="border-amber-400 text-amber-800 dark:text-amber-300 hover:bg-amber-100"
+                    onClick={() => {
+                      if (!maintEndTime) {
+                        toast({ title: "End time required", variant: "destructive" });
+                        return;
+                      }
+                      saveMutation.mutate({
+                        maintenanceMode: true,
+                        maintenanceEndTime: new Date(maintEndTime).toISOString(),
+                      });
+                    }}
+                  >
+                    Update End Time
+                  </Button>
+                </div>
+              )}
             </div>
           </div>
 
@@ -638,5 +1141,73 @@ export default function AdminSettingsPage() {
         </>
       )}
     </div>
+
+    {/* Maintenance Mode Confirmation Dialog */}
+    <Dialog open={maintenanceDialog} onOpenChange={setMaintenanceDialog}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2 text-destructive">
+            <AlertTriangle className="h-5 w-5" />
+            Enable Maintenance Mode?
+          </DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4 py-2">
+          <p className="text-sm text-muted-foreground">
+            This will disable the platform for <strong>all users</strong>. They will see a maintenance page until you turn this off manually.
+          </p>
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <Label className="text-xs font-medium">Start Date &amp; Time</Label>
+              <input
+                type="datetime-local"
+                value={maintStartTime}
+                onChange={(e) => setMaintStartTime(e.target.value)}
+                className="w-full text-sm rounded-md border border-input bg-background px-3 py-2 text-foreground"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs font-medium">Expected End Date &amp; Time <span className="text-destructive">*</span></Label>
+              <input
+                type="datetime-local"
+                value={maintEndTime}
+                onChange={(e) => setMaintEndTime(e.target.value)}
+                className="w-full text-sm rounded-md border border-input bg-background px-3 py-2 text-foreground"
+              />
+              <p className="text-xs text-muted-foreground">Shown to users on the maintenance page. You must turn off maintenance manually.</p>
+            </div>
+          </div>
+        </div>
+        <DialogFooter className="gap-2">
+          <Button variant="outline" onClick={() => setMaintenanceDialog(false)}>Cancel</Button>
+          <Button variant="destructive" onClick={handleMaintenanceConfirm} disabled={saveMutation.isPending}>
+            {saveMutation.isPending ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Enabling...</> : "Enable Maintenance"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    {/* Confirm before turning maintenance off */}
+    <Dialog open={maintenanceDisableDialog} onOpenChange={setMaintenanceDisableDialog}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2 text-destructive">
+            <AlertTriangle className="h-5 w-5" />
+            Turn off Maintenance Mode?
+          </DialogTitle>
+        </DialogHeader>
+        <div className="py-2">
+          <p className="text-sm text-muted-foreground">
+            Turning off Maintenance Mode will make the platform live to <strong>all users</strong> immediately. Continue?
+          </p>
+        </div>
+        <DialogFooter className="gap-2">
+          <Button variant="outline" onClick={() => setMaintenanceDisableDialog(false)} data-testid="button-cancel-disable-maintenance">Cancel</Button>
+          <Button variant="destructive" onClick={handleMaintenanceDisableConfirm} disabled={saveMutation.isPending} data-testid="button-confirm-disable-maintenance">
+            {saveMutation.isPending ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Saving...</> : "Turn Off Maintenance"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+    </>
   );
 }

@@ -23,6 +23,7 @@ import { apiRequest } from "@/lib/queryClient";
 
 export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
+  const [cooldown, setCooldown] = useState(false);
   const [, setLocation] = useLocation();
   const { login } = useAuth();
   const { toast } = useToast();
@@ -65,15 +66,28 @@ export default function LoginPage() {
       }, 100);
     },
     onError: (error: Error) => {
+      if (
+        error.message === "verification_pending" || 
+        error.message.includes("pending verification")
+      ) {
+        setLocation("/doctor/verification-pending");
+        return;
+      }
       toast({
         title: "Login failed",
         description: error.message || "Invalid email or password",
         variant: "destructive",
       });
+      if (error.message?.toLowerCase().includes("maintenance")) {
+        setLocation("/maintenance");
+      }
+      setCooldown(true);
+      setTimeout(() => setCooldown(false), 2000);
     },
   });
 
   const onSubmit = (data: LoginInput) => {
+    if (loginMutation.isPending) return;
     loginMutation.mutate(data);
   };
 
@@ -184,7 +198,7 @@ export default function LoginPage() {
                 <Button
                   type="submit"
                   className="w-full"
-                  disabled={loginMutation.isPending}
+                  disabled={loginMutation.isPending || cooldown}
                   data-testid="button-login"
                 >
                   {loginMutation.isPending ? (
@@ -192,6 +206,8 @@ export default function LoginPage() {
                       <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                       Signing in...
                     </>
+                  ) : cooldown ? (
+                    "Please wait..."
                   ) : (
                     "Sign In"
                   )}

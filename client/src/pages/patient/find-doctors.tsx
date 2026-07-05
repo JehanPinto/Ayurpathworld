@@ -10,7 +10,6 @@ import { useAuth } from "@/lib/auth-context";
 import { useUrlPagination } from "@/hooks/use-url-pagination";
 import { Pagination } from "@/components/ui/pagination";
 
-const cities = ["Colombo", "Kandy", "Galle", "Jaffna", "Negombo", "Matara"];
 
 export default function FindDoctors() {
   const { user } = useAuth();
@@ -48,6 +47,11 @@ export default function FindDoctors() {
     gcTime: 10 * 60 * 1000,
   });
 
+  const { data: cities = [] } = useQuery<string[]>({
+    queryKey: ["/api/cities"],
+    staleTime: 5 * 60 * 1000,
+  });
+
   const { data: doctors = [], isLoading, isFetching, isError: docsError } = useQuery<DoctorWithDetails[]>({
     queryKey: ["/api/doctors"],
     staleTime: 5 * 60 * 1000,
@@ -75,9 +79,10 @@ export default function FindDoctors() {
     }
     
     if (selectedCity !== "all") {
-      filtered = filtered.filter(d => 
-        d.hospitals?.some(h => h.city === selectedCity) ||
-        d.user?.city === selectedCity
+      const cityLower = selectedCity.toLowerCase();
+      filtered = filtered.filter(d =>
+        d.hospitals?.some(h => h.city?.toLowerCase() === cityLower) ||
+        d.user?.city?.toLowerCase() === cityLower
       );
     }
     

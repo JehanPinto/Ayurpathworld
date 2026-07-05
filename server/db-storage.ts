@@ -56,6 +56,7 @@ import {
   type Payment,
   type PlatformSettings,
   type TaxEntry,
+  type FeeEntry,
   type Prescription,
   type Review,
   type ReviewWithDoctor,
@@ -86,7 +87,7 @@ import {
 import { randomUUID } from "crypto";
 import { db, pool } from "./db";
 
-import type { IStorage } from "./storage";
+import type { DoctorDetailedAnalytics, IStorage } from "./storage";
 
 function toISOString(date: Date | null): string {
   return date ? date.toISOString() : new Date().toISOString();
@@ -249,6 +250,30 @@ export class DbStorage implements IStorage {
     return result as Specialization[];
   }
 
+  async getActiveCities(): Promise<string[]> {
+    const toTitleCase = (s: string) =>
+      s.trim().replace(/\w\S*/g, (w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());
+
+    const result = await pool.query<{ city: string }>(`
+      SELECT city FROM users
+      WHERE role = 'doctor'
+        AND city IS NOT NULL AND TRIM(city) != ''
+        AND id IN (SELECT user_id FROM doctor_profiles WHERE status = 'verified')
+      UNION
+      SELECT city FROM hospitals
+      WHERE city IS NOT NULL AND TRIM(city) != ''
+    `);
+
+    const seen = new Set<string>();
+    const cities: string[] = [];
+    for (const row of result.rows) {
+      const normalized = toTitleCase(row.city);
+      const key = normalized.toLowerCase();
+      if (!seen.has(key)) { seen.add(key); cities.push(normalized); }
+    }
+    return cities.sort();
+  }
+
   async createSpecialization(
     spec: InsertSpecialization,
   ): Promise<Specialization> {
@@ -408,42 +433,72 @@ export class DbStorage implements IStorage {
     }
 
     const profiles = await query;
+
+    // In-memory filters first (specialization / consultation type) so we only
+    // batch-load related data for the doctors we will actually return.
+    const mappedProfiles = profiles
+      .map((p) => mapDoctorProfile(p))
+      .filter((mappedProfile) => {
+        if (
+          filters?.specializationId &&
+          !mappedProfile.specializationIds.includes(filters.specializationId)
+        ) {
+          return false;
+        }
+        if (
+          filters?.consultationType &&
+          !mappedProfile.consultationTypes.includes(
+            filters.consultationType as any,
+          )
+        ) {
+          return false;
+        }
+        return true;
+      });
+
+    if (mappedProfiles.length === 0) return [];
+
+    // Batch-load users (one IN query) and the shared specialization/hospital
+    // lists once — instead of calling getDoctorWithDetails (4 queries) per doctor.
+    const userIds = [...new Set(mappedProfiles.map((p) => p.userId))];
+    const [userRows, allSpecs, allHospitals] = await Promise.all([
+      db.select().from(users).where(inArray(users.id, userIds)),
+      this.getAllSpecializations(),
+      this.getAllHospitals(),
+    ]);
+    const userMap = new Map(
+      (userRows as any[]).map((r) => [r.id, mapSafeUser(r)]),
+    );
+
     const doctors: DoctorWithDetails[] = [];
+    for (const mappedProfile of mappedProfiles) {
+      const user = userMap.get(mappedProfile.userId);
+      if (!user) continue;
 
-    for (const profile of profiles) {
-      const mappedProfile = mapDoctorProfile(profile);
+      const doctor: DoctorWithDetails = {
+        ...mappedProfile,
+        user,
+        specializations: allSpecs.filter((s) =>
+          mappedProfile.specializationIds.includes(s.id),
+        ),
+        hospitals: allHospitals.filter((h) =>
+          mappedProfile.hospitalIds.includes(h.id),
+        ),
+      };
 
-      if (
-        filters?.specializationId &&
-        !mappedProfile.specializationIds.includes(filters.specializationId)
-      ) {
-        continue;
-      }
-      if (
-        filters?.consultationType &&
-        !mappedProfile.consultationTypes.includes(
-          filters.consultationType as any,
-        )
-      ) {
-        continue;
-      }
-
-      const doctor = await this.getDoctorWithDetails(mappedProfile.id);
-      if (doctor) {
-        if (filters?.city) {
-          if (
-            doctor.user.city
-              ?.toLowerCase()
-              .includes(filters.city.toLowerCase()) ||
-            doctor.hospitals.some((h) =>
-              h.city.toLowerCase().includes(filters.city!.toLowerCase()),
-            )
-          ) {
-            doctors.push(doctor);
-          }
-        } else {
+      if (filters?.city) {
+        if (
+          doctor.user.city
+            ?.toLowerCase()
+            .includes(filters.city.toLowerCase()) ||
+          doctor.hospitals.some((h) =>
+            h.city.toLowerCase().includes(filters.city!.toLowerCase()),
+          )
+        ) {
           doctors.push(doctor);
         }
+      } else {
+        doctors.push(doctor);
       }
     }
 
@@ -953,6 +1008,14 @@ export class DbStorage implements IStorage {
       .where(eq(appointments.id, id))
       .returning();
     if (!result[0]) return undefined;
+
+    if (updates.status === AppointmentStatus.COMPLETED) {
+      await db
+        .update(doctorProfiles)
+        .set({ totalAppointments: sql`${doctorProfiles.totalAppointments} + 1` })
+        .where(eq(doctorProfiles.id, result[0].doctorId));
+    }
+
     return {
       ...result[0],
       createdAt: toISOString(result[0].createdAt),
@@ -1009,26 +1072,37 @@ export class DbStorage implements IStorage {
       console.error("[AUDIT LOG] Error saving cancel log:", e);
     }
 
-    // 3. Create Refund Request if Payment exists
+    // 3. Auto-Create Refund Request (With Duplicate Prevention)
     const payment = await this.getPaymentByAppointment(id);
     if (payment && payment.status === PaymentStatus.COMPLETED) {
       console.log(
         `[DB-STORAGE] 💰 Payment found for refund. Status: ${payment.status}`,
       );
-      const amountToRefund =
-        payment.totalAmount -
-        (payment.bookingCharges || 0) -
-        (payment.tax || 0);
+      
+      // CHECK FOR DUPLICATES: Me payment ekata kalin refund request ekak thiyenawada balanawa
+      const existingRefunds = await db
+        .select()
+        .from(refunds)
+        .where(eq(refunds.paymentId, payment.id));
 
-      if (amountToRefund > 0) {
-        await this.createRefundRequest({
-          paymentId: payment.id,
-          appointmentId: id,
-          patientId: updated.patientId,
-          amount: amountToRefund,
-          reason: reason || `Cancelled by ${cancelledBy}`,
-          status: "pending",
-        });
+      if (existingRefunds.length === 0) {
+        // Original refund calculation eka (tax saha booking charge adu karala)
+        const amountToRefund = payment.totalAmount - (payment.bookingCharges || 0) - (payment.tax || 0);
+
+        if (amountToRefund > 0) {
+          await this.createRefundRequest({
+            paymentId: payment.id,
+            appointmentId: id,
+            patientId: updated.patientId,
+            amount: amountToRefund,
+            // Cancel karapu reason eka Admin Refund table ekata yawenawa
+            reason: `${cancelledBy.toUpperCase()} CANCELLATION: ${reason || 'No specific reason provided'}`, 
+            status: "pending",
+          });
+          console.log(`[DB-STORAGE] ✅ Auto-Refund request created successfully.`);
+        }
+      } else {
+        console.log(`[DB-STORAGE] ⚠️ Refund request already exists. Skipping duplicate creation.`);
       }
     }
 
@@ -1070,6 +1144,7 @@ export class DbStorage implements IStorage {
   }
 
   async createPayment(payment: InsertPayment): Promise<Payment> {
+    await pool.query(`ALTER TABLE payments ADD COLUMN IF NOT EXISTS tax_breakdown JSONB DEFAULT '[]'`);
     const result = await db.insert(payments).values(payment).returning();
     return {
       ...result[0],
@@ -1634,7 +1709,6 @@ export class DbStorage implements IStorage {
     const offset = (page - 1) * limit;
 
     try {
-      // 1. තත්පරයකින් සියලු දත්ත Join කරලා ගන්නවා
       const rawData = await db
         .select({
           payment: payments,
@@ -1648,16 +1722,18 @@ export class DbStorage implements IStorage {
             id: doctorProfiles.id,
             userId: doctorProfiles.userId,
           },
+          refundRequest: refunds,
         })
         .from(payments)
         .leftJoin(appointments, eq(payments.appointmentId, appointments.id))
         .leftJoin(users, eq(payments.patientId, users.id))
         .leftJoin(doctorProfiles, eq(payments.doctorId, doctorProfiles.id))
+        .leftJoin(refunds, eq(payments.id, refunds.paymentId))
         .orderBy(desc(payments.createdAt))
         .limit(limit)
         .offset(offset);
 
-      // 2. Doctor ගේ නම ගන්නවා
+      // 2. Doctor's name fetch
       const doctorUserIds = [
         ...new Set(rawData.map((r) => r.doctorProfile?.userId).filter(Boolean)),
       ];
@@ -1670,7 +1746,7 @@ export class DbStorage implements IStorage {
           : [];
       const doctorUserMap = new Map(doctorUsers.map((u) => [u.id, u.fullName]));
 
-      // 3. Frontend එකට ඕනේ විදිහට හදනවා
+      // 3. Frontend 
       const formattedData = rawData.map((row) => {
         const docFullName = row.doctorProfile
           ? doctorUserMap.get(row.doctorProfile.userId)
@@ -1688,10 +1764,11 @@ export class DbStorage implements IStorage {
                 },
               }
             : undefined,
+          refundRequest: row.refundRequest || null,
         };
       });
 
-      // 4. මුළු ගණන (Total Count)
+      // 4. Total Count
       const allRecords = await db.select({ id: payments.id }).from(payments);
       const count = allRecords.length;
 
@@ -1721,6 +1798,12 @@ export class DbStorage implements IStorage {
       .where(eq(appointments.doctorId, doctorId))
       .orderBy(desc(appointments.appointmentDate));
 
+    if (doctorAppointments.length === 0) return [];
+
+    // Batch-load every appointment's details (patient included) in one pass,
+    // instead of calling getUser + getAppointmentWithDetails per appointment.
+    const detailed = await this.buildAppointmentsWithDetails(doctorAppointments);
+
     const patientMap = new Map<
       string,
       {
@@ -1731,30 +1814,23 @@ export class DbStorage implements IStorage {
       }
     >();
 
-    for (const apt of doctorAppointments) {
-      const patientId = apt.patientId;
+    for (const apt of detailed) {
+      const patient = apt.patient;
+      if (!patient) continue;
 
-      if (!patientMap.has(patientId)) {
-        const patient = await this.getUser(patientId);
-        if (patient) {
-          const { password: _pw, ...safePatient } = patient;
-          patientMap.set(patientId, {
-            patient: safePatient as SafeUser,
-            lastVisit: apt.appointmentDate,
-            totalVisits: 0,
-            appointments: [],
-          });
-        }
+      let patientData = patientMap.get(apt.patientId);
+      if (!patientData) {
+        // Appointments are ordered newest-first, so the first seen is the last visit.
+        patientData = {
+          patient,
+          lastVisit: apt.appointmentDate,
+          totalVisits: 0,
+          appointments: [],
+        };
+        patientMap.set(apt.patientId, patientData);
       }
-
-      const patientData = patientMap.get(patientId);
-      if (patientData) {
-        patientData.totalVisits++;
-        const fullApt = await this.getAppointmentWithDetails(apt.id);
-        if (fullApt) {
-          patientData.appointments.push(fullApt);
-        }
-      }
+      patientData.totalVisits++;
+      patientData.appointments.push(apt);
     }
 
     return Array.from(patientMap.values());
@@ -1769,23 +1845,24 @@ export class DbStorage implements IStorage {
       .where(eq(payments.doctorId, doctorId))
       .orderBy(desc(payments.createdAt));
 
-    const paymentsWithDetails: (Payment & {
-      appointment?: AppointmentWithDetails;
-    })[] = [];
-    for (const p of result) {
-      const payment = {
-        ...p,
-        createdAt: toISOString(p.createdAt),
-        updatedAt: toISOString(p.updatedAt),
-      } as Payment;
+    if (result.length === 0) return [];
 
-      const appointment = await this.getAppointmentWithDetails(p.appointmentId);
-      paymentsWithDetails.push({
-        ...payment,
-        appointment: appointment || undefined,
-      });
-    }
-    return paymentsWithDetails;
+    // Batch-load all related appointments in a few parallel queries instead of
+    // calling getAppointmentWithDetails (~8 sequential queries) per payment.
+    const appointmentIds = [...new Set(result.map((p) => p.appointmentId))];
+    const appointmentRows = await db
+      .select()
+      .from(appointments)
+      .where(inArray(appointments.id, appointmentIds));
+    const detailed = await this.buildAppointmentsWithDetails(appointmentRows);
+    const appointmentMap = new Map(detailed.map((a) => [a.id, a]));
+
+    return result.map((p) => ({
+      ...p,
+      createdAt: toISOString(p.createdAt),
+      updatedAt: toISOString(p.updatedAt),
+      appointment: appointmentMap.get(p.appointmentId) || undefined,
+    })) as (Payment & { appointment?: AppointmentWithDetails })[];
   }
 
   async getDoctorEarningsSummary(doctorId: string): Promise<{
@@ -1796,67 +1873,58 @@ export class DbStorage implements IStorage {
     thisMonthEarnings: number;
     lastMonthEarnings: number;
   }> {
-    const doctorPayments = await db
+    const rows = await db
       .select()
       .from(payments)
       .where(eq(payments.doctorId, doctorId));
 
     const now = new Date();
-    const thisMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-    const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-    const lastMonthStr = `${lastMonth.getFullYear()}-${String(lastMonth.getMonth() + 1).padStart(2, "0")}`;
+    const thisMonth = now.getMonth();
+    const thisYear = now.getFullYear();
+    const lastMonthDate = new Date(thisYear, thisMonth - 1, 1);
+    const lastMonth = lastMonthDate.getMonth();
+    const lastMonthYear = lastMonthDate.getFullYear();
 
-    const completedPayments = doctorPayments.filter(
-      (p) => p.status === PaymentStatus.COMPLETED,
-    );
-    const pendingPaymentsList = doctorPayments.filter(
-      (p) => p.status === PaymentStatus.PENDING,
-    );
+    let totalEarnings = 0;
+    let pendingEarnings = 0;
+    let completedPayments = 0;
+    let pendingPayments = 0;
+    let thisMonthEarnings = 0;
+    let lastMonthEarnings = 0;
 
-    const totalEarnings = completedPayments.reduce(
-      (sum, p) => sum + p.doctorEarnings,
-      0,
-    );
-    const pendingEarnings = pendingPaymentsList.reduce(
-      (sum, p) => sum + p.doctorEarnings,
-      0,
-    );
+    for (const p of rows) {
+      const earnings = p.doctorEarnings ?? 0;
+      if (p.status === PaymentStatus.COMPLETED) {
+        totalEarnings += earnings;
+        completedPayments += 1;
 
-    const thisMonthPayments = completedPayments.filter((p) =>
-      toISOString(p.createdAt).startsWith(thisMonth),
-    );
-    const lastMonthPayments = completedPayments.filter((p) =>
-      toISOString(p.createdAt).startsWith(lastMonthStr),
-    );
-
-    // Subtract settled cancellation charges from total earnings
-    const settledCharges = await db
-      .select()
-      .from(doctorCancellationCharges)
-      .where(
-        and(
-          eq(doctorCancellationCharges.doctorId, doctorId),
-          eq(doctorCancellationCharges.settled, true),
-        ),
-      );
-    const totalDeductions = settledCharges.reduce(
-      (sum, c) => sum + c.amountOwed,
-      0,
-    );
+        const created = p.createdAt ? new Date(p.createdAt) : null;
+        if (created) {
+          if (
+            created.getMonth() === thisMonth &&
+            created.getFullYear() === thisYear
+          ) {
+            thisMonthEarnings += earnings;
+          } else if (
+            created.getMonth() === lastMonth &&
+            created.getFullYear() === lastMonthYear
+          ) {
+            lastMonthEarnings += earnings;
+          }
+        }
+      } else if (p.status === PaymentStatus.PENDING) {
+        pendingEarnings += earnings;
+        pendingPayments += 1;
+      }
+    }
 
     return {
-      totalEarnings: Math.max(0, totalEarnings - totalDeductions),
+      totalEarnings,
       pendingEarnings,
-      completedPayments: completedPayments.length,
-      pendingPayments: pendingPaymentsList.length,
-      thisMonthEarnings: thisMonthPayments.reduce(
-        (sum, p) => sum + p.doctorEarnings,
-        0,
-      ),
-      lastMonthEarnings: lastMonthPayments.reduce(
-        (sum, p) => sum + p.doctorEarnings,
-        0,
-      ),
+      completedPayments,
+      pendingPayments,
+      thisMonthEarnings,
+      lastMonthEarnings,
     };
   }
 
@@ -1899,14 +1967,6 @@ export class DbStorage implements IStorage {
     return this.updateAppointment(appointmentId, {
       status: AppointmentStatus.COMPLETED,
       consultationNotes,
-    });
-  }
-
-  async confirmAppointment(
-    appointmentId: string,
-  ): Promise<Appointment | undefined> {
-    return this.updateAppointment(appointmentId, {
-      status: AppointmentStatus.CONFIRMED,
     });
   }
 
@@ -1955,6 +2015,8 @@ export class DbStorage implements IStorage {
         allowClinicPayments: result[0].allowClinicPayments ?? false,
         defaultLanguage: result[0].defaultLanguage ?? "english",
         maintenanceMode: result[0].maintenanceMode ?? false,
+        maintenanceStartTime: result[0].maintenanceStartTime ? toISOString(result[0].maintenanceStartTime) : null,
+        maintenanceEndTime: result[0].maintenanceEndTime ? toISOString(result[0].maintenanceEndTime) : null,
         cancellationFee: result[0].cancellationFee ?? 300,
         stampDutyEnabled: result[0].stampDutyEnabled ?? false,
         vatEnabled: result[0].vatEnabled ?? true,
@@ -2004,9 +2066,17 @@ export class DbStorage implements IStorage {
     // Ensure settings exist first
     await this.getPlatformSettings();
 
+    const { maintenanceStartTime, maintenanceEndTime, ...rest } = updates;
+    const dbUpdates: any = {
+      ...rest,
+      updatedAt: new Date(),
+      ...(maintenanceStartTime !== undefined && { maintenanceStartTime: maintenanceStartTime ? new Date(maintenanceStartTime) : null }),
+      ...(maintenanceEndTime !== undefined && { maintenanceEndTime: maintenanceEndTime ? new Date(maintenanceEndTime) : null }),
+    };
+
     const result = await db
       .update(platformSettings)
-      .set({ ...updates, updatedAt: new Date() })
+      .set(dbUpdates)
       .where(eq(platformSettings.id, "default"))
       .returning();
 
@@ -2028,6 +2098,8 @@ export class DbStorage implements IStorage {
       allowClinicPayments: result[0].allowClinicPayments ?? false,
       defaultLanguage: result[0].defaultLanguage ?? "english",
       maintenanceMode: result[0].maintenanceMode ?? false,
+      maintenanceStartTime: result[0].maintenanceStartTime ? toISOString(result[0].maintenanceStartTime) : null,
+      maintenanceEndTime: result[0].maintenanceEndTime ? toISOString(result[0].maintenanceEndTime) : null,
       cancellationFee: result[0].cancellationFee ?? 300,
       stampDutyEnabled: result[0].stampDutyEnabled ?? false,
       vatEnabled: result[0].vatEnabled ?? true,
@@ -2042,35 +2114,41 @@ export class DbStorage implements IStorage {
         id VARCHAR(50) PRIMARY KEY DEFAULT gen_random_uuid()::text,
         title VARCHAR(255) NOT NULL,
         rate INTEGER NOT NULL DEFAULT 0,
+        applicable_to VARCHAR(20) DEFAULT 'doctors',
         created_at TIMESTAMP DEFAULT NOW()
       )
     `);
+    await pool.query(`ALTER TABLE tax_entries ADD COLUMN IF NOT EXISTS applicable_to VARCHAR(20) DEFAULT 'doctors'`);
+    await pool.query(`UPDATE tax_entries SET applicable_to = 'doctors' WHERE applicable_to IS NULL`);
     const result = await pool.query(
-      `SELECT id, title, rate, created_at FROM tax_entries ORDER BY created_at ASC`,
+      `SELECT id, title, rate, applicable_to, created_at FROM tax_entries ORDER BY created_at ASC`,
     );
     return result.rows.map((r: any) => ({
       id: r.id,
       title: r.title,
       rate: r.rate,
+      applicableTo: (r.applicable_to ?? "doctors") as "doctors" | "patients" | "both",
       createdAt: r.created_at,
     }));
   }
 
-  async createTaxEntry(title: string, rate: number): Promise<TaxEntry> {
+  async createTaxEntry(title: string, rate: number, applicableTo: "doctors" | "patients" | "both"): Promise<TaxEntry> {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS tax_entries (
         id VARCHAR(50) PRIMARY KEY DEFAULT gen_random_uuid()::text,
         title VARCHAR(255) NOT NULL,
         rate INTEGER NOT NULL DEFAULT 0,
+        applicable_to VARCHAR(20) DEFAULT 'doctors',
         created_at TIMESTAMP DEFAULT NOW()
       )
     `);
+    await pool.query(`ALTER TABLE tax_entries ADD COLUMN IF NOT EXISTS applicable_to VARCHAR(20) DEFAULT 'doctors'`);
     const result = await pool.query(
-      `INSERT INTO tax_entries (title, rate) VALUES ($1, $2) RETURNING id, title, rate, created_at`,
-      [title, rate],
+      `INSERT INTO tax_entries (title, rate, applicable_to) VALUES ($1, $2, $3) RETURNING id, title, rate, applicable_to, created_at`,
+      [title, rate, applicableTo],
     );
     const r = result.rows[0];
-    return { id: r.id, title: r.title, rate: r.rate, createdAt: r.created_at };
+    return { id: r.id, title: r.title, rate: r.rate, applicableTo: r.applicable_to, createdAt: r.created_at };
   }
 
   async deleteTaxEntry(id: string): Promise<boolean> {
@@ -2078,6 +2156,91 @@ export class DbStorage implements IStorage {
       id,
     ]);
     return (result.rowCount ?? 0) > 0;
+  }
+
+  private async ensureFeeEntriesTable(): Promise<void> {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS fee_entries (
+        id VARCHAR(50) PRIMARY KEY DEFAULT gen_random_uuid()::text,
+        title VARCHAR(255) NOT NULL,
+        fee_type VARCHAR(20) NOT NULL DEFAULT 'amount',
+        rate INTEGER NOT NULL DEFAULT 0,
+        applicable_to VARCHAR(20) DEFAULT 'doctors',
+        enabled BOOLEAN NOT NULL DEFAULT true,
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+  }
+
+  private mapFeeRow(r: any): FeeEntry {
+    return {
+      id: r.id,
+      title: r.title,
+      feeType: (r.fee_type ?? "amount") as "amount" | "percentage",
+      rate: r.rate,
+      applicableTo: (r.applicable_to ?? "doctors") as
+        | "doctors"
+        | "patients"
+        | "both",
+      enabled: r.enabled ?? true,
+      createdAt: r.created_at,
+    };
+  }
+
+  async getFeeEntries(): Promise<FeeEntry[]> {
+    await this.ensureFeeEntriesTable();
+    const result = await pool.query(
+      `SELECT id, title, fee_type, rate, applicable_to, enabled, created_at
+       FROM fee_entries ORDER BY created_at ASC`,
+    );
+    return result.rows.map((r: any) => this.mapFeeRow(r));
+  }
+
+  async createFeeEntry(
+    title: string,
+    feeType: "amount" | "percentage",
+    rate: number,
+    applicableTo: "doctors" | "patients" | "both",
+  ): Promise<FeeEntry> {
+    await this.ensureFeeEntriesTable();
+    const result = await pool.query(
+      `INSERT INTO fee_entries (title, fee_type, rate, applicable_to)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id, title, fee_type, rate, applicable_to, enabled, created_at`,
+      [title, feeType, rate, applicableTo],
+    );
+    return this.mapFeeRow(result.rows[0]);
+  }
+
+  async updateFeeEntryEnabled(
+    id: string,
+    enabled: boolean,
+  ): Promise<FeeEntry | undefined> {
+    await this.ensureFeeEntriesTable();
+    const result = await pool.query(
+      `UPDATE fee_entries SET enabled = $1 WHERE id = $2
+       RETURNING id, title, fee_type, rate, applicable_to, enabled, created_at`,
+      [enabled, id],
+    );
+    if (result.rows.length === 0) return undefined;
+    return this.mapFeeRow(result.rows[0]);
+  }
+
+  async deleteFeeEntry(id: string): Promise<boolean> {
+    const result = await pool.query(`DELETE FROM fee_entries WHERE id = $1`, [
+      id,
+    ]);
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  // Median consultation fee — a robust cap for flat-amount fees that isn't
+  // distorted by a few outlier doctors with very high consultation fees.
+  async getFeeAmountCap(): Promise<number> {
+    const result = await pool.query(
+      `SELECT COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY consultation_fee), 0) AS median_fee
+       FROM doctor_profiles WHERE consultation_fee > 0`,
+    );
+    return Math.round(Number(result.rows[0]?.median_fee ?? 0));
   }
 
   async createBlogSubmission(
@@ -2234,6 +2397,7 @@ export class DbStorage implements IStorage {
   }
 
   async getPatientPayments(patientId: string): Promise<Payment[]> {
+    await pool.query(`ALTER TABLE payments ADD COLUMN IF NOT EXISTS tax_breakdown JSONB DEFAULT '[]'`);
     const records = await db
       .select()
       .from(payments)
@@ -2437,6 +2601,17 @@ export class DbStorage implements IStorage {
     };
   }
 
+  // Outstanding cancellation charges a patient owes to AyurPath. There is no
+  // patient cancellation-charge flow yet (patients can't self-cancel), so this
+  // returns nothing for now — it is the single seam to wire up when that
+  // feature lands. The "Owed to AyurPath" banner reads this and stays hidden
+  // while totalOwed is 0.
+  async getPatientUnsettledCharges(
+    _patientId: string,
+  ): Promise<{ count: number; totalOwed: number }> {
+    return { count: 0, totalOwed: 0 };
+  }
+
   async settleDoctorCharges(doctorId: string): Promise<void> {
     await db
       .update(doctorCancellationCharges)
@@ -2454,11 +2629,34 @@ export class DbStorage implements IStorage {
     return result[0] as Refund;
   }
 
-  async getPaginatedRefundRequests(page: number, limit: number): Promise<any> {
+  async getRefundStats() {
+    const now = new Date();
+    const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+
+    const allRefunds = await db.select().from(refunds);
+
+    const pendingRequests = allRefunds.filter(r => r.status === "pending");
+    const pendingCount = pendingRequests.length;
+    const refundableTotalAmount = pendingRequests.reduce((sum, r) => sum + Number(r.amount), 0);
+
+    const last30Days = allRefunds.filter(r => new Date(r.createdAt) >= thirtyDaysAgo);
+    const requestsLast30DaysCount = last30Days.length;
+    const refundedLast30DaysAmount = last30Days
+      .filter(r => r.status === "completed")
+      .reduce((sum, r) => sum + Number(r.amount), 0);
+
+    return { 
+      pendingCount, 
+      requestsLast30DaysCount, 
+      refundedLast30DaysAmount, 
+      refundableTotalAmount 
+    };
+  }
+
+  async getPaginatedRefundRequests(page: number, limit: number, statusFilter?: string): Promise<any> {
     const offset = (page - 1) * limit;
 
-    // single query to get refunds with payment, appointment, and patient details
-    const rawData = await db
+    let baseQuery = db
       .select({
         refund: refunds,
         payment: payments,
@@ -2471,7 +2669,20 @@ export class DbStorage implements IStorage {
       .from(refunds)
       .leftJoin(payments, eq(refunds.paymentId, payments.id))
       .leftJoin(appointments, eq(refunds.appointmentId, appointments.id))
-      .leftJoin(users, eq(refunds.patientId, users.id))
+      .leftJoin(users, eq(refunds.patientId, users.id));
+
+    // Status Filter (for Tabs)
+    let conditions = [];
+    if (statusFilter === 'pending') {
+      conditions.push(eq(refunds.status, 'pending'));
+    } else if (statusFilter === 'history') {
+      conditions.push(or(eq(refunds.status, 'completed'), eq(refunds.status, 'rejected')));
+    }
+
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
+    const rawData = await baseQuery
+      .where(whereClause)
       .orderBy(
         sql`CASE WHEN ${refunds.status} = 'pending' THEN 0 ELSE 1 END`,
         desc(refunds.createdAt),
@@ -2483,34 +2694,25 @@ export class DbStorage implements IStorage {
       refund: row.refund,
       payment: {
         ...row.payment,
-        createdAt: row.payment?.createdAt
-          ? toISOString(row.payment.createdAt)
-          : null,
+        createdAt: row.payment?.createdAt ? toISOString(row.payment.createdAt) : null,
       },
-      appointment: row.appointment
-        ? {
-            ...row.appointment,
-            patient: row.patient,
-          }
-        : null,
+      appointment: row.appointment ? { ...row.appointment, patient: row.patient } : null,
     }));
 
-    const [{ count }] = await db
-      .select({ count: sql`count(*)`.mapWith(Number) })
-      .from(refunds);
+    let countQuery = db.select({ count: sql`count(*)`.mapWith(Number) }).from(refunds);
+    if (whereClause) countQuery = countQuery.where(whereClause) as any;
+    
+    const [{ count }] = await countQuery;
 
     return {
       data: formattedData,
       totalCount: count,
-      totalPages: Math.ceil(count / limit),
+      totalPages: Math.ceil(count / limit) || 1,
       currentPage: page,
     };
   }
 
   async processRefund(refundId: string, status: string): Promise<any> {
-    console.log(
-      `\n[DB-STORAGE] ⚙️ Processing refund ID: ${refundId} with status: ${status}`,
-    );
 
     let refundRecord;
 
@@ -2571,7 +2773,7 @@ export class DbStorage implements IStorage {
         .where(eq(payments.id, refundRecord.paymentId));
     }
 
-    // 🟢 AUTO AUDIT LOG FOR REFUNDS 🟢
+    // AUTO AUDIT LOG FOR REFUNDS
     if (refundRecord) {
       try {
         await this.createAuditLog({
@@ -2595,9 +2797,7 @@ export class DbStorage implements IStorage {
   }
 
   async bookAppointmentWithPaymentAtomic(
-    appointment: InsertAppointment,
-    paymentData: InsertPayment,
-    slotId: string,
+appointment: InsertAppointment, paymentData: InsertPayment, slotId: string, auditInfo: { ipAddress: string; device: string; location: string; sessionId: string; },
   ): Promise<{ appointment: Appointment; payment: Payment } | null> {
     const client = await pool.connect();
     try {
@@ -2818,6 +3018,72 @@ export class DbStorage implements IStorage {
 
     const updated = await this.updateHospital(hospitalId, updates);
     return updated || null;
+  }
+
+  async getDoctorDetailedAnalytics(doctorId: string): Promise<DoctorDetailedAnalytics> {
+    // 1. Appointments breakdown
+    const apts = await db.select({ status: appointments.status }).from(appointments).where(eq(appointments.doctorId, doctorId));
+    const aptCounts = { pending: 0, confirmed: 0, completed: 0, cancelled: 0, no_show: 0 };
+    apts.forEach(a => { if (a.status in aptCounts) aptCounts[a.status as keyof typeof aptCounts]++; });
+
+    const appointmentStats = [
+      { name: 'Completed', value: aptCounts.completed, color: '#10b981' }, 
+      { name: 'Pending/Confirmed', value: aptCounts.pending + aptCounts.confirmed, color: '#f59e0b' },
+      { name: 'Cancelled', value: aptCounts.cancelled, color: '#ef4444' }, 
+      { name: 'No Show', value: aptCounts.no_show, color: '#6b7280' }, 
+    ].filter(s => s.value > 0);
+
+    // 2. Payments (Revenue)
+    const pays = await db.select({ amount: payments.doctorEarnings, createdAt: payments.createdAt })
+      .from(payments).where(and(eq(payments.doctorId, doctorId), eq(payments.status, 'completed')));
+    const totalRevenue = pays.reduce((sum, p) => sum + p.amount, 0);
+
+    // Group by month for the last 6 months
+    const revenueByMonth: Record<string, number> = {};
+    const now = new Date();
+    for(let i=5; i>=0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      revenueByMonth[d.toLocaleString('default', { month: 'short' })] = 0;
+    }
+    pays.forEach(p => {
+       const m = new Date(p.createdAt).toLocaleString('default', { month: 'short' });
+       if(revenueByMonth[m] !== undefined) revenueByMonth[m] += p.amount;
+    });
+    const revenueData = Object.keys(revenueByMonth).map(k => ({ month: k, revenue: revenueByMonth[k] }));
+
+    // 3. Ratings
+    const revs = await db.select({ rating: reviews.rating }).from(reviews).where(eq(reviews.doctorId, doctorId));
+    const ratingCounts = { '5': 0, '4': 0, '3': 0, '2': 0, '1': 0 };
+    revs.forEach(r => { if(r.rating.toString() in ratingCounts) ratingCounts[r.rating.toString() as keyof typeof ratingCounts]++; });
+    const ratingDistribution = Object.keys(ratingCounts).reverse().map(k => ({ rating: `${k} Star`, count: ratingCounts[k as keyof typeof ratingCounts] }));
+
+    return {
+      appointmentStats: appointmentStats.length ? appointmentStats : [{name: 'No Data', value: 1, color: '#e5e7eb'}],
+      revenueData,
+      ratingDistribution,
+      totals: { revenue: totalRevenue, appointments: apts.length, cancelled: aptCounts.cancelled }
+    };
+  }
+
+  async getAppointmentBySlotId(slotId: string): Promise<Appointment | undefined> {
+    const result = await db
+      .select()
+      .from(appointments)
+      .where(
+        and(
+          eq(appointments.slotId, slotId),
+          inArray(appointments.status, [AppointmentStatus.PENDING, AppointmentStatus.CONFIRMED])
+        )
+      )
+      .limit(1);
+      
+    if (!result[0]) return undefined;
+    
+    return {
+      ...result[0],
+      createdAt: toISOString(result[0].createdAt),
+      updatedAt: toISOString(result[0].updatedAt),
+    } as Appointment;
   }
 }
 

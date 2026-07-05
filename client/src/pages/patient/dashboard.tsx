@@ -115,14 +115,17 @@ export default function PatientDashboard() {
                 <tbody>
                   <tr><td>Ayurvedic Consultation – Dr. ${tx.doctorName}</td><td>${formatFee(tx.consultationFee || 0)}</td></tr>
                   <tr><td>Service & Booking Fee</td><td>${formatFee(tx.bookingCharges || 0)}</td></tr>
-                  <tr><td>Government Tax (4%)</td><td>${formatFee(tx.tax || 0)}</td></tr>
+                  ${(Array.isArray(tx.taxBreakdown) && tx.taxBreakdown.length > 0
+                    ? tx.taxBreakdown.map((t: any) => `<tr><td>${t.title}${t.feeType === "amount" ? "" : ` (${t.rate}%)`}</td><td>${formatFee(t.amount)}</td></tr>`).join("")
+                    : `<tr><td>Tax</td><td>${formatFee(tx.tax || 0)}</td></tr>`
+                  )}
                 </tbody>
               </table>
             </div>
             <div class="totals">
               <div class="totals-content">
                 <div class="total-line"><span>Subtotal:</span><strong>${formatFee((tx.consultationFee || 0) + (tx.bookingCharges || 0))}</strong></div>
-                <div class="total-line"><span>Tax (4%):</span><strong>${formatFee(tx.tax || 0)}</strong></div>
+                <div class="total-line"><span>Total Tax:</span><strong>${formatFee(tx.tax || 0)}</strong></div>
                 <div class="total-line final"><span>Total Paid</span><strong>${formatFee(tx.totalAmount || 0)}</strong></div>
               </div>
             </div>
@@ -505,10 +508,20 @@ export default function PatientDashboard() {
                             <td className="p-3 sm:p-4 text-xs sm:text-sm">Service & Booking Fee</td>
                             <td className="p-3 sm:p-4 text-xs sm:text-sm text-right font-medium">{formatFee(selectedTx.bookingCharges || 0)}</td>
                           </tr>
-                          <tr>
-                            <td className="p-3 sm:p-4 text-xs sm:text-sm">Government Tax (4%)</td>
-                            <td className="p-3 sm:p-4 text-xs sm:text-sm text-right font-medium">{formatFee(selectedTx.tax || 0)}</td>
-                          </tr>
+                          {Array.isArray(selectedTx.taxBreakdown) && selectedTx.taxBreakdown.length > 0
+                            ? selectedTx.taxBreakdown.map((t: any, i: number) => (
+                                <tr key={i} className="border-b border-border/50 last:border-0">
+                                  <td className="p-3 sm:p-4 text-xs sm:text-sm">{t.title}{t.feeType === "amount" ? "" : ` (${t.rate}%)`}</td>
+                                  <td className="p-3 sm:p-4 text-xs sm:text-sm text-right font-medium">{formatFee(t.amount)}</td>
+                                </tr>
+                              ))
+                            : (
+                                <tr>
+                                  <td className="p-3 sm:p-4 text-xs sm:text-sm">Tax</td>
+                                  <td className="p-3 sm:p-4 text-xs sm:text-sm text-right font-medium">{formatFee(selectedTx.tax || 0)}</td>
+                                </tr>
+                              )
+                          }
                         </tbody>
                       </table>
                     </div>
@@ -522,7 +535,7 @@ export default function PatientDashboard() {
                         <strong className="text-foreground">{formatFee((selectedTx.consultationFee || 0) + (selectedTx.bookingCharges || 0))}</strong>
                       </div>
                       <div className="flex justify-between mb-4 text-xs sm:text-sm text-muted-foreground">
-                        <span>Tax (4%):</span>
+                        <span>Total Tax:</span>
                         <strong className="text-foreground">{formatFee(selectedTx.tax || 0)}</strong>
                       </div>
                       <div className="bg-emerald-500 text-white p-3 sm:p-4 rounded-lg flex items-center justify-between mt-2">

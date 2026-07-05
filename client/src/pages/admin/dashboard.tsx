@@ -18,7 +18,19 @@ import {
   MapPin,
   Languages,
   Building2,
-  LayoutDashboard
+  LayoutDashboard,
+  GraduationCap,
+  Loader2,
+  Wallet,
+  User,
+  Download,
+  Map,
+  CalendarOff,
+  ExternalLink,
+  XCircle,
+  Ban,
+  Star,
+  Eye,
 } from "lucide-react";
 import { format } from "date-fns";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -39,7 +51,11 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 import { useAuth } from "@/lib/auth-context";
 import type { AdminDashboardStats, DoctorWithDetails } from "@shared/schema";
+import { Modal } from "@/components/ui/modal";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { BarChart, Bar, XAxis, YAxis, Tooltip as RechartsTooltip, ResponsiveContainer, PieChart, Pie, Cell } from "recharts";
 import { DoctorStatus } from "@shared/schema";
+import { Textarea } from "@/components/ui/textarea";
 
 // Custom hook to animate numbers counting up
 function useCountUp(endValue: number, duration: number = 1500) {
@@ -92,7 +108,7 @@ export default function AdminDashboard() {
   const { user } = useAuth();
   const queryClient = useQueryClient();
   const [selectedDoctor, setSelectedDoctor] = useState<DoctorWithDetails | null>(null);
-  const [showVerificationDialog, setShowVerificationDialog] = useState(false);
+  const [showDetailsModal, setShowDetailsModal] = useState(false);
   const [showRejectDialog, setShowRejectDialog] = useState(false);
   const [rejectReason, setRejectReason] = useState("");
 
@@ -102,44 +118,79 @@ export default function AdminDashboard() {
     gcTime: 5 * 60 * 1000,
   });
 
+  const { data: analyticsData, isLoading: analyticsLoading } = useQuery({
+      queryKey: ["/api/admin/doctors/analytics", selectedDoctor?.id],
+      queryFn: async () => {
+        const res = await fetch(`/api/admin/doctors/${selectedDoctor?.id}/analytics`, {
+          headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
+        });
+        if (!res.ok) throw new Error("Failed to fetch analytics");
+        return res.json();
+      },
+      enabled: !!selectedDoctor && showDetailsModal, // Only runs when modal is open
+    });
+
   const verifyMutation = useMutation({
-    mutationFn: (doctorId: string) => 
-      apiRequest("PATCH", `/api/admin/doctors/${doctorId}/verify`),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/admin/dashboard"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/admin/doctors"] });
-      toast({
-        title: "Doctor verified",
-        description: "The doctor has been moved to the verified list.",
-      });
-      setShowVerificationDialog(false);
-      setSelectedDoctor(null);
-    },
-    onError: () => {
-      toast({
-        title: "Verification failed",
-        description: "Could not verify the doctor. Please try again.",
-        variant: "destructive",
-      });
-    },
-  });
+      mutationFn: (doctorId: string) => 
+        apiRequest("PATCH", `/api/admin/doctors/${doctorId}/verify`),
+      onSuccess: () => {
+        queryClient.invalidateQueries({ queryKey: ["/api/admin/dashboard"] });
+        toast({
+          title: "Doctor Verified",
+          description: "The doctor has been verified successfully.",
+        });
+        setShowDetailsModal(false);
+      },
+      onError: () => {
+        toast({
+          title: "Error",
+          description: "Failed to verify doctor. Please try again.",
+          variant: "destructive",
+        });
+      },
+    });
 
   const rejectMutation = useMutation({
-    mutationFn: ({ doctorId, reason }: { doctorId: string; reason: string }) =>
-      apiRequest("PATCH", `/api/admin/doctors/${doctorId}/reject`, { reason }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/admin/dashboard"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/admin/doctors"] });
-      toast({ title: "Doctor Rejected", description: "The doctor application has been rejected." });
-      setShowRejectDialog(false);
-      setShowVerificationDialog(false);
-      setSelectedDoctor(null);
-      setRejectReason("");
-    },
-    onError: () => {
-      toast({ title: "Rejection failed", description: "Could not reject the doctor. Please try again.", variant: "destructive" });
-    },
-  });
+      mutationFn: ({ doctorId, reason }: { doctorId: string; reason: string }) => 
+        apiRequest("PATCH", `/api/admin/doctors/${doctorId}/reject`, { reason }),
+      onSuccess: () => {
+        queryClient.invalidateQueries({ queryKey: ["/api/admin/dashboard"] });
+        toast({
+          title: "Doctor Rejected",
+          description: "The doctor application has been rejected.",
+        });
+        setShowRejectDialog(false);
+        setShowDetailsModal(false);
+        setRejectReason("");
+      },
+      onError: () => {
+        toast({
+          title: "Error",
+          description: "Failed to reject doctor. Please try again.",
+          variant: "destructive",
+        });
+      },
+    });
+
+  const suspendMutation = useMutation({
+      mutationFn: (doctorId: string) => 
+        apiRequest("PATCH", `/api/admin/doctors/${doctorId}/suspend`),
+      onSuccess: () => {
+        queryClient.invalidateQueries({ queryKey: ["/api/admin/dashboard"] });
+        toast({
+          title: "Doctor Suspended",
+          description: "The doctor account has been suspended.",
+        });
+        setShowDetailsModal(false);
+      },
+      onError: () => {
+        toast({
+          title: "Error",
+          description: "Failed to suspend doctor. Please try again.",
+          variant: "destructive",
+        });
+      },
+    });
 
   const formatFee = (fee: number) => {
     return new Intl.NumberFormat('en-LK', {
@@ -218,11 +269,11 @@ export default function AdminDashboard() {
 
   const handleOpenDoctor = (doctor: DoctorWithDetails) => {
     setSelectedDoctor(doctor);
-    setShowVerificationDialog(true);
+    setShowDetailsModal(true);
   };
 
   const handleCloseDialog = () => {
-    setShowVerificationDialog(false);
+    setShowDetailsModal(false);
     setSelectedDoctor(null);
   };
 
@@ -493,243 +544,439 @@ export default function AdminDashboard() {
         </div>
       </div>
 
-      {/* Verification Dialog */}
-      <Dialog 
-        open={showVerificationDialog} 
-        onOpenChange={(open) => open ? setShowVerificationDialog(true) : handleCloseDialog()}
+      <Modal
+        isOpen={showDetailsModal}
+        onClose={() => setShowDetailsModal(false)}
+        title="Doctor Profile Details"
+        description="Review credentials, analytics, and manage doctor status."
+        icon={<Stethoscope className="w-5 h-5 text-primary" />}
+        className="max-w-5xl w-[95vw] flex flex-col" // Fixed height for proper scrolling
+        footer={
+          selectedDoctor ? (
+            <div className="flex w-full flex-col sm:flex-row justify-between items-center gap-4">
+              <div className="w-full sm:w-auto flex justify-center sm:justify-start shrink-0">
+                <StatusBadge status={selectedDoctor.status} type="doctor" />
+              </div>
+              <div className="flex flex-wrap items-center justify-center sm:justify-end gap-2 w-full sm:w-auto">
+                <Button variant="outline" className="w-full sm:w-auto rounded-full" onClick={() => setShowDetailsModal(false)}>Close</Button>
+                
+                {selectedDoctor.status === DoctorStatus.PENDING && (
+                  <>
+                    <Button variant="destructive" className="w-full sm:w-auto rounded-full bg-red-50 text-red-600 hover:bg-red-100 hover:text-red-700 border-red-200" onClick={() => setShowRejectDialog(true)}>
+                      <XCircle className="w-4 h-4 mr-2" /> Reject
+                    </Button>
+                    <Button onClick={() => verifyMutation.mutate(selectedDoctor.id)} disabled={verifyMutation.isPending} className="w-full sm:w-auto rounded-full bg-green-600 hover:bg-green-700 text-white">
+                      {verifyMutation.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin"/> : <CheckCircle className="w-4 h-4 mr-2" />}
+                      Approve & Verify
+                    </Button>
+                  </>
+                )}
+                
+                {selectedDoctor.status === DoctorStatus.VERIFIED && (
+                  <Button variant="outline" className="w-full sm:w-auto rounded-full text-amber-600 border-amber-200 hover:bg-amber-50" onClick={() => suspendMutation.mutate(selectedDoctor.id)} disabled={suspendMutation.isPending}>
+                    {suspendMutation.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin"/> : <Ban className="w-4 h-4 mr-2" />} Suspend Account
+                  </Button>
+                )}
+                
+                {(selectedDoctor.status === DoctorStatus.SUSPENDED || selectedDoctor.status === DoctorStatus.REJECTED) && (
+                  <Button onClick={() => verifyMutation.mutate(selectedDoctor.id)} disabled={verifyMutation.isPending} className="w-full sm:w-auto rounded-full bg-green-600 hover:bg-green-700 text-white">
+                    <CheckCircle className="w-4 h-4 mr-2" /> Reactivate & Verify
+                  </Button>
+                )}
+              </div>
+            </div>
+          ) : null
+        }
       >
-        <DialogContent className="max-w-4xl w-[95vw] sm:w-full max-h-[90vh] overflow-y-auto bg-background rounded-xl p-4 sm:p-6 border border-border shadow-lg">
-          <DialogHeader>
-            <DialogTitle className="text-lg sm:text-xl text-foreground">Review Doctor Application</DialogTitle>
-            <DialogDescription className="text-xs sm:text-sm text-muted-foreground">
-              Verify the doctor's submitted details and documents before approving.
-            </DialogDescription>
-          </DialogHeader>
+        {selectedDoctor && (
+          // Fixed structure: flex-col with min-h-0 allows the inner div to scroll properly
+          <Tabs defaultValue="overview" className="w-full h-full flex flex-col min-h-0">
+            <TabsList className="grid grid-cols-2 md:grid-cols-5 bg-muted/50 p-1 mb-2 h-auto md:h-12 rounded-xl shrink-0">
+              <TabsTrigger value="overview" className="py-2 rounded-lg">Overview</TabsTrigger>
+              <TabsTrigger value="professional" className="py-2 rounded-lg">Professional</TabsTrigger>
+              <TabsTrigger value="locations" className="py-2 rounded-lg">Locations</TabsTrigger>
+              <TabsTrigger value="documents" className="py-2 rounded-lg relative">
+                  Documents
+                  {selectedDoctor.status === DoctorStatus.PENDING && (
+                    <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-red-500 animate-ping" />
+                  )}
+              </TabsTrigger>
+              <TabsTrigger value="analytics" className="py-2 rounded-lg relative">
+                Analytics
+                {!analyticsData && !analyticsLoading && <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-primary animate-pulse" />}
+              </TabsTrigger>
+            </TabsList>
 
-          {selectedDoctor && (
-            <div className="space-y-4 sm:space-y-6 mt-2 sm:mt-4">
-              <div className="flex flex-col sm:flex-row sm:items-center gap-4 sm:gap-5">
-                <Avatar className="h-16 w-16 sm:h-20 sm:w-20 border shadow-sm">
-                  <AvatarImage src={selectedDoctor.user?.profileImage} />
-                  <AvatarFallback className="bg-primary/10 text-primary text-lg sm:text-xl font-bold">
-                    {getInitials(selectedDoctor.user?.fullName || "")}
-                  </AvatarFallback>
-                </Avatar>
-                <div className="flex-1 space-y-1.5 sm:space-y-2">
-                  <div className="flex flex-wrap items-center gap-2 sm:gap-3">
-                    <h3 className="text-xl sm:text-2xl font-bold text-foreground">{selectedDoctor.user?.fullName}</h3>
-                    <StatusBadge status={selectedDoctor.status || DoctorStatus.PENDING} type="doctor" />
-                    <Badge variant="outline" className="bg-muted text-muted-foreground text-[10px] sm:text-xs">
-                      {selectedDoctor.registrationNumber}
-                    </Badge>
-                  </div>
-                  <p className="text-sm sm:text-base text-muted-foreground font-medium">{selectedDoctor.qualifications}</p>
-                  <div className="flex flex-wrap gap-1.5 sm:gap-2 text-xs sm:text-sm text-muted-foreground">
-                    <span>Applied: {format(new Date(selectedDoctor.createdAt), "PPP")}</span>
-                    <span className="hidden sm:inline">•</span>
-                    <span>{selectedDoctor.totalAppointments} appointments</span>
-                  </div>
-                  <div className="flex flex-wrap gap-1.5 sm:gap-2 pt-1">
-                    {selectedDoctor.specializations?.map((spec) => (
-                      <Badge key={spec.id} variant="secondary" className="bg-primary/10 text-primary hover:bg-primary/20 text-[10px] sm:text-xs">
-                        {spec.name}
-                      </Badge>
-                    ))}
+            {/* Scrollable Container for Tab Content */}
+            <div className="flex-1 overflow-y-auto custom-scrollbar p-1 pr-3 pb-6">
+              
+              {/* 1. OVERVIEW TAB */}
+              <TabsContent value="overview" className="space-y-6 animate-in fade-in slide-in-from-bottom-2 mt-2">
+                <div className="flex flex-col sm:flex-row gap-6 items-center sm:items-start text-center sm:text-left">
+                  <Avatar className="w-24 h-24 sm:w-28 sm:h-28 border-4 border-background shadow-xl ring-2 ring-primary/20 shrink-0">
+                    <AvatarImage src={selectedDoctor.user?.profileImage} />
+                    <AvatarFallback className="bg-primary/10 text-primary text-3xl font-bold">{getInitials(selectedDoctor.user?.fullName)}</AvatarFallback>
+                  </Avatar>
+                  <div className="space-y-3 flex-1 w-full min-w-0">
+                    <div>
+                      <h2 className="text-2xl sm:text-3xl font-bold text-foreground truncate">{selectedDoctor.user?.fullName}</h2>
+                      <p className="text-muted-foreground font-medium text-sm sm:text-base leading-snug mt-1">{selectedDoctor.qualifications}</p>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-4 bg-muted/30 p-4 rounded-xl border border-border">
+                      <div className="flex items-center justify-center sm:justify-start gap-2 text-sm"><Mail className="w-4 h-4 text-primary shrink-0"/> <span className="truncate">{selectedDoctor.user?.email}</span></div>
+                      <div className="flex items-center justify-center sm:justify-start gap-2 text-sm"><Phone className="w-4 h-4 text-primary shrink-0"/> {selectedDoctor.user?.phone}</div>
+                      <div className="flex items-center justify-center sm:justify-start gap-2 text-sm"><FileText className="w-4 h-4 text-primary shrink-0"/> SLAMC: {selectedDoctor.registrationNumber}</div>
+                      <div className="flex items-center justify-center sm:justify-start gap-2 text-sm"><MapPin className="w-4 h-4 text-primary shrink-0"/> <span className="truncate">{selectedDoctor.user?.city || 'City not provided'}</span></div>
+                    </div>
                   </div>
                 </div>
-              </div>
 
-              <div className="grid gap-3 sm:gap-4 md:grid-cols-2">
-                <div className="p-4 sm:p-5 rounded-xl border border-border bg-muted/50 space-y-3 sm:space-y-4">
-                  <p className="text-xs sm:text-sm font-bold text-foreground uppercase tracking-wider">Identity & Contact</p>
-                  <div className="space-y-2.5 sm:space-y-3 text-xs sm:text-sm text-muted-foreground break-all sm:break-normal">
-                    <div className="flex items-center gap-2.5 sm:gap-3">
-                      <Mail className="h-3.5 w-3.5 sm:h-4 sm:w-4 opacity-70 shrink-0" />
-                      <span>{selectedDoctor.user?.email}</span>
-                    </div>
-                    <div className="flex items-center gap-2.5 sm:gap-3">
-                      <Phone className="h-3.5 w-3.5 sm:h-4 sm:w-4 opacity-70 shrink-0" />
-                      <span>{selectedDoctor.user?.phone}</span>
-                    </div>
-                    <div className="flex items-center gap-2.5 sm:gap-3">
-                      <MapPin className="h-3.5 w-3.5 sm:h-4 sm:w-4 opacity-70 shrink-0" />
-                      <span>{selectedDoctor.user?.city || "City not provided"}</span>
-                    </div>
-                    <div className="flex items-center gap-2.5 sm:gap-3">
-                      <Languages className="h-3.5 w-3.5 sm:h-4 sm:w-4 opacity-70 shrink-0" />
-                      <div className="flex flex-wrap gap-1">
-                        {(selectedDoctor.languagesSpoken || []).map((lang) => (
-                          <Badge key={lang} variant="outline" className="text-[9px] sm:text-[10px] uppercase bg-background px-1 sm:px-1.5">
-                            {lang.replace("_", " ")}
-                          </Badge>
+                <div className="bg-primary/5 border border-primary/10 rounded-2xl p-5 sm:p-6">
+                  <h4 className="font-bold text-primary mb-3 flex items-center gap-2"><User className="w-4 h-4"/> Professional Biography</h4>
+                  <p className="text-sm text-muted-foreground leading-relaxed">{selectedDoctor.biography || "No biography provided by the doctor."}</p>
+                </div>
+                
+                {selectedDoctor.status === DoctorStatus.REJECTED && selectedDoctor.rejectionReason && (
+                  <div className="p-4 sm:p-5 bg-red-50 dark:bg-red-900/20 rounded-2xl border border-red-200 dark:border-red-800">
+                    <p className="text-sm font-bold text-red-800 dark:text-red-200 mb-2 flex items-center gap-2"><Ban className="w-4 h-4"/> Rejection Reason</p>
+                    <p className="text-sm text-red-700 dark:text-red-300 leading-relaxed">{selectedDoctor.rejectionReason}</p>
+                  </div>
+                )}
+              </TabsContent>
+
+              {/* 2. PROFESSIONAL TAB */}
+              <TabsContent value="professional" className="space-y-6 animate-in fade-in slide-in-from-bottom-2 mt-2">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
+                  <Card className="shadow-sm border-border bg-card/50 rounded-2xl">
+                    <CardContent className="p-5 sm:p-6">
+                      <h4 className="font-bold mb-4 flex items-center gap-2 text-foreground"><Star className="w-5 h-5 text-amber-500"/> Specializations</h4>
+                      <div className="flex flex-wrap gap-2">
+                        {selectedDoctor.specializations?.map(s => (
+                          <Badge key={s.id} variant="secondary" className="bg-secondary/10 text-secondary border-secondary/20 hover:bg-secondary/20 px-3 py-1 text-xs">{s.name}</Badge>
                         ))}
-                        {(selectedDoctor.languagesSpoken || []).length === 0 && (
-                          <span className="italic opacity-70">No languages provided</span>
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                  <Card className="shadow-sm border-border bg-card/50 rounded-2xl">
+                    <CardContent className="p-5 sm:p-6">
+                      <h4 className="font-bold mb-4 flex items-center gap-2 text-foreground"><Activity className="w-5 h-5 text-blue-500"/> Languages Spoken</h4>
+                      <div className="flex flex-wrap gap-2">
+                        {selectedDoctor.languagesSpoken?.map(l => (
+                          <Badge key={l} variant="outline" className="capitalize border-border/50 px-3 py-1 text-xs">{l}</Badge>
+                        ))}
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                  <Card className="shadow-sm border-border md:col-span-2 bg-card/50 rounded-2xl">
+                    <CardContent className="p-5 sm:p-6">
+                      <h4 className="font-bold mb-5 flex items-center gap-2 text-foreground"><Wallet className="w-5 h-5 text-emerald-500"/> Consultation Fees</h4>
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                        <div className="p-5 rounded-xl border border-border bg-background text-center flex flex-col justify-center shadow-sm">
+                          <p className="text-[11px] text-muted-foreground mb-1.5 uppercase font-bold tracking-widest">In-Person</p>
+                          <p className="text-2xl font-black text-primary">{selectedDoctor.consultationTypes?.includes('in_person') ? formatFee(selectedDoctor.consultationFee) : 'N/A'}</p>
+                        </div>
+                        <div className="p-5 rounded-xl border border-border bg-background text-center flex flex-col justify-center shadow-sm">
+                          <p className="text-[11px] text-muted-foreground mb-1.5 uppercase font-bold tracking-widest">Online</p>
+                          <p className="text-2xl font-black text-primary">{selectedDoctor.consultationTypes?.includes('online') ? formatFee(selectedDoctor.onlineConsultationFee || 0) : 'N/A'}</p>
+                        </div>
+                        <div className="p-5 rounded-xl border border-border bg-background text-center flex flex-col justify-center shadow-sm">
+                          <p className="text-[11px] text-muted-foreground mb-1.5 uppercase font-bold tracking-widest">Home Visit</p>
+                          <p className="text-2xl font-black text-primary">{selectedDoctor.consultationTypes?.includes('home_visit') ? formatFee(selectedDoctor.homeVisitFee || 0) : 'N/A'}</p>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                </div>
+              </TabsContent>
+
+              {/* 3. LOCATIONS TAB */}
+              {/* <TabsContent value="locations" className="space-y-4 animate-in fade-in slide-in-from-bottom-2 mt-2">
+                <h4 className="font-bold mb-4 flex items-center gap-2 text-foreground px-1"><Map className="w-5 h-5 text-primary"/> Physical Consultation Locations</h4>
+                {selectedDoctor.hospitals?.length > 0 ? (
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    {selectedDoctor.hospitals.map(h => (
+                      <div key={h.id} className="p-5 rounded-2xl border border-border bg-card/50 shadow-sm flex flex-col gap-3 transition-all hover:shadow-md hover:border-primary/30">
+                        <div className="flex items-start gap-4">
+                            <div className="w-12 h-12 rounded-xl bg-primary/10 flex items-center justify-center shrink-0">
+                              <Building2 className="w-6 h-6 text-primary" />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="font-bold text-foreground text-base truncate">{h.name}</p>
+                              <p className="text-xs text-muted-foreground flex items-start gap-1.5 mt-1.5 leading-snug"><MapPin className="w-3.5 h-3.5 shrink-0 mt-0.5 text-primary/70"/> {h.address}, {h.city}</p>
+                            </div>
+                        </div>
+                        {h.contactNumber && (
+                          <div className="mt-2 pt-3 border-t border-border/50">
+                            <p className="text-xs font-semibold text-foreground flex items-center gap-2"><Phone className="w-3.5 h-3.5 text-muted-foreground"/> {h.contactNumber}</p>
+                          </div>
                         )}
                       </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="p-4 sm:p-5 rounded-xl border border-border bg-muted/50 space-y-3 sm:space-y-4">
-                  <p className="text-xs sm:text-sm font-bold text-foreground uppercase tracking-wider">Professional Profile</p>
-                  <div className="space-y-2.5 sm:space-y-3 text-xs sm:text-sm text-muted-foreground">
-                    <div className="flex items-center gap-2.5 sm:gap-3">
-                      <Stethoscope className="h-3.5 w-3.5 sm:h-4 sm:w-4 opacity-70 shrink-0" />
-                      <span className="capitalize">{selectedDoctor.consultationTypes?.map(t => t.replace("_", " ")).join(", ") || "Consultation types not provided"}</span>
-                    </div>
-                    <div className="flex items-start gap-2.5 sm:gap-3">
-                      <DollarSign className="h-3.5 w-3.5 sm:h-4 sm:w-4 mt-0.5 opacity-70 shrink-0" />
-                      <span className="flex flex-col gap-0.5 sm:gap-1">
-                        <span>In-person: {formatFee(selectedDoctor.consultationFee)}</span>
-                        {selectedDoctor.onlineConsultationFee && <span>Online: {formatFee(selectedDoctor.onlineConsultationFee)}</span>}
-                        {selectedDoctor.homeVisitFee && <span>Home visit: {formatFee(selectedDoctor.homeVisitFee)}</span>}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-2.5 sm:gap-3">
-                      <Calendar className="h-3.5 w-3.5 sm:h-4 sm:w-4 opacity-70 shrink-0" />
-                      <span>Max advance booking: {selectedDoctor.maxAdvanceBookingDays} days</span>
-                    </div>
-                    {selectedDoctor.biography && (
-                      <div className="pt-1.5 sm:pt-2">
-                        <p className="text-[10px] sm:text-xs opacity-70 mb-1">Biography</p>
-                        <p className="text-xs sm:text-sm leading-relaxed bg-background p-2.5 sm:p-3 rounded border border-border">
-                          {selectedDoctor.biography}
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              <div className="p-4 sm:p-5 rounded-xl border border-border bg-muted/50 space-y-3 sm:space-y-4">
-                <div className="flex items-center gap-2">
-                  <Building2 className="h-4 w-4 sm:h-5 sm:w-5 opacity-70" />
-                  <p className="text-xs sm:text-sm font-bold text-foreground uppercase tracking-wider">Hospital Affiliations</p>
-                </div>
-                {selectedDoctor.hospitals?.length ? (
-                  <div className="grid gap-2 sm:gap-3 md:grid-cols-2">
-                    {selectedDoctor.hospitals.map((hospital) => (
-                      <div key={hospital.id} className="p-2.5 sm:p-3 rounded-lg bg-background border border-border shadow-sm">
-                        <p className="font-semibold text-foreground text-sm">{hospital.name}</p>
-                        <p className="text-xs text-muted-foreground mt-0.5 sm:mt-1">
-                          {hospital.address}, {hospital.city}
-                        </p>
-                      </div>
                     ))}
                   </div>
                 ) : (
-                  <p className="text-xs sm:text-sm text-muted-foreground bg-background p-2.5 sm:p-3 rounded border border-dashed border-border">No hospitals provided</p>
+                  <div className="p-12 text-center bg-muted/20 rounded-2xl border border-dashed border-border">
+                    <MapPin className="w-12 h-12 text-muted-foreground/40 mx-auto mb-4" />
+                    <p className="text-muted-foreground font-medium">No physical locations registered.</p>
+                  </div>
                 )}
-              </div>
+              </TabsContent> */}
 
-              <div className="p-4 sm:p-5 rounded-xl border border-border bg-muted/50 space-y-3 sm:space-y-4">
-                <div className="flex items-center gap-2">
-                  <FileText className="h-4 w-4 sm:h-5 sm:w-5 opacity-70" />
-                  <p className="text-xs sm:text-sm font-bold text-foreground uppercase tracking-wider">Verification Documents</p>
-                </div>
-                {selectedDoctor.verificationDocuments && selectedDoctor.verificationDocuments.length > 0 ? (
-                  <div className="grid gap-2 sm:gap-3 sm:grid-cols-2">
-                    {selectedDoctor.verificationDocuments.map((doc: string, index: number) => (
-                      <a
-                        key={index}
-                        href={getDocumentLink(doc)}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="flex items-center gap-2.5 sm:gap-3 p-2.5 sm:p-3 rounded-lg bg-background border border-border shadow-sm hover:border-primary hover:shadow-md transition-all group overflow-hidden"
-                      >
-                        <div className="p-1.5 sm:p-2 rounded bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400 group-hover:bg-primary/10 group-hover:text-primary transition-colors shrink-0">
-                          <FileText className="h-4 w-4 sm:h-5 sm:w-5" />
+              {/* 3. LOCATIONS TAB */}
+              <TabsContent value="locations" className="space-y-4 animate-in fade-in slide-in-from-bottom-2 mt-2">
+                <h4 className="font-bold mb-4 flex items-center gap-2 text-foreground px-1">
+                  <Map className="w-5 h-5 text-primary"/> Physical Consultation Locations
+                </h4>
+                
+                {selectedDoctor.hospitals?.length > 0 ? (
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    {selectedDoctor.hospitals.map(h => {
+                      const mapUrl = h.latitude && h.longitude 
+                        ? `https://www.google.com/maps/search/?api=1&query=${h.latitude},${h.longitude}`
+                        : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${h.name}, ${h.address}, ${h.city}`)}`;
+
+                      return (
+                        <div key={h.id} className="p-5 rounded-2xl border border-border bg-card/50 shadow-sm flex flex-col gap-3 transition-all hover:shadow-md hover:border-primary/30 relative group">
+                          <div className="flex items-start gap-4 pr-8">
+                              <div className="w-12 h-12 rounded-xl bg-primary/10 flex items-center justify-center shrink-0">
+                                <Building2 className="w-6 h-6 text-primary" />
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <p className="font-bold text-foreground text-base truncate pr-2">{h.name}</p>
+                                <p className="text-xs text-muted-foreground flex items-start gap-1.5 mt-1.5 leading-snug">
+                                  <MapPin className="w-3.5 h-3.5 shrink-0 mt-0.5 text-primary/70"/> 
+                                  {h.address}, {h.city}
+                                </p>
+                              </div>
+                          </div>
+
+                          {/* 🌍 View on Map Button */}
+                          <a 
+                            href={mapUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="absolute top-5 right-5 w-8 h-8 rounded-full bg-muted/50 flex items-center justify-center text-muted-foreground hover:bg-primary/10 hover:text-primary transition-colors tooltip-trigger"
+                            title="Open in Google Maps"
+                          >
+                            <ExternalLink className="w-4 h-4" />
+                          </a>
+
+                          {h.contactNumber && (
+                            <div className="mt-2 pt-3 border-t border-border/50">
+                              <p className="text-xs font-semibold text-foreground flex items-center gap-2">
+                                <Phone className="w-3.5 h-3.5 text-muted-foreground"/> {h.contactNumber}
+                              </p>
+                            </div>
+                          )}
                         </div>
-                        <div className="min-w-0 flex-1">
-                          <p className="text-xs sm:text-sm font-semibold text-foreground truncate">Document {index + 1}</p>
-                          <p className="text-[10px] sm:text-xs text-muted-foreground truncate mt-0.5">
-                            {doc.split("/").pop() || doc}
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="p-12 text-center bg-muted/20 rounded-2xl border border-dashed border-border">
+                    <MapPin className="w-12 h-12 text-muted-foreground/40 mx-auto mb-4" />
+                    <p className="text-muted-foreground font-medium">No physical locations registered.</p>
+                  </div>
+                )}
+              </TabsContent>
+
+              {/* 4. DOCUMENTS & BANK TAB */}
+              <TabsContent value="documents" className="space-y-8 animate-in fade-in slide-in-from-bottom-2 mt-2">
+                
+                {/* Documents Section */}
+                <div>
+                  <h4 className="font-bold mb-4 flex items-center gap-2 text-foreground px-1"><FileText className="w-5 h-5 text-primary"/> Verification Documents</h4>
+                  {selectedDoctor.verificationDocuments && selectedDoctor.verificationDocuments.length > 0 ? (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      {selectedDoctor.verificationDocuments.map((doc: string, index: number) => {
+                        const url = getDocumentUrl(doc);
+                        let categoryName = "Other Document";
+                        let Icon = FileText;
+                        
+                        if (index === 0) {
+                          categoryName = "Medical Council Certificate";
+                          Icon = Building2;
+                        } else if (index === 1) {
+                          categoryName = "Degree Certificate";
+                          Icon = GraduationCap;
+                        }
+
+                        const isImage = url.toLowerCase().match(/\.(jpeg|jpg|gif|png|webp)$/) != null;
+
+                        return (
+                          <a 
+                            key={index}
+                            href={url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex items-center gap-4 p-4 bg-card border border-border rounded-2xl hover:border-primary/50 hover:bg-primary/5 hover:shadow-md transition-all group shadow-sm"
+                          >
+                            <div className="w-12 h-12 rounded-xl bg-primary/10 flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform">
+                                <Icon className="h-6 w-6 text-primary" />
+                            </div>
+                            <div className="flex flex-col min-w-0 flex-1">
+                                <span className="text-sm font-bold text-foreground truncate">{categoryName}</span>
+                                <span className="text-[11px] text-muted-foreground flex items-center gap-1 mt-1 font-medium">
+                                  <Eye className="w-3.5 h-3.5" /> Click to view {isImage ? 'image' : 'document'} securely
+                                </span>
+                            </div>
+                            <Download className="w-5 h-5 text-muted-foreground group-hover:text-primary shrink-0 opacity-40 group-hover:opacity-100 transition-opacity" />
+                          </a>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="p-10 text-center bg-muted/20 rounded-2xl border border-dashed border-border">
+                      <FileText className="w-10 h-10 text-muted-foreground/40 mx-auto mb-3" />
+                      <p className="text-muted-foreground font-medium">No verification documents uploaded.</p>
+                    </div>
+                  )}
+                </div>
+
+                {/* Bank Details Section */}
+                <div className="pt-6 border-t border-border">
+                  <h4 className="font-bold mb-5 flex items-center gap-2 text-foreground px-1"><Building2 className="w-5 h-5 text-primary"/> Bank & Payout Details</h4>
+                  {selectedDoctor.bankName ? (
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                      <div className="p-5 bg-card/50 rounded-2xl border border-border shadow-sm">
+                        <p className="text-[10px] text-muted-foreground mb-1.5 uppercase tracking-widest font-bold">Bank Name</p>
+                        <p className="font-bold text-sm truncate">{selectedDoctor.bankName}</p>
+                      </div>
+                      <div className="p-5 bg-card/50 rounded-2xl border border-border shadow-sm">
+                        <p className="text-[10px] text-muted-foreground mb-1.5 uppercase tracking-widest font-bold">Branch</p>
+                        <p className="font-bold text-sm truncate">{selectedDoctor.bankBranch}</p>
+                      </div>
+                      <div className="p-5 bg-card/50 rounded-2xl border border-border shadow-sm">
+                        <p className="text-[10px] text-muted-foreground mb-1.5 uppercase tracking-widest font-bold">Account Number</p>
+                        <p className="font-mono font-bold text-primary tracking-widest truncate">{selectedDoctor.bankAccountNumber}</p>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="p-6 text-center bg-amber-50 dark:bg-amber-500/10 rounded-2xl border border-amber-200 dark:border-amber-500/20">
+                      <p className="text-sm text-amber-800 dark:text-amber-400 font-semibold">Bank details not provided. Doctor will only accept cash payments at physical locations.</p>
+                    </div>
+                  )}
+                </div>
+              </TabsContent>
+
+              {/* 5. ANALYTICS TAB (LAZY LOADED) */}
+              <TabsContent value="analytics" className="space-y-6 animate-in fade-in slide-in-from-bottom-2 mt-2">
+                {analyticsLoading ? (
+                  <div className="py-24 flex flex-col items-center justify-center">
+                    <Loader2 className="w-10 h-10 animate-spin text-primary mb-4" />
+                    <p className="text-muted-foreground font-medium">Compiling doctor analytics...</p>
+                  </div>
+                ) : analyticsData ? (
+                  <>
+                    {/* Top Stats Cards */}
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                      <div className="p-6 rounded-2xl border border-border bg-gradient-to-br from-card to-primary/5 shadow-sm relative overflow-hidden group">
+                          <div className="absolute -right-4 -top-4 w-20 h-20 rounded-full bg-primary/10 group-hover:scale-150 transition-transform duration-500" />
+                          <p className="text-[10px] text-muted-foreground uppercase font-bold mb-2 tracking-widest relative z-10">Total Revenue</p>
+                          <p className="text-3xl font-black text-foreground relative z-10">{formatFee(analyticsData.totals.revenue)}</p>
+                      </div>
+                      <div className="p-6 rounded-2xl border border-border bg-card shadow-sm">
+                          <p className="text-[10px] text-muted-foreground uppercase font-bold mb-2 tracking-widest">Total Appointments</p>
+                          <p className="text-3xl font-black text-foreground">{analyticsData.totals.appointments}</p>
+                      </div>
+                      <div className="p-6 rounded-2xl border border-border bg-card shadow-sm">
+                          <p className="text-[10px] text-muted-foreground uppercase font-bold mb-2 tracking-widest">Cancellation Rate</p>
+                          <p className="text-3xl font-black text-destructive">
+                            {analyticsData.totals.appointments > 0 
+                              ? Math.round((analyticsData.totals.cancelled / analyticsData.totals.appointments) * 100) 
+                              : 0}%
                           </p>
-                        </div>
-                      </a>
-                    ))}
-                  </div>
+                      </div>
+                    </div>
+
+                    {/* Charts Grid */}
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
+                        
+                        {/* Pie Chart: Appointment Status */}
+                        <Card className="shadow-sm border-border bg-card/50 rounded-2xl">
+                          <CardContent className="p-6">
+                            <h4 className="font-bold text-sm mb-6 text-foreground flex items-center gap-2"><CalendarOff className="w-4 h-4 text-primary"/> Appointment Status</h4>
+                            <div className="h-[250px] w-full min-h-[250px]">
+                              <ResponsiveContainer width="100%" height="100%">
+                                <PieChart>
+                                  <Pie data={analyticsData.appointmentStats} cx="50%" cy="50%" innerRadius={70} outerRadius={90} paddingAngle={5} dataKey="value">
+                                    {analyticsData.appointmentStats.map((entry: any, index: number) => (
+                                      <Cell key={`cell-${index}`} fill={entry.color} />
+                                    ))}
+                                  </Pie>
+                                  <RechartsTooltip contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }} itemStyle={{ fontWeight: 'bold' }} />
+                                </PieChart>
+                              </ResponsiveContainer>
+                            </div>
+                            <div className="flex flex-wrap justify-center gap-x-5 gap-y-2 mt-4">
+                              {analyticsData.appointmentStats.map((entry: any, i: number) => (
+                                <div key={i} className="flex items-center gap-2 text-xs font-semibold">
+                                  <div className="w-3 h-3 rounded-full shadow-sm" style={{ backgroundColor: entry.color }} />
+                                  <span className="text-muted-foreground">{entry.name}</span>
+                                  <span className="text-foreground">({entry.value})</span>
+                                </div>
+                              ))}
+                            </div>
+                          </CardContent>
+                        </Card>
+
+                        {/* Bar Chart: Revenue Over Time */}
+                        <Card className="shadow-sm border-border bg-card/50 rounded-2xl">
+                          <CardContent className="p-6 flex flex-col h-full">
+                            <h4 className="font-bold text-sm mb-6 text-foreground flex items-center gap-2"><Activity className="w-4 h-4 text-primary"/> Revenue (Last 6 Months)</h4>
+                            <div className="flex-1 w-full min-h-[250px]">
+                              <ResponsiveContainer width="100%" height="100%">
+                                <BarChart data={analyticsData.revenueData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                                  <XAxis dataKey="month" fontSize={11} tickLine={false} axisLine={false} tick={{fill: 'hsl(var(--muted-foreground))'}} dy={10} />
+                                  <YAxis fontSize={11} tickLine={false} axisLine={false} tickFormatter={(val) => `Rs.${val/1000}k`} tick={{fill: 'hsl(var(--muted-foreground))'}} />
+                                  <RechartsTooltip cursor={{ fill: 'hsl(var(--muted)/0.5)' }} contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }} formatter={(val: number) => [formatFee(val), 'Revenue']} labelStyle={{ color: 'hsl(var(--muted-foreground))', marginBottom: '4px' }} />
+                                  <Bar dataKey="revenue" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} maxBarSize={36} />
+                                </BarChart>
+                              </ResponsiveContainer>
+                            </div>
+                          </CardContent>
+                        </Card>
+
+                    </div>
+                  </>
                 ) : (
-                  <p className="text-xs sm:text-sm text-muted-foreground bg-background p-2.5 sm:p-3 rounded border border-dashed border-border">No documents uploaded</p>
-                )}
-              </div>
-
-              {(selectedDoctor.bankName || selectedDoctor.bankAccountNumber || selectedDoctor.bankBranch) && (
-                <div className="p-4 sm:p-5 rounded-xl border border-border bg-muted/50 space-y-3 sm:space-y-4">
-                  <p className="text-xs sm:text-sm font-bold text-foreground uppercase tracking-wider">Banking Details</p>
-                  <div className="grid gap-3 sm:gap-4 grid-cols-1 sm:grid-cols-3 bg-background p-3 sm:p-4 rounded-lg border border-border">
-                    <div>
-                      <p className="text-[10px] sm:text-xs text-muted-foreground opacity-70 mb-0.5 sm:mb-1">BANK NAME</p>
-                      <p className="text-sm font-semibold text-foreground truncate">{selectedDoctor.bankName || "N/A"}</p>
-                    </div>
-                    <div>
-                      <p className="text-[10px] sm:text-xs text-muted-foreground opacity-70 mb-0.5 sm:mb-1">ACCOUNT NO</p>
-                      <p className="text-sm font-semibold text-foreground truncate">{selectedDoctor.bankAccountNumber || "N/A"}</p>
-                    </div>
-                    <div>
-                      <p className="text-[10px] sm:text-xs text-muted-foreground opacity-70 mb-0.5 sm:mb-1">BRANCH</p>
-                      <p className="text-sm font-semibold text-foreground truncate">{selectedDoctor.bankBranch || "N/A"}</p>
-                    </div>
+                  <div className="p-12 text-center bg-muted/20 rounded-2xl border border-dashed text-muted-foreground flex flex-col items-center justify-center">
+                    <AlertCircle className="w-10 h-10 mb-3 opacity-50" />
+                    <p className="font-medium">Could not load analytics.</p>
                   </div>
-                </div>
-              )}
+                )}
+              </TabsContent>
 
-              <DialogFooter className="flex-col sm:flex-row gap-2 sm:gap-3 pt-3 sm:pt-4 border-t border-border mt-4 sm:mt-6 w-full">
-                <Button variant="outline" onClick={handleCloseDialog} className="rounded-full px-6 w-full sm:w-auto order-1 sm:order-none">
-                  Cancel
-                </Button>
-                <Button
-                  variant="destructive"
-                  onClick={() => setShowRejectDialog(true)}
-                  disabled={rejectMutation.isPending}
-                  className="rounded-full px-6 sm:px-8 w-full sm:w-auto"
-                >
-                  Reject
-                </Button>
-                <Button
-                  onClick={() => selectedDoctor && verifyMutation.mutate(selectedDoctor.id)}
-                  disabled={verifyMutation.isPending}
-                  className="rounded-full px-6 sm:px-8 bg-primary hover:bg-primary/90 text-primary-foreground w-full sm:w-auto"
-                >
-                  <CheckCircle className="h-4 w-4 mr-2" />
-                  {verifyMutation.isPending ? "Verifying..." : "Approve & Verify Doctor"}
-                </Button>
-              </DialogFooter>
             </div>
-          )}
-        </DialogContent>
-      </Dialog>
+          </Tabs>
+        )}
+      </Modal>
 
-      {/* Reject Reason Dialog */}
-      <Dialog open={showRejectDialog} onOpenChange={setShowRejectDialog}>
-        <DialogContent className="max-w-md bg-background rounded-xl">
-          <DialogHeader>
-            <DialogTitle>Reject Doctor Application</DialogTitle>
-            <DialogDescription>Please provide a reason for rejecting this application.</DialogDescription>
-          </DialogHeader>
-          <textarea
-            className="w-full border border-border rounded-lg p-3 text-sm bg-background resize-none focus:outline-none focus:ring-2 focus:ring-primary"
-            rows={4}
-            placeholder="Enter rejection reason..."
-            value={rejectReason}
-            onChange={(e) => setRejectReason(e.target.value)}
-          />
-          <DialogFooter className="gap-2">
-            <Button variant="outline" onClick={() => setShowRejectDialog(false)} className="rounded-full">
-              Cancel
-            </Button>
-            <Button
+      <Modal
+        isOpen={showRejectDialog}
+        onClose={() => setShowRejectDialog(false)}
+        title="Reject Application"
+        description="Provide a clear reason for rejecting this doctor's application. This will be sent to the doctor."
+        icon={<Ban className="w-5 h-5 text-destructive" />}
+        footer={
+          <div className="flex gap-2 w-full justify-end">
+            <Button variant="outline" onClick={() => setShowRejectDialog(false)}>Cancel</Button>
+            <Button 
               variant="destructive"
-              disabled={!rejectReason.trim() || rejectMutation.isPending}
-              onClick={() => selectedDoctor && rejectMutation.mutate({ doctorId: selectedDoctor.id, reason: rejectReason })}
-              className="rounded-full"
+              onClick={() => { if (selectedDoctor) rejectMutation.mutate({ doctorId: selectedDoctor.id, reason: rejectReason }); }}
+              disabled={rejectMutation.isPending || !rejectReason.trim()}
             >
-              {rejectMutation.isPending ? "Rejecting..." : "Confirm Reject"}
+              {rejectMutation.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin"/> : null}
+              Confirm Rejection
             </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          </div>
+        }
+      >
+        <div className="py-4">
+          <Textarea placeholder="e.g. Invalid SLAMC Registration number..." value={rejectReason} onChange={(e) => setRejectReason(e.target.value)} rows={4} className="resize-none" />
+        </div>
+      </Modal>
     </div>
   );
 }

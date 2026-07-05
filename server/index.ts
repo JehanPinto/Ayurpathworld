@@ -12,9 +12,13 @@ import helmet from "helmet";
 import cors from "cors";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
+import { initMaintenanceCache, maintenanceMiddleware } from "./maintenance";
 
 const app = express();
 const httpServer = createServer(app);
+
+// Trust EB load balancer so req.ip returns real client IP, not the proxy IP
+app.set("trust proxy", 1);
 
 app.use(helmet({
   contentSecurityPolicy: false,
@@ -93,6 +97,8 @@ app.use((req, res, next) => {
 });
 
 (async () => {
+  await initMaintenanceCache();
+  app.use(maintenanceMiddleware);
   await registerRoutes(httpServer, app);
 
   // importantly only setup vite in development and after

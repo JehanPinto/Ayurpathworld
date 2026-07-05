@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { Link } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { format, isToday, isYesterday, subDays } from "date-fns";
+import { format, isToday, isYesterday } from "date-fns";
 import { ArrowUpRight, CheckCheck } from "lucide-react";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
@@ -24,11 +24,6 @@ const FILTERS: { key: FilterType; label: string }[] = [
   { key: "appointments",  label: "Appointments" },
   { key: "complaints",    label: "Complaints" },
 ];
-
-// ─── Demo notifications ───────────────────────────────────────────────────────
-const yesterday    = subDays(new Date(), 1).toISOString();
-const threeDaysAgo = subDays(new Date(), 3).toISOString();
-const fourDaysAgo  = subDays(new Date(), 4).toISOString();
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function getVariant(n: Notification): CardVariant {
@@ -73,10 +68,9 @@ function getBadgeLabel(n: Notification): string {
 
 function getButton(n: Notification) {
   const text  = (n.title + " " + n.message).toLowerCase();
-  const isDemo = n.id.startsWith("demo-");
   if (text.includes("registration"))             return { label: "Review Doctor",   href: "/admin/doctors" };
   if (text.includes("failed") || text.includes("declined"))
-                                                  return { label: "Resolve Issue",   href: isDemo ? null : "/admin/payments" };
+                                                  return { label: "Resolve Issue",   href: "/admin/payments" };
   if (text.includes("reset") || text.includes("unrecognised")) return null;
   if (text.includes("pending") || text.includes("overdue"))
                                                   return { label: "Review Doctor",   href: "/admin" };
@@ -145,21 +139,7 @@ export function AdminNotificationPanel({ open, onOpenChange }: Props) {
     }
   }, [open]);
 
-  const hasRealOverdue = apiNotifications.some(
-    (n) => n.title.toLowerCase().includes("pending") && n.title.toLowerCase().includes("overdue")
-  );
-  const hasRealFailedTxn = apiNotifications.some(
-    (n) => n.title.toLowerCase().includes("failed transaction")
-  );
-  const realTitles = new Set(apiNotifications.map((n) => n.title));
-
-  const notifications = [
-    ...apiNotifications.filter((d) => {
-      if (d.id === "demo-admin-verification-pending" && hasRealOverdue) return false;
-      if (d.id === "demo-admin-failed-txn" && hasRealFailedTxn) return false;
-      return !realTitles.has(d.title);
-    }),
-  ];
+  const notifications = apiNotifications;
 
   const unreadCount = notifications.filter((n) => !n.isRead).length;
   const filtered    = notifications.filter((n) => matchesFilter(n, activeFilter));
@@ -177,7 +157,7 @@ export function AdminNotificationPanel({ open, onOpenChange }: Props) {
             <div>
               <h1 className="text-3xl font-heading font-bold leading-tight">Notifications</h1>
               <p className="text-sm text-muted-foreground mt-1">
-                MediConnect Platform · Control Panel
+                AyurPath · Control Panel
               </p>
             </div>
             <img
