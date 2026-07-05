@@ -997,52 +997,53 @@ export default function DoctorSettings() {
 
                 {/* Consultation Fees */}
                 <div className="space-y-3">
-                  <p className="font-semibold text-sm">Consultation Fees (LKR)</p>
-                  <div className="grid sm:grid-cols-2 gap-4">
-                    <FormField
-                      control={doctorProfileForm.control}
-                      name="consultationFee"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel className="text-xs text-muted-foreground">In person Fees</FormLabel>
-                          <FormControl>
-                            <div className="relative">
-                              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">Rs.</span>
-                              <Input
-                                {...field}
-                                type="number"
-                                min="0"
-                                className="pl-10 bg-white dark:bg-background rounded-lg"
-                                onChange={(e) => field.onChange(parseInt(e.target.value) || 0)}
-                              />
-                            </div>
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                    <FormField
-                      control={doctorProfileForm.control}
-                      name="onlineConsultationFee"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel className="text-xs text-muted-foreground">Online Fee</FormLabel>
-                          <FormControl>
-                            <div className="relative">
-                              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">Rs.</span>
-                              <Input
-                                {...field}
-                                type="number"
-                                min="0"
-                                className="pl-10 bg-white dark:bg-background rounded-lg"
-                                onChange={(e) => field.onChange(parseInt(e.target.value) || 0)}
-                              />
-                            </div>
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
+                  <h3 className="text-xs font-semibold uppercase text-muted-foreground border-b border-border/60 pb-2">Consultation Fees (LKR)</h3>
+                  <div className="grid sm:grid-cols-2 gap-5">
+                    <FormField control={doctorProfileForm.control} name="consultationFee" render={({ field }) => (
+                      <FormItem>
+                        <FormLabel className="text-sm font-medium text-foreground">In-Person Fee</FormLabel>
+                        <FormControl>
+                          <div className="relative">
+                            <span className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground text-sm font-bold">Rs.</span>
+                            <Input
+                              {...field}
+                              type="number"
+                              min="0"
+                              className="pl-12 bg-background rounded-xl border-border focus-visible:ring-primary h-11 font-medium text-base"
+                              value={field.value || ""} // Hides 0
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                field.onChange(val === "" ? 0 : parseInt(val, 10));
+                              }}
+                            />
+                          </div>
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )} />
+                    
+                    <FormField control={doctorProfileForm.control} name="onlineConsultationFee" render={({ field }) => (
+                      <FormItem>
+                        <FormLabel className="text-sm font-medium text-foreground">Online Video Fee</FormLabel>
+                        <FormControl>
+                          <div className="relative">
+                            <span className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground text-sm font-bold">Rs.</span>
+                            <Input
+                              {...field}
+                              type="number"
+                              min="0"
+                              className="pl-12 bg-background rounded-xl border-border focus-visible:ring-primary h-11 font-medium text-base"
+                              value={field.value || ""} // Hides 0
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                field.onChange(val === "" ? 0 : parseInt(val, 10));
+                              }}
+                            />
+                          </div>
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )} />
                   </div>
                 </div>
 
