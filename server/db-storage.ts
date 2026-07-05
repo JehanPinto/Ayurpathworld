@@ -3066,6 +3066,27 @@ export class DbStorage implements IStorage {
       totals: { revenue: totalRevenue, appointments: apts.length, cancelled: aptCounts.cancelled }
     };
   }
+
+  async getAppointmentBySlotId(slotId: string): Promise<Appointment | undefined> {
+    const result = await db
+      .select()
+      .from(appointments)
+      .where(
+        and(
+          eq(appointments.slotId, slotId),
+          inArray(appointments.status, [AppointmentStatus.PENDING, AppointmentStatus.CONFIRMED])
+        )
+      )
+      .limit(1);
+      
+    if (!result[0]) return undefined;
+    
+    return {
+      ...result[0],
+      createdAt: toISOString(result[0].createdAt),
+      updatedAt: toISOString(result[0].updatedAt),
+    } as Appointment;
+  }
 }
 
 export const dbStorage = new DbStorage();
