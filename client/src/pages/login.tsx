@@ -78,6 +78,9 @@ export default function LoginPage() {
         description: error.message || "Invalid email or password",
         variant: "destructive",
       });
+      if (error.message?.toLowerCase().includes("maintenance")) {
+        setLocation("/maintenance");
+      }
       setCooldown(true);
       setTimeout(() => setCooldown(false), 2000);
     },

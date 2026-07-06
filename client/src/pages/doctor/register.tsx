@@ -49,6 +49,8 @@ import {
   Edit2,
   Trash2,
   MapPin,
+  CloudUpload,
+  Info,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
@@ -120,6 +122,24 @@ const bankInfoSchema = z.object({
   agreeTerms: z
     .boolean()
     .refine((val) => val === true, "You must agree to the terms"),
+}).superRefine((data, ctx) => {
+  // If a bank is selected (and it's not "none"), account number and branch are mandatory
+  if (data.bankName && data.bankName !== "none") {
+    if (!data.bankAccountNumber || !/^\d{6,20}$/.test(data.bankAccountNumber)) {
+      ctx.addIssue({ 
+        code: z.ZodIssueCode.custom, 
+        message: "Valid account number is required (6-20 digits)", 
+        path: ["bankAccountNumber"] 
+      });
+    }
+    if (!data.bankBranch || data.bankBranch.length < 2) {
+      ctx.addIssue({ 
+        code: z.ZodIssueCode.custom, 
+        message: "Valid branch name is required", 
+        path: ["bankBranch"] 
+      });
+    }
+  }
 });
 
 type PersonalInfo = z.infer<ReturnType<typeof buildPersonalInfoSchema>>;
@@ -139,7 +159,34 @@ interface FileDetail {
   size: number;
   type: string;
   previewUrl: string;
+  category: "medical_council" | "degree" | "other";
+  url?: string;
+  isUploading?: boolean;
 }
+
+const DOCUMENT_CATEGORIES = [
+  {
+    id: "medical_council" as const,
+    title: "Medical Council Registration Certificate",
+    desc: "Upload your valid medical council registration certificate issued by the relevant authority. e.g. SLMC Certificate, GMC Registration",
+    required: true,
+    icon: Building2,
+  },
+  {
+    id: "degree" as const,
+    title: "Degree Certificates",
+    desc: "Upload your medical degree(s) — MBBS, MD, MS, or equivalent qualifications.",
+    required: true,
+    icon: GraduationCap,
+  },
+  {
+    id: "other" as const,
+    title: "Other Relevant Documents",
+    desc: "Upload any additional supporting documents such as specialization certificates, fellowship letters, licenses, or professional memberships.",
+    required: false,
+    icon: FileText,
+  },
+];
 
 const SRI_LANKAN_BANKS = [
   { name: "Amana Bank PLC", domain: "amanabank.lk" },
@@ -171,13 +218,14 @@ const SRI_LANKAN_BANKS = [
 ];
 
 export default function DoctorRegisterPage() {
-  const [currentStep, setCurrentStep] = useState(1);
+  const [currentStep, setCurrentStep] = useState(4);
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [personalInfo, setPersonalInfo] = useState<PersonalInfo | null>(null);
   const [professionalInfo, setProfessionalInfo] =
     useState<ProfessionalInfo | null>(null);
   const [isUploading, setIsUploading] = useState(false);
+  const [isUploadingBankStatement, setIsUploadingBankStatement] = useState(false);
   const [uploadToken, setUploadToken] = useState<string | null>(null);
   const [authRegistrationToken, setAuthRegistrationToken] = useState<
     string | null
@@ -204,6 +252,14 @@ export default function DoctorRegisterPage() {
   }>({ isOpen: false, mode: "add", data: null, index: null });
   const [viewHospital, setViewHospital] = useState<any | null>(null);
 
+  // Step 3 Validation Variables
+  const hasMedCouncil = fileDetails.some(
+    (f) => f.category === "medical_council" && f.url,
+  );
+  const hasDegree = fileDetails.some((f) => f.category === "degree" && f.url);
+  const isAnyFileUploading = fileDetails.some((f) => f.isUploading);
+  const isStep3Valid = hasMedCouncil && hasDegree && !isAnyFileUploading;
+
   const { data: specializations = [] } = useQuery<Specialization[]>({
     queryKey: ["/api/specializations"],
   });
@@ -218,7 +274,7 @@ export default function DoctorRegisterPage() {
     defaultValues: {
       fullName: "",
       email: "",
-      phone: "",
+      phone: "+94",
       password: "",
       confirmPassword: "",
       address: "",
@@ -279,8 +335,10 @@ export default function DoctorRegisterPage() {
   useEffect(() => {
     return () => {
       fileDetails.forEach((file) => URL.revokeObjectURL(file.previewUrl));
+      if (bankStatementFile?.previewUrl)
+        URL.revokeObjectURL(bankStatementFile.previewUrl);
     };
-  }, [fileDetails]);
+  }, [fileDetails, bankStatementFile]);
 
   const registerMutation = useMutation({
     mutationFn: async (data: any) => {
@@ -357,6 +415,7 @@ export default function DoctorRegisterPage() {
 
   const handleFileUpload = async (
     event: React.ChangeEvent<HTMLInputElement>,
+    category: "medical_council" | "degree" | "other",
   ) => {
     const files = event.target.files;
     if (!files || files.length === 0) return;
@@ -370,12 +429,12 @@ export default function DoctorRegisterPage() {
       return;
     }
 
-    const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB in bytes
+    const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB in bytes
     const validFiles = Array.from(files).filter((file) => {
       if (file.size > MAX_FILE_SIZE) {
         toast({
           title: "File too large",
-          description: `${file.name} is larger than 5MB. Please select a smaller file.`,
+          description: `${file.name} is larger than 10MB. Please select a smaller file.`,
           variant: "destructive",
         });
         return false;
@@ -394,6 +453,8 @@ export default function DoctorRegisterPage() {
       size: file.size,
       type: file.type,
       previewUrl: URL.createObjectURL(file),
+      category,
+      isUploading: true,
     }));
 
     setFileDetails((prev) => [...prev, ...newFileDetails]);
@@ -401,7 +462,10 @@ export default function DoctorRegisterPage() {
     setIsUploading(true);
 
     try {
-      for (const file of validFiles) {
+      for (let i = 0; i < validFiles.length; i++) {
+        const file = validFiles[i];
+        const fileId = newFileDetails[i].id;
+
         const formData = new FormData();
         formData.append("file", file);
 
@@ -420,32 +484,36 @@ export default function DoctorRegisterPage() {
         }
 
         const result = await response.json();
-        setUploadedFiles((prev) => [...prev, result.url]);
-      }
 
-      toast({
-        title: "Files uploaded",
-        description: "Your documents have been uploaded successfully.",
-      });
+        // Update the specific file object with the URL and set isUploading to false
+        setFileDetails((prev) =>
+          prev.map((f) =>
+            f.id === fileId ? { ...f, url: result.url, isUploading: false } : f,
+          ),
+        );
+      }
     } catch (error: any) {
+      // Remove failed uploads from state
+      setFileDetails((prev) => prev.filter((f) => !f.isUploading));
       toast({
         title: "Upload failed",
-        description: error?.message || "Failed to upload documents. Please try again.",
+        description:
+          error?.message || "Failed to upload documents. Please try again.",
         variant: "destructive",
       });
     } finally {
-      setIsUploading(false);
       if (event.target) event.target.value = "";
     }
   };
 
-  const removeFile = (index: number) => {
-    setUploadedFiles((prev) => prev.filter((_, i) => i !== index));
+  const removeFile = (fileId: string) => {
+    setUploadedFiles((prev) => prev.filter((_, i) => i !== Number(fileId)));
     setFileDetails((prev) => {
-      const updated = [...prev];
-      URL.revokeObjectURL(updated[index].previewUrl);
-      updated.splice(index, 1);
-      return updated;
+      const targetFile = prev.find((file) => file.id === fileId);
+      if (targetFile) {
+        URL.revokeObjectURL(targetFile.previewUrl);
+      }
+      return prev.filter((file) => file.id !== fileId);
     });
   };
 
@@ -474,7 +542,9 @@ export default function DoctorRegisterPage() {
     } catch (error: any) {
       toast({
         title: "Error",
-        description: error?.message || "Unable to connect to the server. Please check your internet connection and try again.",
+        description:
+          error?.message ||
+          "Unable to connect to the server. Please check your internet connection and try again.",
         variant: "destructive",
       });
     }
@@ -1336,92 +1406,95 @@ export default function DoctorRegisterPage() {
               </Form>
             )}
 
-            {/* Step 3 - Interactive Image/PDF Previews */}
+            {/* Step 3 - Categorized Documents Upload */}
             {currentStep === 3 && (
               <div className="space-y-6">
-                {/* Upload Box matching Careers page style */}
-                <div
-                  className={`border-2 border-dashed border-border rounded-xl p-10 text-center bg-background cursor-pointer hover:border-primary transition-colors ${isUploading ? "opacity-50 pointer-events-none" : ""}`}
-                  onClick={() =>
-                    !isUploading &&
-                    document.getElementById("file-upload")?.click()
-                  }
-                >
-                  <Upload className="h-10 w-10 mx-auto text-muted-foreground mb-4" />
-                  <h3 className="text-xl font-bold text-foreground mb-2">
-                    Upload Verification Documents
-                  </h3>
-                  <p className="text-sm text-muted-foreground mb-4">
-                    Upload your medical council registration certificate, degree
-                    certificates, and any other relevant documents.
-                    <br />
-                    Supported Formats: PDF, JPG, PNG (Max 5MB each)
+                {/* Information Notice */}
+                <div className="bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20 p-4 rounded-xl flex items-start gap-3 mb-6">
+                  <Info className="text-amber-600 dark:text-amber-500 shrink-0 w-5 h-5 mt-0.5" />
+                  <p className="text-sm text-amber-800 dark:text-amber-400">
+                    Your uploaded documents will be securely reviewed by our
+                    administration team. This process typically takes{" "}
+                    <strong>2-3 business days</strong>.
                   </p>
-
-                  <input
-                    type="file"
-                    id="file-upload"
-                    className="hidden"
-                    multiple
-                    accept=".pdf,.jpg,.jpeg,.png"
-                    onChange={handleFileUpload}
-                    disabled={isUploading}
-                    data-testid="input-file-upload"
-                  />
-
-                  <Button
-                    variant="outline"
-                    type="button"
-                    disabled={isUploading}
-                    onClick={(e) => {
-                      e.stopPropagation(); // Prevent the div click from triggering again
-                      document.getElementById("file-upload")?.click();
-                    }}
-                  >
-                    {isUploading ? (
-                      <>
-                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                        Uploading...
-                      </>
-                    ) : (
-                      <>
-                        <Upload className="h-4 w-4 mr-2" />
-                        Select Files
-                      </>
-                    )}
-                  </Button>
                 </div>
 
-                {/* Previews Grid matching Careers page logic */}
-                {fileDetails.length > 0 && (
-                  <div className="space-y-4 mt-6">
-                    <h4 className="font-medium text-foreground">
-                      Uploaded Documents
-                    </h4>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                      {fileDetails.map((file, index) => {
-                        const isPdf = file.type.includes("pdf");
-                        const isImage = file.type.includes("image");
+                {/* Upload Cards Loop */}
+                {DOCUMENT_CATEGORIES.map((category) => {
+                  const CategoryIcon = category.icon;
+                  const filesForCategory = fileDetails.filter(
+                    (f) => f.category === category.id,
+                  );
 
-                        return (
-                          <div
-                            key={file.id}
-                            className="border border-border rounded-xl p-4 bg-background shadow-sm flex flex-col"
-                          >
-                            {/* File Info Header */}
-                            <div className="flex items-center justify-between mb-4">
+                  return (
+                    <div
+                      key={category.id}
+                      className="border border-border bg-card p-5 sm:p-6 rounded-xl shadow-sm"
+                    >
+                      <div className="flex items-center gap-2 mb-2">
+                        <CategoryIcon className="w-5 h-5 text-muted-foreground shrink-0" />
+                        <h3 className="font-bold text-foreground">
+                          {category.title}{" "}
+                          {category.required && (
+                            <span className="text-destructive">*</span>
+                          )}
+                        </h3>
+                      </div>
+                      <p className="text-sm text-muted-foreground mb-4">
+                        {category.desc}
+                      </p>
+
+                      {/* File Dropzone */}
+                      <div
+                        className="border-2 border-dashed border-border hover:border-primary transition-colors bg-muted/20 rounded-lg p-6 sm:p-8 text-center cursor-pointer group"
+                        onClick={() => {
+                          const input = document.getElementById(
+                            `upload-${category.id}`,
+                          ) as HTMLInputElement;
+                          if (input) input.click();
+                        }}
+                      >
+                        <CloudUpload className="w-8 h-8 mx-auto text-muted-foreground group-hover:text-primary transition-colors mb-3" />
+                        <p className="text-sm font-medium text-foreground">
+                          Drag & Drop your {category.title}{" "}
+                          <br className="hidden sm:block" /> or Click to Upload
+                        </p>
+                        <p className="text-xs text-muted-foreground mt-2">
+                          Supported Files: PDF, DOCX, JPG, PNG (Max 10MB)
+                        </p>
+                      </div>
+                      <input
+                        type="file"
+                        id={`upload-${category.id}`}
+                        className="hidden"
+                        multiple
+                        accept=".pdf,.docx,.jpg,.jpeg,.png"
+                        onChange={(e) => handleFileUpload(e, category.id)}
+                      />
+
+                      {/* Files List for this Category */}
+                      {filesForCategory.length > 0 && (
+                        <div className="mt-4 space-y-2">
+                          {filesForCategory.map((file) => (
+                            <div
+                              key={file.id}
+                              className="flex items-center justify-between p-3 rounded-lg border border-border bg-background shadow-sm group/file"
+                            >
                               <div className="flex items-center gap-3 overflow-hidden">
-                                <div className="w-10 h-10 shrink-0 bg-primary/10 rounded-lg flex items-center justify-center">
-                                  <FileText className="w-5 h-5 text-primary" />
-                                </div>
+                                {file.isUploading ? (
+                                  <div className="w-8 h-8 bg-primary/10 rounded-md flex items-center justify-center shrink-0">
+                                    <Loader2 className="w-4 h-4 animate-spin text-primary" />
+                                  </div>
+                                ) : (
+                                  <div className="w-8 h-8 bg-primary/10 rounded-md flex items-center justify-center shrink-0">
+                                    <FileText className="w-4 h-4 text-primary" />
+                                  </div>
+                                )}
                                 <div className="min-w-0">
-                                  <p
-                                    className="text-foreground font-semibold text-sm truncate"
-                                    title={file.name}
-                                  >
+                                  <p className="text-sm font-semibold truncate text-foreground pr-2">
                                     {file.name}
                                   </p>
-                                  <p className="text-muted-foreground text-xs">
+                                  <p className="text-xs text-muted-foreground">
                                     {(file.size / 1024 / 1024).toFixed(2)} MB
                                   </p>
                                 </div>
@@ -1429,57 +1502,30 @@ export default function DoctorRegisterPage() {
                               <Button
                                 variant="ghost"
                                 size="icon"
-                                type="button"
-                                className="p-2 hover:bg-destructive/10 text-destructive rounded-lg transition-colors shrink-0"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  removeFile(index);
-                                }}
-                                disabled={isUploading}
+                                className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive shrink-0 h-8 w-8"
+                                onClick={() => removeFile(file.id)}
+                                disabled={file.isUploading}
                               >
-                                <X className="h-4 w-4" />
+                                <X className="w-4 h-4" />
                               </Button>
                             </div>
-
-                            {/* Visual Preview Section */}
-                            <div className="w-full h-[180px] bg-muted/30 rounded-lg overflow-hidden border border-border/50 flex items-center justify-center relative mt-auto">
-                              {isPdf ? (
-                                <iframe
-                                  src={`${file.previewUrl}#toolbar=0&navpanes=0&scrollbar=0`}
-                                  className="w-full h-full object-cover pointer-events-none"
-                                  title={`Preview ${index}`}
-                                />
-                              ) : isImage ? (
-                                <img
-                                  src={file.previewUrl}
-                                  alt={`Preview ${index}`}
-                                  className="w-full h-full object-contain"
-                                />
-                              ) : (
-                                <div className="flex flex-col items-center text-muted-foreground">
-                                  <FileText className="w-10 h-10 mb-2 opacity-30" />
-                                  <span className="text-xs">
-                                    No visual preview
-                                  </span>
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        );
-                      })}
+                          ))}
+                        </div>
+                      )}
                     </div>
-                  </div>
-                )}
+                  );
+                })}
 
-                <div className="flex justify-between pt-4">
+                <div className="flex justify-between pt-6 border-t border-border">
                   <Button variant="ghost" onClick={() => setCurrentStep(2)}>
                     <ArrowLeft className="h-4 w-4 mr-2" /> Back
                   </Button>
                   <Button
-                    onClick={handleDocumentsNext}
+                    onClick={() => setCurrentStep(4)}
+                    disabled={!isStep3Valid}
                     data-testid="button-next-step3"
                   >
-                    Next <ArrowRight className="h-4 w-4 ml-2" />
+                    Save & Continue <ArrowRight className="h-4 w-4 ml-2" />
                   </Button>
                 </div>
               </div>
@@ -1629,9 +1675,9 @@ export default function DoctorRegisterPage() {
                           className="hidden"
                           accept=".pdf,.docx,.jpg,.png"
                           onChange={handleBankStatementUpload}
-                          disabled={isUploading}
+                          disabled={isUploadingBankStatement}
                         />
-                        {isUploading ? (
+                        {isUploadingBankStatement ? (
                           <>
                             <Loader2 className="h-8 w-8 text-primary animate-spin mb-2" />
                             <p className="text-sm font-medium text-foreground">

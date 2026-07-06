@@ -50,6 +50,7 @@ import {
   type DoctorWithDetails,
   type AppointmentSlot,
   type TaxEntry,
+  type FeeEntry,
 } from "@shared/schema";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 
@@ -177,6 +178,16 @@ export default function BookAppointmentPage() {
     staleTime: 5 * 60 * 1000,
   });
 
+  const { data: customFees = [] } = useQuery<FeeEntry[]>({
+    queryKey: ["/api/fee-entries"],
+    queryFn: async () => {
+      const res = await fetch("/api/fee-entries");
+      if (!res.ok) return [];
+      return res.json();
+    },
+    staleTime: 5 * 60 * 1000,
+  });
+
   const { data: doctor, isLoading: doctorLoading } = useQuery<DoctorWithDetails>({
     queryKey: [`/api/doctors/${doctorId}`],
     queryFn: () => apiRequest("GET", `/api/doctors/${doctorId}`),
@@ -216,7 +227,17 @@ export default function BookAppointmentPage() {
     amount: Math.round(consultationFee * (t.rate / 100)),
   }));
   const customTaxTotal = customTaxAmounts.reduce((sum, t) => sum + t.amount, 0);
-  const totalAmount = consultationFee + bookingCharges + tax + stampDutyAmount + customTaxTotal;
+
+  // Patient-facing custom fees (enabled). Amount fees are flat LKR; percentage fees scale with the consultation fee.
+  const patientFeeAmounts = customFees
+    .filter((f) => f.enabled && (f.applicableTo === "patients" || f.applicableTo === "both"))
+    .map((f) => ({
+      ...f,
+      amount: f.feeType === "percentage" ? Math.round(consultationFee * (f.rate / 100)) : f.rate,
+    }));
+  const patientFeeTotal = patientFeeAmounts.reduce((sum, f) => sum + f.amount, 0);
+
+  const totalAmount = consultationFee + bookingCharges + tax + stampDutyAmount + customTaxTotal + patientFeeTotal;
 
   const bookingMutation = useMutation({
     mutationFn: async (data: BookingInput) => {
@@ -571,6 +592,12 @@ export default function BookAppointmentPage() {
           <div key={t.id} className="flex justify-between text-sm">
             <span className="text-muted-foreground">{t.title} ({t.rate}%)</span>
             <span className="font-medium text-foreground">{formatFee(t.amount)}</span>
+          </div>
+        ))}
+        {patientFeeAmounts.map((f) => (
+          <div key={f.id} className="flex justify-between text-sm">
+            <span className="text-muted-foreground">{f.title}{f.feeType === "percentage" ? ` (${f.rate}%)` : ""}</span>
+            <span className="font-medium text-foreground">{formatFee(f.amount)}</span>
           </div>
         ))}
       </div>

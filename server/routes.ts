@@ -6,6 +6,7 @@ import { type Server } from "http";
 import path from "path";
 import { db, pool } from "./db";
 import { storage } from "./storage";
+import { getMaintenanceStatus, updateMaintenanceCache } from "./maintenance";
 import { sendApplicationEmail, sendDoctorVerifiedEmail, sendPasswordResetOtpEmail } from "./util/email";
 
 import {
@@ -117,6 +118,18 @@ function validateBankDetails(acc?: string | null, branch?: string | null) {
     return "Invalid bank branch format";
   }
   return null;
+}
+
+// Format a "HH:MM" or "HH:MM:SS" time string to 12-hour form, e.g. "14:30:00" -> "2:30 PM"
+function formatTime12h(time?: string | null): string {
+  if (!time) return "";
+  const [hStr, mStr] = time.split(":");
+  const h = parseInt(hStr, 10);
+  const m = parseInt(mStr ?? "0", 10);
+  if (Number.isNaN(h) || Number.isNaN(m)) return time;
+  const period = h >= 12 ? "PM" : "AM";
+  const hour12 = h % 12 === 0 ? 12 : h % 12;
+  return `${hour12}:${m.toString().padStart(2, "0")} ${period}`;
 }
 
 const loginLimiter = rateLimit({
@@ -488,6 +501,11 @@ export async function registerRoutes(
   httpServer: Server,
   app: Express,
 ): Promise<Server> {
+  // Public — no auth required, used by maintenance page to poll status
+  app.get("/api/maintenance-status", (_req: Request, res: Response) => {
+    res.json(getMaintenanceStatus());
+  });
+
   app.use(passport.initialize());
   passport.serializeUser((user: any, done) => {
     done(null, user);
@@ -497,24 +515,18 @@ export async function registerRoutes(
     done(null, user);
   });
 
-  // 🟢 Helper to safely get actor info (Resolves Foreign Key constraint issue natively)
   const getActorInfo = async (req: Request) => {
-    // 1. User login වෙලා නම් (Authenticated)
     const authUser = (req as AuthenticatedRequest).user;
     if (authUser) {
       return { actorId: authUser.id, actorRole: authUser.role };
     }
 
-    // 2. Request එකේ Email එකක් එවලා තියෙනවද කියලා බලනවා (Login, Forgot PW, Register, Upload CV)
     const providedEmail = req.body?.email || req.headers["x-registration-email"];
     
     if (providedEmail && typeof providedEmail === 'string') {
       try {
         const existingUser = await storage.getUserByEmail(providedEmail.toLowerCase().trim());
         if (existingUser) {
-          // Email එකට අදාළ User කෙනෙක් DB එකේ ඉන්නවා නම්, එයාගේ ID එක යවනවා
-          // හැබැයි තවම ලොග් වෙලා නැති නිසා 'unverified' හෝ 'guest' විදිහට තියන්නත් පුළුවන්, 
-          // ඒත් වඩා හොඳයි එයාගේ ඇත්ත role එකම යවන එක.
           return { actorId: existingUser.id, actorRole: existingUser.role };
         }
       } catch (e) {
@@ -522,16 +534,12 @@ export async function registerRoutes(
       }
     }
     
-    // 3. User login වෙලත් නැත්නම්, ගහපු Email එක DB එකේ ඇත්තෙත් නැත්නම් (හෝ Email එකක් ගැහුවේ නැත්නම්) - "System Guest" Pattern
     const GUEST_EMAIL = "guest@ayurpath.system";
     
     try {
-      // Guest User කෙනෙක් කලින් හැදිලා තියෙනවද බලනවා
       let guestUser = await storage.getUserByEmail(GUEST_EMAIL);
       
-      // එහෙම කෙනෙක් නැත්නම්, පළවෙනි පාරට ඒ Dummy User ව හදනවා
       if (!guestUser) {
-        // මේකෙන් ලොග් වෙන්න බැරි වෙන්න Random Password එකක් දෙනවා
         const dummyPassword = await hashPassword(randomUUID() + randomUUID()); 
         
         guestUser = await storage.createUser({
@@ -539,17 +547,15 @@ export async function registerRoutes(
           email: GUEST_EMAIL,
           password: dummyPassword,
           phone: "0000000000",
-          role: "patient", // DB Schema එකේ තියෙන Default Role එක
+          role: "patient",
         } as any);
       }
       
-      // 🟢 Database එකේ තියෙන ඇත්තම ID එක දෙනවා, හැබැයි Role එක 'guest' කියලා යවනවා
       return { actorId: guestUser.id, actorRole: 'guest' };
       
     } catch (error) {
       console.error("Failed to fetch/create guest user:", error);
       
-      // මොකක් හරි වෙලා Guest User ව හදන්න බැරි වුණොත්, Admin ගේ ID එක පාවිච්චි කරනවා (Fallback)
       const admins = await storage.getAllUsers("admin");
       if (admins && admins.length > 0) {
          return { actorId: admins[0].id, actorRole: 'guest' };
@@ -913,6 +919,25 @@ export async function registerRoutes(
           throw profileError;
         }
 
+        // Notify all admins about the new doctor registration awaiting verification
+        try {
+          const regAdmins = await storage.getAllUsers("admin");
+          await Promise.all(
+            regAdmins.map((a) =>
+              storage.createNotification({
+                userId: a.id,
+                title: "New doctor registration",
+                message: `${user.fullName} has registered as a doctor and is awaiting verification.`,
+                type: "system",
+                isRead: false,
+                relatedId: user.id,
+              }),
+            ),
+          );
+        } catch (notifyError) {
+          console.error("Failed to notify admins of doctor registration:", notifyError);
+        }
+
         const { token, jti } = generateToken({
           id: user.id, email: user.email, role: user.role, fullName: user.fullName,
         });
@@ -1000,8 +1025,9 @@ export async function registerRoutes(
     "/api/auth/login",
     loginLimiter,
     async (req: Request, res: Response) => {
-
       const tRequestReceived = new Date().toISOString();
+      const { ipAddress, device, location, sessionId } = getReqInfo(req);
+      const { actorId, actorRole } = await getActorInfo(req);
 
       try {
         const { email, password } = loginSchema.parse(req.body);
@@ -1014,8 +1040,6 @@ export async function registerRoutes(
 
           if (user) {
             try {
-              const { ipAddress, device, location, sessionId } = getReqInfo(req);
-              const { actorId, actorRole } = await getActorInfo(req);
               await storage.createAuditLog({
                 actorId, actorRole,
                 action: 'USER_LOGIN', status: 'failed',
@@ -1038,19 +1062,42 @@ export async function registerRoutes(
 
         const tCredentialsVerified = new Date().toISOString();
 
+        // Block non-admin logins during maintenance
+        const { isActive: maintenanceActive } = getMaintenanceStatus();
+        if (maintenanceActive && user.role !== UserRole.ADMIN) {
+          const tFailed = new Date().toISOString();
+
+          try {
+            await storage.createAuditLog({
+              actorId, actorRole,
+              action: 'USER_LOGIN', status: 'failed',
+              entityType: 'user', entityId: user.id,
+              ipAddress, device, location, sessionId,
+              metadata: {
+                auditType: "AUTH",
+                method: 'Email & Password', reason: 'Platform under maintenance',
+                timeline: {
+                  requestReceivedAt: tRequestReceived,
+                  credentialsVerifiedAt: tCredentialsVerified,
+                  completedAt: tFailed
+                }
+              }
+            });
+          } catch (e) { console.error(e); }
+          return res.status(503).json({ error: "Platform is currently under maintenance. Please try again later." });
+        }
+
         if (user.provider && user.provider !== AuthProvider.LOCAL) {
           const providerName = user.provider.charAt(0).toUpperCase() + user.provider.slice(1);
 
           const tFailed = new Date().toISOString();
 
             try {
-              const { ipAddress, device, location, sessionId } = getReqInfo(req);
-              const { actorId, actorRole } = await getActorInfo(req);
               await storage.createAuditLog({
                 actorId, actorRole,
                 action: 'USER_LOGIN', status: 'failed',
                 entityType: 'user', entityId: user.id,
-                ipAddress, device, location, sessionId: sessionId,
+                ipAddress, device, location, sessionId,
                 metadata: {
                   auditType: "AUTH",
                   method: 'Email & Password', reason: 'Account registered with social provider',
@@ -1080,13 +1127,11 @@ export async function registerRoutes(
               const tFailed = new Date().toISOString();
 
               try {
-                const { ipAddress, device, location, sessionId } = getReqInfo(req);
-                const { actorId, actorRole } = await getActorInfo(req);
                 await storage.createAuditLog({
                   actorId, actorRole,
                   action: 'USER_LOGIN', status: 'failed',
                   entityType: 'user', entityId: user.id,
-                  ipAddress, device, location, sessionId: sessionId,
+                  ipAddress, device, location, sessionId,
                   metadata: { 
                     auditType: "AUTH",
                     method: 'Doctor', reason: 'Suspended account',
@@ -1115,13 +1160,11 @@ export async function registerRoutes(
 
               const tFailed = new Date().toISOString();
               try {
-                const { ipAddress, device, location, sessionId } = getReqInfo(req);
-                const { actorId, actorRole } = await getActorInfo(req);
                 await storage.createAuditLog({
                   actorId, actorRole,
                   action: 'USER_LOGIN', status: 'failed',
                   entityType: 'user', entityId: user.id,
-                  ipAddress, device, location, sessionId: sessionId,
+                  ipAddress, device, location, sessionId,
                   metadata: { 
                     auditType: "AUTH",
                     method: 'Doctor', reason: 'Doctor application rejected',
@@ -1147,13 +1190,11 @@ export async function registerRoutes(
             if (doctorProfile.status === DoctorStatus.PENDING) {
               const tFailed = new Date().toISOString();
               try {
-                const { ipAddress, device, location, sessionId } = getReqInfo(req);
-                const { actorId, actorRole } = await getActorInfo(req);
                 await storage.createAuditLog({
                   actorId, actorRole,
                   action: 'USER_LOGIN', status: 'failed',
                   entityType: 'user', entityId: user.id,
-                  ipAddress, device, location, sessionId: sessionId,
+                  ipAddress, device, location, sessionId,
                   metadata: { 
                     auditType: "AUTH",
                     method: 'Doctor', reason: 'Doctor application pending',
@@ -1186,13 +1227,11 @@ export async function registerRoutes(
           const tFailed = new Date().toISOString();
 
             try {
-              const { ipAddress, device, location, sessionId } = getReqInfo(req);
-              const { actorId, actorRole } = await getActorInfo(req);
               await storage.createAuditLog({
                 actorId, actorRole,
                 action: 'USER_LOGIN', status: 'failed',
                 entityType: 'user', entityId: user.id,
-                ipAddress, device, location, sessionId: sessionId,
+                ipAddress, device, location, sessionId,
                 metadata: {
                   auditType: "AUTH",
                   method: 'Account Status', reason: 'Account deactivated',
@@ -1222,13 +1261,11 @@ export async function registerRoutes(
 
           const tFailed = new Date().toISOString();
             try {
-              const { ipAddress, device, location, sessionId } = getReqInfo(req);
-              const { actorId, actorRole } = await getActorInfo(req);
               await storage.createAuditLog({
                 actorId, actorRole,
                 action: 'USER_LOGIN', status: 'failed',
                 entityType: 'user', entityId: user.id,
-                ipAddress, device, location, sessionId: sessionId,
+                ipAddress, device, location, sessionId,
                 metadata: { 
                   auditType: "AUTH",
                   method: 'Registration Completion', reason: 'Social account registration incomplete',
@@ -1265,8 +1302,6 @@ export async function registerRoutes(
         const tCompleted = new Date().toISOString();
 
         try {
-          const { ipAddress, device, location, sessionId } = getReqInfo(req, jti);
-          const { actorId, actorRole } = await getActorInfo(req);
           await storage.createAuditLog({
             actorId, actorRole,
             action: 'USER_LOGIN', status: 'success',
@@ -1295,9 +1330,6 @@ export async function registerRoutes(
 
       } catch (error) {
         const tFailed = new Date().toISOString();
-        const { ipAddress, device, location } = getReqInfo(req);
-        const { actorId, actorRole } = await getActorInfo(req);
-
         if (error instanceof z.ZodError) {
           try {
             await storage.createAuditLog({
@@ -1307,7 +1339,7 @@ export async function registerRoutes(
               status: 'failed',
               entityType: 'user', 
               entityId: 'N/A',
-              ipAddress, device, location, sessionId: 'N/A',
+              ipAddress, device, location, sessionId,
               metadata: { 
                 auditType: "AUTH",
                 method: 'Email & Password',
@@ -1334,7 +1366,7 @@ export async function registerRoutes(
             status: 'failed',
             entityType: 'system', 
             entityId: 'N/A',
-            ipAddress, device, location, sessionId: 'N/A',
+            ipAddress, device, location, sessionId,
             metadata: { 
               auditType: "AUTH",
               method: 'Email & Password',
@@ -1587,6 +1619,27 @@ export async function registerRoutes(
           });
 
           await storage.createDoctorProfile(doctorData);
+
+          // Notify all admins about the new doctor registration awaiting verification
+          try {
+            const newDoctorName = updatedUser.fullName;
+            const newDoctorId = updatedUser.id;
+            const regAdmins = await storage.getAllUsers("admin");
+            await Promise.all(
+              regAdmins.map((a) =>
+                storage.createNotification({
+                  userId: a.id,
+                  title: "New doctor registration",
+                  message: `${newDoctorName} has registered as a doctor and is awaiting verification.`,
+                  type: "system",
+                  isRead: false,
+                  relatedId: newDoctorId,
+                }),
+              ),
+            );
+          } catch (notifyError) {
+            console.error("Failed to notify admins of doctor registration:", notifyError);
+          }
         }
 
         updatedUser = (await storage.getUser(user.id)) || updatedUser;
@@ -1722,20 +1775,32 @@ export async function registerRoutes(
     app.get("/api/auth/google/callback", async (req: Request, res: Response, next: NextFunction) => {
 
       const tRequestReceived = new Date().toISOString();
+      const { ipAddress, device, location, sessionId } = getReqInfo(req);
+      const { actorId, actorRole } = await getActorInfo(req);
 
       passport.authenticate("google", { session: false }, async (err: any, user: any, info: any) => {
         const tProviderVerified = new Date().toISOString();
+        
+        let actorId = 'system';
+        let actorRole = 'system';
+        
+        if (user && user.id) {
+          actorId = user.id;
+          actorRole = user.role || 'patient';
+        } else {
+          const fallbackInfo = await getActorInfo(req);
+          actorId = fallbackInfo.actorId;
+          actorRole = fallbackInfo.actorRole;
+        }
 
         if (err || !user) {
           const tFailed = new Date().toISOString();
           try {
-            const { ipAddress, device, location } = getReqInfo(req);
-            const { actorId, actorRole } = await getActorInfo(req);
             await storage.createAuditLog({
               actorId, actorRole,
               action: 'USER_GOOGLE', status: 'failed',
               entityType: 'system', entityId: 'N/A', 
-              ipAddress, device, location, sessionId: 'N/A',
+              ipAddress, device, location, sessionId,
               metadata: { 
                 method: 'Google OAuth', reason: err?.message || 'Google Auth Failed / Cancelled', 
                 timeline: { requestReceivedAt: tRequestReceived, 
@@ -1757,8 +1822,6 @@ export async function registerRoutes(
           const tCompleted = new Date().toISOString();
 
           try {
-            const { ipAddress, device, location, sessionId } = getReqInfo(req, regData.jti);
-            const { actorId, actorRole } = await getActorInfo(req);
             await storage.createAuditLog({
               actorId, actorRole,
               action: 'USER_REGISTER_GOOGLE', status: 'success',
@@ -1786,8 +1849,6 @@ export async function registerRoutes(
         const tCompleted = new Date().toISOString();
 
         try {
-          const { ipAddress, device, location, sessionId } = getReqInfo(req, jti);
-          const { actorId, actorRole } = await getActorInfo(req);
           await storage.createAuditLog({
             actorId, actorRole,
             action: 'USER_LOGIN_GOOGLE', status: 'success',
@@ -1811,20 +1872,19 @@ export async function registerRoutes(
       })(req, res, next);
     });
   } else {
-    const tRequestReceived = new Date().toISOString();
 
     app.get("/api/auth/google", async (_req: Request, res: Response) => {
-
+      const tRequestReceived = new Date().toISOString();
+      const { ipAddress, device, location, sessionId } = getReqInfo(_req);
+      const { actorId, actorRole } = await getActorInfo(_req);
       const tFailed = new Date().toISOString();
 
       try {
-        const { ipAddress, device, location } = getReqInfo(_req);
-        const { actorId, actorRole } = await getActorInfo(_req);
         storage.createAuditLog({
           actorId, actorRole,
           action: 'USER_GOOGLE', status: 'failed',
           entityType: 'system', entityId: 'N/A',
-          ipAddress, device, location, sessionId: 'N/A',
+          ipAddress, device, location, sessionId,
           metadata: { 
             method: 'Google OAuth', reason: 'Google OAuth not configured',
             timeline: { 
@@ -1840,16 +1900,17 @@ export async function registerRoutes(
     });
     app.get("/api/auth/google/callback", async (_req: Request, res: Response) => {
 
+      const tRequestReceived = new Date().toISOString();
+      const { ipAddress, device, location, sessionId } = getReqInfo(_req);
+      const { actorId, actorRole } = await getActorInfo(_req);
       const tFailed = new Date().toISOString();
 
       try {
-        const { ipAddress, device, location } = getReqInfo(_req);
-        const { actorId, actorRole } = await getActorInfo(_req);
         storage.createAuditLog({
         actorId, actorRole,
         action: 'USER_GOOGLE', status: 'failed',
         entityType: 'system', entityId: 'N/A',
-        ipAddress, device, location, sessionId: 'N/A',
+        ipAddress, device, location, sessionId,
         metadata: { 
           method: 'Google OAuth Callback', reason: 'Google OAuth not configured server-side',
           timeline: {
@@ -1914,14 +1975,14 @@ export async function registerRoutes(
           await storage.createAuditLog({
             actorId, actorRole,
             action: 'REGISTRATION_SESSION', status: 'failed',
-            entityType: 'system', entityId: 'N/A', 
+            entityType: 'system', entityId: 'N/A',
             ipAddress, device, location, sessionId: 'N/A',
-            metadata: { 
-              providedEmail: email, reason: 'Rate limit exceeded', 
-              timeline: { 
-                requestReceivedAt: tRequestReceived, 
-                completedAt: tFailed 
-              } 
+            metadata: {
+              providedEmail: email, reason: 'Rate limit exceeded',
+              timeline: {
+                requestReceivedAt: tRequestReceived,
+                completedAt: tFailed
+              }
             }
           });
         } catch (e) {}
@@ -3094,6 +3155,10 @@ export async function registerRoutes(
     authMiddleware,
     roleMiddleware(UserRole.DOCTOR),
     async (req: AuthenticatedRequest, res: Response) => {
+      const tRequestReceived = new Date().toISOString();
+      const { ipAddress, device, location, sessionId } = getReqInfo(req);
+      const { actorId, actorRole } = await getActorInfo(req);
+
       try {
         const appointment = await storage.getAppointment(req.params.id);
         if (!appointment) {
@@ -3117,6 +3182,12 @@ export async function registerRoutes(
             isRead: false, // Make sure isRead is passed
             relatedId: updated.id,
           });
+
+          await storage.createAuditLog({
+            actorId, actorRole, action: 'APPOINTMENT_CALLED', status: 'success',
+            entityType: 'appointment', entityId: updated.id, ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: { auditType: 'APPOINTMENT', timeline: { requestReceivedAt: tRequestReceived, completedAt: new Date().toISOString() } }
+          });
         }
 
         res.status(200).json({ success: true });
@@ -3124,6 +3195,11 @@ export async function registerRoutes(
         if (error instanceof z.ZodError) {
           return res.status(400).json({ error: error.errors });
         }
+        await storage.createAuditLog({
+          actorId, actorRole, action: 'APPOINTMENT_CALLED', status: 'failed',
+          entityType: 'appointment', entityId: req.params.id, ipAddress, device, location, sessionId: sessionId || 'N/A',
+          metadata: { auditType: 'APPOINTMENT', reason: 'Server error (500)', timeline: { requestReceivedAt: tRequestReceived, failedAt: new Date().toISOString() } }
+        }).catch(()=>{});
         res.status(500).json({ error: "Failed to call appointment" });
       }
     },
@@ -3134,10 +3210,26 @@ export async function registerRoutes(
     authMiddleware,
     roleMiddleware(UserRole.DOCTOR),
     async (req: AuthenticatedRequest, res: Response) => {
+      const tRequestReceived = new Date().toISOString();
+      const { ipAddress, device, location, sessionId } = getReqInfo(req);
+      const { actorId, actorRole } = await getActorInfo(req);
+
       try {
         const slot = await storage.blockSlot(req.params.id);
+
+        await storage.createAuditLog({
+          actorId, actorRole, action: 'SLOT_BLOCKED', status: 'success',
+          entityType: 'appointment_slots', entityId: req.params.id, ipAddress, device, location, sessionId: sessionId || 'N/A',
+          metadata: { auditType: 'APPOINTMENT', reason: 'Doctor blocked slot (likely cancelled a booking)', timeline: { requestReceivedAt: tRequestReceived, completedAt: new Date().toISOString() } }
+        });
+
         res.json(slot);
       } catch (error) {
+        await storage.createAuditLog({
+          actorId, actorRole, action: 'SLOT_BLOCKED', status: 'failed',
+          entityType: 'appointment_slots', entityId: req.params.id, ipAddress, device, location, sessionId: sessionId || 'N/A',
+          metadata: { auditType: 'APPOINTMENT', reason: 'Server error (500)', timeline: { requestReceivedAt: tRequestReceived, failedAt: new Date().toISOString() } }
+        }).catch(()=>{});
         res.status(500).json({ error: "Failed to block slot" });
       }
     },
@@ -3148,6 +3240,10 @@ export async function registerRoutes(
     authMiddleware,
     roleMiddleware(UserRole.PATIENT),
     async (req: AuthenticatedRequest, res: Response) => {
+      const tRequestReceived = new Date().toISOString();
+      const { ipAddress, device, location, sessionId } = getReqInfo(req);
+      const { actorId, actorRole } = await getActorInfo(req);
+
       try {
         const bookingData = bookingSchema.parse(req.body);
 
@@ -3183,9 +3279,7 @@ export async function registerRoutes(
           dependentGender: bookingData.dependentGender,
           dependentContact: bookingData.dependentContact,
           isCalled: false,
-          status: bookingData.paymentMethod === PaymentMethod.AT_CLINIC
-            ? AppointmentStatus.CONFIRMED
-            : AppointmentStatus.PENDING,
+          status: AppointmentStatus.CONFIRMED,
         };
 
         const appointment = await storage.createAppointment(appointmentData);
@@ -3203,9 +3297,10 @@ export async function registerRoutes(
           consultationFee = doctor.homeVisitFee;
         }
 
-        const [platformSettings, allCustomTaxes] = await Promise.all([
+        const [platformSettings, allCustomTaxes, allFees] = await Promise.all([
           storage.getPlatformSettings(),
           storage.getTaxEntries(),
+          storage.getFeeEntries(),
         ]);
         const bookingCharges = platformSettings.bookingCharges;
         const stampDutyAmt = platformSettings.stampDutyEnabled
@@ -3221,22 +3316,40 @@ export async function registerRoutes(
           (sum, t) => sum + Math.round(consultationFee * (t.rate / 100)), 0
         );
 
+        // Custom fees (enabled only). Amount fees are flat LKR; percentage fees scale with the consultation fee.
+        const enabledFees = allFees.filter((f) => f.enabled);
+        const feeAmount = (f: { feeType: string; rate: number }) =>
+          f.feeType === "percentage" ? Math.round(consultationFee * (f.rate / 100)) : f.rate;
+        const patientFees = enabledFees.filter(
+          (f) => f.applicableTo === "patients" || f.applicableTo === "both"
+        );
+        const doctorFees = enabledFees.filter(
+          (f) => f.applicableTo === "doctors" || f.applicableTo === "both"
+        );
+        const patientFeeAmt = patientFees.reduce((sum, f) => sum + feeAmount(f), 0);
+        const doctorFeeAmt = doctorFees.reduce((sum, f) => sum + feeAmount(f), 0);
+
         const tax = baseTaxAmt + stampDutyAmt + customPatientTaxAmt;
 
         // Build full breakdown for patient invoice
-        const taxBreakdown: { title: string; rate: number; amount: number; applicableTo: string }[] = [];
-        if (baseTaxAmt > 0) taxBreakdown.push({ title: `Government Tax`, rate: platformSettings.taxRate, amount: baseTaxAmt, applicableTo: "patients" });
-        if (stampDutyAmt > 0) taxBreakdown.push({ title: "Stamp Duty", rate: 1, amount: stampDutyAmt, applicableTo: "patients" });
+        const taxBreakdown: { title: string; rate: number; amount: number; applicableTo: "doctors" | "patients" | "both" | "platform"; kind?: "tax" | "fee"; feeType?: "amount" | "percentage" }[] = [];
+        if (baseTaxAmt > 0) taxBreakdown.push({ title: `Government Tax`, rate: platformSettings.taxRate, amount: baseTaxAmt, applicableTo: "patients", kind: "tax" });
+        if (stampDutyAmt > 0) taxBreakdown.push({ title: "Stamp Duty", rate: 1, amount: stampDutyAmt, applicableTo: "patients", kind: "tax" });
         for (const t of patientCustomTaxes) {
           const amt = Math.round(consultationFee * (t.rate / 100));
-          taxBreakdown.push({ title: t.title, rate: t.rate, amount: amt, applicableTo: t.applicableTo });
+          taxBreakdown.push({ title: t.title, rate: t.rate, amount: amt, applicableTo: t.applicableTo, kind: "tax" });
+        }
+        // Patient-facing custom fees appear on the invoice
+        for (const f of patientFees) {
+          taxBreakdown.push({ title: f.title, rate: f.rate, amount: feeAmount(f), applicableTo: f.applicableTo, kind: "fee", feeType: f.feeType });
         }
 
         const platformCommission = Math.round(
           consultationFee * (platformSettings.platformCommissionRate / 100),
         );
-        const doctorEarnings = consultationFee - platformCommission;
-        const totalAmount = consultationFee + bookingCharges + tax;
+        // Doctor-facing custom fees are deducted from the doctor's payout (never below 0)
+        const doctorEarnings = Math.max(0, consultationFee - platformCommission - doctorFeeAmt);
+        const totalAmount = consultationFee + bookingCharges + tax + patientFeeAmt;
 
         const paymentData = {
           appointmentId: appointment.id,
@@ -3258,18 +3371,20 @@ export async function registerRoutes(
 
         await storage.createPayment(paymentData);
 
-        if (bookingData.paymentMethod === PaymentMethod.AT_CLINIC) {
+        // Notify patient, doctor and admins for every booking (online + at-clinic)
+        {
           const doctorUser = await storage.getUser(doctor.userId);
           const doctorName = doctorUser?.fullName || "your doctor";
           const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
           const dateParts = typeof slotData.date === 'string' ? slotData.date.split("-") : new Date(slotData.date).toISOString().split('T')[0].split("-");
           const formattedBookingDate = `${parseInt(dateParts[2])} ${months[parseInt(dateParts[1]) - 1]}`;
           const formattedAmount = `LKR ${totalAmount.toLocaleString("en-LK")}`;
+          const formattedStartTime = formatTime12h(slotData.startTime);
 
           await storage.createNotification({
             userId: req.user!.id,
             title: "Appointment Booked",
-            message: `Your appointment with Dr. ${doctorName} has been booked for ${formattedBookingDate} at ${slotData.startTime}. Total: ${formattedAmount}.`,
+            message: `Your appointment with Dr. ${doctorName} has been booked for ${formattedBookingDate} at ${formattedStartTime}. Total: ${formattedAmount}.`,
             type: "appointment",
             isRead: false,
             relatedId: appointment.id,
@@ -3278,11 +3393,26 @@ export async function registerRoutes(
           await storage.createNotification({
             userId: doctor.userId,
             title: "New appointment booked",
-            message: `${req.user!.fullName} has booked a consultation for ${formattedBookingDate} at ${slotData.startTime}. Chief complaint: ${bookingData.symptoms.substring(0, 150)}.`,
+            message: `${req.user!.fullName} has booked a consultation for ${formattedBookingDate} at ${formattedStartTime}. Chief complaint: ${bookingData.symptoms.substring(0, 150)}.`,
             type: "appointment",
             isRead: false,
             relatedId: appointment.id,
           });
+
+          // Notify all admins about the new appointment
+          const bookingAdmins = await storage.getAllUsers("admin");
+          await Promise.all(
+            bookingAdmins.map((a) =>
+              storage.createNotification({
+                userId: a.id,
+                title: "New appointment booked",
+                message: `${req.user!.fullName} booked a consultation with Dr. ${doctorName} on ${formattedBookingDate} at ${formattedStartTime}. Total: ${formattedAmount}.`,
+                type: "system",
+                isRead: false,
+                relatedId: appointment.id,
+              }),
+            ),
+          );
 
           const today = new Date().toISOString().split("T")[0];
           const slotDateStr = Array.isArray(dateParts) ? dateParts.join("-") : String(slotData.date);
@@ -3290,8 +3420,18 @@ export async function registerRoutes(
           if (slotDateStr > today) {
             await storage.createNotification({
               userId: doctor.userId,
-              title: `Consultation on ${formattedBookingDate} at ${slotData.startTime}`,
+              title: `Consultation on ${formattedBookingDate} at ${formattedStartTime}`,
               message: `You have an upcoming consultation with ${req.user!.fullName} on ${formattedBookingDate}. Review their case notes beforehand.`,
+              type: "reminder",
+              isRead: false,
+              relatedId: appointment.id,
+            });
+
+            // Patient-facing reminder for the upcoming consultation
+            await storage.createNotification({
+              userId: req.user!.id,
+              title: `Upcoming consultation on ${formattedBookingDate} at ${formattedStartTime}`,
+              message: `Reminder: your consultation with Dr. ${doctorName} is on ${formattedBookingDate} at ${formattedStartTime}. Please be available on time.`,
               type: "reminder",
               isRead: false,
               relatedId: appointment.id,
@@ -3302,13 +3442,42 @@ export async function registerRoutes(
         const fullAppointment = await storage.getAppointmentWithDetails(
           appointment.id,
         );
+
+        await storage.createAuditLog({
+          actorId, actorRole, action: 'APPOINTMENT_BOOK_ATTEMPT', status: 'success',
+          entityType: 'appointment_slots', entityId: req.body?.slotId || 'N/A',
+          ipAddress, device, location, sessionId: sessionId || 'N/A',
+          metadata: { 
+            auditType: 'APPOINTMENT', 
+            timeline: { 
+              requestReceivedAt: tRequestReceived, 
+              completedAt: new Date().toISOString() 
+            } 
+          }
+        });
+
         res.status(201).json(fullAppointment);
       } catch (error) {
+        const tFailed = new Date().toISOString();
         if (error instanceof z.ZodError) {
+          try {
+            await storage.createAuditLog({
+              actorId, actorRole, action: 'APPOINTMENT_BOOK_ATTEMPT', status: 'failed',
+              entityType: 'appointment_slots', entityId: req.body?.slotId || 'N/A',
+              ipAddress, device, location, sessionId: sessionId || 'N/A',
+              metadata: { auditType: 'APPOINTMENT', reason: 'Validation failed', details: error.errors, timeline: { requestReceivedAt: tRequestReceived, failedAt: tFailed } }
+            });
+          } catch (e) {}
           return res.status(400).json({ error: error.errors });
         }
-        res.status(500).json({ error: "Failed to book appointment" });
-      }
+        try {
+          await storage.createAuditLog({
+            actorId, actorRole, action: 'APPOINTMENT_BOOK_ATTEMPT', status: 'failed',
+            entityType: 'system', entityId: 'N/A', ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: { auditType: 'APPOINTMENT', reason: 'Internal Server Error (500)', timeline: { requestReceivedAt: tRequestReceived, failedAt: tFailed } }
+          });
+        } catch (e) {}
+        res.status(500).json({ error: "Failed to book appointment" });      }
     },
   );
 
@@ -3317,6 +3486,10 @@ export async function registerRoutes(
     authMiddleware,
     roleMiddleware(UserRole.DOCTOR),
     async (req: AuthenticatedRequest, res: Response) => {
+      const tRequestReceived = new Date().toISOString();
+      const { ipAddress, device, location, sessionId } = getReqInfo(req);
+      const { actorId, actorRole } = await getActorInfo(req);
+
       try {
         const profile = await storage.getDoctorProfileByUserId(req.user!.id);
         if (!profile) {
@@ -3338,11 +3511,26 @@ export async function registerRoutes(
 
         const success = await storage.deactivateSlot(req.params.id);
         if (success) {
+          await storage.createAuditLog({
+            actorId, actorRole, action: 'SLOT_DEACTIVATED', status: 'success',
+            entityType: 'appointment_slots', entityId: req.params.id, ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: { auditType: 'APPOINTMENT', reason: 'Doctor deleted/deactivated slot', timeline: { requestReceivedAt: tRequestReceived, completedAt: new Date().toISOString() } }
+          });
           res.json({ success: true, message: "Slot deactivated successfully" });
         } else {
+          await storage.createAuditLog({
+            actorId, actorRole, action: 'SLOT_DEACTIVATED', status: 'failure',
+            entityType: 'appointment_slots', entityId: req.params.id, ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: { auditType: 'APPOINTMENT', reason: 'Failed to deactivate slot', timeline: { requestReceivedAt: tRequestReceived, completedAt: new Date().toISOString() } }
+          });
           res.status(500).json({ error: "Failed to deactivate slot" });
         }
       } catch (error) {
+        await storage.createAuditLog({
+          actorId, actorRole, action: 'SLOT_DEACTIVATED', status: 'failure',
+          entityType: 'appointment_slots', entityId: req.params.id, ipAddress, device, location, sessionId: sessionId || 'N/A',
+          metadata: { auditType: 'APPOINTMENT', reason: 'Failed to deactivate slot', timeline: { requestReceivedAt: tRequestReceived, completedAt: new Date().toISOString() } }
+        });
         res.status(500).json({ error: "Failed to deactivate slot" });
       }
     },
@@ -3421,6 +3609,10 @@ export async function registerRoutes(
     authMiddleware,
     roleMiddleware(UserRole.DOCTOR),
     async (req: AuthenticatedRequest, res: Response) => {
+      const tRequestReceived = new Date().toISOString();
+      const { ipAddress, device, location, sessionId } = getReqInfo(req);
+      const { actorId, actorRole } = await getActorInfo(req);
+
       try {
         const { newSlotId, reason } = req.body;
 
@@ -3481,8 +3673,19 @@ export async function registerRoutes(
           relatedId: appointment.id,
         });
 
+        await storage.createAuditLog({
+          actorId, actorRole, action: 'APPOINTMENT_RESCHEDULED', status: 'success',
+          entityType: 'appointment', entityId: appointment.id, ipAddress, device, location, sessionId: sessionId || 'N/A',
+          metadata: { auditType: 'APPOINTMENT', oldSlotId: appointment.slotId, newSlotId, reason, timeline: { requestReceivedAt: tRequestReceived, completedAt: new Date().toISOString() } }
+        });
+
         res.json(updated);
       } catch (error) {
+        await storage.createAuditLog({
+          actorId, actorRole, action: 'APPOINTMENT_RESCHEDULED', status: 'failed',
+          entityType: 'appointment', entityId: req.params.id, ipAddress, device, location, sessionId: sessionId || 'N/A',
+          metadata: { auditType: 'APPOINTMENT', reason: 'Server error (500)', timeline: { requestReceivedAt: tRequestReceived, failedAt: new Date().toISOString() } }
+        }).catch(()=>{});
         res.status(500).json({ error: "Failed to reschedule appointment" });
       }
     },
@@ -3492,6 +3695,10 @@ export async function registerRoutes(
     "/api/appointments/:id/cancel",
     authMiddleware,
     async (req: AuthenticatedRequest, res: Response) => {
+      const tRequestReceived = new Date().toISOString();
+      const { ipAddress, device, location, sessionId } = getReqInfo(req);
+      const { actorId, actorRole } = await getActorInfo(req);
+
       try {
 
         if (req.user!.role === UserRole.PATIENT) {
@@ -3549,7 +3756,7 @@ export async function registerRoutes(
           ];
           const [, mo, dy] = existing.appointmentDate.split("-");
           const formattedDate = `${parseInt(dy)} ${months[parseInt(mo) - 1]}`;
-          const formattedTime = existing.appointmentTime;
+          const formattedTime = formatTime12h(existing.appointmentTime);
 
           // Notify patient
           await storage.createNotification({
@@ -3559,6 +3766,12 @@ export async function registerRoutes(
             type: "appointment",
             isRead: false,
             relatedId: appointment.id,
+          });
+
+          await storage.createNotification({
+            userId: existing.patientId, title: "Appointment cancelled",
+            message: `Your appointment with Dr. ${doctorUser?.fullName} has been cancelled.`,
+            type: "appointment", isRead: false, relatedId: appointment.id,
           });
 
           // Notify doctor
@@ -3572,10 +3785,31 @@ export async function registerRoutes(
               relatedId: appointment.id,
             });
           }
+
+          // Notify all admins about the cancelled appointment
+          const cancelAdmins = await storage.getAllUsers("admin");
+          const cancelledBy = req.user!.role === UserRole.DOCTOR ? `Dr. ${doctorName}` : patientName;
+          await Promise.all(
+            cancelAdmins.map((a) =>
+              storage.createNotification({
+                userId: a.id,
+                title: "Appointment cancelled",
+                message: `${cancelledBy} cancelled the ${formattedDate} at ${formattedTime} appointment (${patientName} with Dr. ${doctorName}).`,
+                type: "system",
+                isRead: false,
+                relatedId: appointment.id,
+              }),
+            ),
+          );
         }
 
         res.json(appointment);
       } catch (error) {
+        await storage.createAuditLog({
+          actorId, actorRole, action: 'APPOINTMENT_CANCELLED_EXPLICIT', status: 'failed',
+          entityType: 'appointment', entityId: req.params.id, ipAddress, device, location, sessionId: sessionId || 'N/A',
+          metadata: { auditType: 'APPOINTMENT', reason: 'Server error (500)', timeline: { requestReceivedAt: tRequestReceived, failedAt: new Date().toISOString() } }
+        }).catch(()=>{});
         res.status(500).json({ error: "Failed to cancel appointment" });
       }
     },
@@ -3769,6 +4003,7 @@ export async function registerRoutes(
 
         res.json({ summary, payments, cancellationCharges: unsettled });
       } catch (error) {
+        console.error("Failed to get doctor earnings:", error);
         res.status(500).json({ error: "Failed to get earnings" });
       }
     },
@@ -3849,6 +4084,10 @@ export async function registerRoutes(
     authMiddleware,
     roleMiddleware(UserRole.DOCTOR),
     async (req: AuthenticatedRequest, res: Response) => {
+      const tRequestReceived = new Date().toISOString();
+      const { ipAddress, device, location, sessionId } = getReqInfo(req);
+      const { actorId, actorRole } = await getActorInfo(req);
+
       try {
         const appointment = await storage.getAppointment(req.params.id);
         if (!appointment) {
@@ -3861,11 +4100,51 @@ export async function registerRoutes(
         }
 
         const updated = await storage.markAppointmentNoShow(req.params.id);
+        await storage.createAuditLog({
+          actorId, actorRole, action: 'APPOINTMENT_NO_SHOW', status: 'success',
+          entityType: 'appointment', entityId: req.params.id, ipAddress, device, location, sessionId: sessionId || 'N/A',
+          metadata: { auditType: 'APPOINTMENT', reason: 'Doctor marked patient as No Show', timeline: { requestReceivedAt: tRequestReceived, completedAt: new Date().toISOString() } }
+        });
         res.json(updated);
       } catch (error) {
+        await storage.createAuditLog({
+          actorId, actorRole, action: 'APPOINTMENT_NO_SHOW', status: 'failed',
+          entityType: 'appointment', entityId: req.params.id, ipAddress, device, location, sessionId: sessionId || 'N/A',
+          metadata: { auditType: 'APPOINTMENT', reason: 'Server error (500)', timeline: { requestReceivedAt: tRequestReceived, failedAt: new Date().toISOString() } }
+        }).catch(()=>{});
         res
           .status(500)
           .json({ error: "Failed to mark appointment as no-show" });
+      }
+    },
+  );
+
+  app.patch(
+    "/api/doctor/appointments/:id/confirm",
+    authMiddleware,
+    roleMiddleware(UserRole.DOCTOR),
+    async (req: AuthenticatedRequest, res: Response) => {
+      try {
+        const appointment = await storage.getAppointment(req.params.id);
+        if (!appointment) {
+          return res.status(404).json({ error: "Appointment not found" });
+        }
+
+        const profile = await storage.getDoctorProfileByUserId(req.user!.id);
+        if (!profile || appointment.doctorId !== profile.id) {
+          return res.status(403).json({ error: "Forbidden" });
+        }
+
+        if (appointment.status !== AppointmentStatus.PENDING) {
+          return res.status(400).json({ error: "Only pending appointments can be confirmed" });
+        }
+
+        const updated = await storage.updateAppointment(req.params.id, {
+          status: AppointmentStatus.CONFIRMED,
+        });
+        res.json(updated);
+      } catch (error) {
+        res.status(500).json({ error: "Failed to confirm appointment" });
       }
     },
   );
@@ -3934,12 +4213,31 @@ export async function registerRoutes(
     authMiddleware,
     roleMiddleware(UserRole.DOCTOR),
     async (req: AuthenticatedRequest, res: Response) => {
+      const tRequestReceived = new Date().toISOString();
+      const { ipAddress, device, location, sessionId } = getReqInfo(req);
+      const { actorId, actorRole } = await getActorInfo(req);
+      
       try {
         const { consultationNotes } = req.body;
+
         const appointment = await storage.updateAppointment(req.params.id, {
           status: AppointmentStatus.COMPLETED,
           consultationNotes,
         });
+
+        if (!appointment) {
+          await storage.createAuditLog({
+            actorId, actorRole, action: 'APPOINTMENT_COMPLETED', status: 'failed',
+            entityType: 'appointment', entityId: req.params.id,
+            ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: {
+              auditType: 'APPOINTMENT',
+              reason: 'Appointment not found for completion.',
+              timeline: { requestReceivedAt: tRequestReceived, failedAt: new Date().toISOString() }
+            }
+          });
+          return res.status(404).json({ error: "Appointment not found" });
+        }
 
         const payment = await storage.getPaymentByAppointment(req.params.id);
         if (payment) {
@@ -3999,8 +4297,39 @@ export async function registerRoutes(
           }
         }
 
+        const tCompleted = new Date().toISOString();
+        await storage.createAuditLog({
+          actorId, actorRole,
+          action: 'APPOINTMENT_COMPLETED', status: 'success',
+          entityType: 'appointment', entityId: appointment.id,
+          ipAddress, device, location, sessionId: sessionId || 'N/A',
+          metadata: {
+            auditType: 'APPOINTMENT',
+            reason: 'Doctor marked appointment as completed.',
+            notesLength: consultationNotes?.length || 0,
+            paymentId: payment?.id || 'N/A',
+            timeline: { requestReceivedAt: tRequestReceived, completedAt: tCompleted }
+          }
+        });
+
         res.json(appointment);
       } catch (error) {
+
+        const tFailed = new Date().toISOString();
+        try {
+          await storage.createAuditLog({
+            actorId, actorRole,
+            action: 'APPOINTMENT_COMPLETED', status: 'failed',
+            entityType: 'system', entityId: req.params.id,
+            ipAddress, device, location, sessionId: sessionId || 'N/A',
+            metadata: {
+              auditType: 'APPOINTMENT',
+              reason: 'Internal Server Error (500)',
+              error: String(error),
+              timeline: { requestReceivedAt: tRequestReceived, completedAt: tFailed }
+            }
+          });
+        } catch (e) {}
         res.status(500).json({ error: "Failed to complete appointment" });
       }
     },
@@ -4127,6 +4456,23 @@ export async function registerRoutes(
         res.json(prescription);
       } catch (error) {
         res.status(500).json({ error: "Failed to get prescription" });
+      }
+    },
+  );
+
+  // Outstanding cancellation charges the patient owes to AyurPath.
+  // Drives the "Owed to AyurPath" banner on the My Appointments page.
+  app.get(
+    "/api/patient/owed-charges",
+    authMiddleware,
+    roleMiddleware(UserRole.PATIENT),
+    async (req: AuthenticatedRequest, res: Response) => {
+      try {
+        const owed = await storage.getPatientUnsettledCharges(req.user!.id);
+        res.json(owed);
+      } catch (error) {
+        console.error("Failed to get patient owed charges:", error);
+        res.status(500).json({ error: "Failed to get owed charges" });
       }
     },
   );
@@ -4716,6 +5062,11 @@ export async function registerRoutes(
         const now = Date.now();
         const threshold = 48 * 60 * 60 * 1000;
         const admins = await storage.getAllUsers("admin");
+        // Fetch the admin's notifications once — the dedup check below is keyed
+        // per doctor (relatedId), so a single snapshot is correct and avoids an
+        // N+1 (one getUserNotifications call per pending doctor).
+        const existingNotifs = await storage.getUserNotifications(req.user!.id);
+        const last24h = now - 24 * 60 * 60 * 1000;
 
         for (const doctor of pendingDoctors) {
           const createdAt = new Date(doctor.createdAt).getTime();
@@ -4725,11 +5076,6 @@ export async function registerRoutes(
             (now - createdAt) / (24 * 60 * 60 * 1000),
           );
           const expectedTitle = `Verification pending — ${daysOverdue} ${daysOverdue === 1 ? "day" : "days"} overdue`;
-
-          const existingNotifs = await storage.getUserNotifications(
-            req.user!.id,
-          );
-          const last24h = now - 24 * 60 * 60 * 1000;
 
           const alreadyUpToDate = existingNotifs.some(
             (n) =>
@@ -4777,6 +5123,10 @@ export async function registerRoutes(
     authMiddleware,
     roleMiddleware(UserRole.ADMIN),
     async (req: Request, res: Response) => {
+      const tRequestReceived = new Date().toISOString();
+      const { ipAddress, device, location, sessionId } = getReqInfo(req);
+      const { actorId, actorRole } = await getActorInfo(req);
+
       try {
         console.log("Updating platform settings with:", req.body);
 
@@ -4811,10 +5161,27 @@ export async function registerRoutes(
           );
         }
 
+        // Sync in-memory maintenance cache
+        updateMaintenanceCache(
+          settings.maintenanceMode,
+          settings.maintenanceEndTime ?? null,
+        );
+
         console.log("Settings updated successfully:", settings);
+
+        await storage.createAuditLog({
+          actorId, actorRole, action: `UPDATE_PLATFORM_SETTINGS`, status: 'success',
+          entityType: 'platform_settings', entityId: 'default', ipAddress, device, location, sessionId: sessionId || 'N/A',
+          metadata: { auditType: 'SYSTEM', updatedFields: Object.keys(req.body), timeline: { requestReceivedAt: tRequestReceived, completedAt: new Date().toISOString() } }
+        });
 
         res.json(settings);
       } catch (error) {
+        await storage.createAuditLog({
+          actorId, actorRole, action: `UPDATE_PLATFORM_SETTINGS`, status: 'failed',
+          entityType: 'platform_settings', entityId: 'default', ipAddress, device, location, sessionId: sessionId || 'N/A',
+          metadata: { auditType: 'SYSTEM', reason: 'Server error (500)', timeline: { requestReceivedAt: tRequestReceived, failedAt: new Date().toISOString() } }
+        }).catch(()=>{});
         console.error("Failed to update platform settings:", error);
         res.status(500).json({ error: "Failed to update platform settings" });
       }
@@ -4838,20 +5205,124 @@ export async function registerRoutes(
   });
 
   app.post("/api/admin/tax-entries", authMiddleware, roleMiddleware(UserRole.ADMIN), async (req: Request, res: Response) => {
+    const tRequestReceived = new Date().toISOString();
+    const { ipAddress, device, location, sessionId } = getReqInfo(req);
+    const { actorId, actorRole } = await getActorInfo(req);
+
     try {
       const { title, rate, applicableTo } = req.body;
       if (!title?.trim() || rate === undefined) return res.status(400).json({ error: "Title and rate are required" });
       if (!["doctors", "patients", "both"].includes(applicableTo)) return res.status(400).json({ error: "applicableTo must be doctors, patients, or both" });
       const entry = await storage.createTaxEntry(title.trim(), Number(rate), applicableTo);
+      await storage.createAuditLog({
+        actorId, actorRole, action: `CREATE_TAX_ENTRY`, status: 'success',
+        entityType: 'tax_entry', entityId: entry.id, ipAddress, device, location, sessionId: sessionId || 'N/A',
+        metadata: { auditType: 'TAX', timeline: { requestReceivedAt: tRequestReceived, completedAt: new Date().toISOString() } }
+      });
       res.status(201).json(entry);
     } catch { res.status(500).json({ error: "Failed to create tax entry" }); }
   });
 
   app.delete("/api/admin/tax-entries/:id", authMiddleware, roleMiddleware(UserRole.ADMIN), async (req: Request, res: Response) => {
+    const tRequestReceived = new Date().toISOString();
+    const { ipAddress, device, location, sessionId } = getReqInfo(req);
+    const { actorId, actorRole } = await getActorInfo(req);
+
     try {
       await storage.deleteTaxEntry(req.params.id);
+      await storage.createAuditLog({
+        actorId, actorRole, action: `DELETE_TAX_ENTRY`, status: 'success',
+        entityType: 'tax_entry', entityId: req.params.id, ipAddress, device, location, sessionId: sessionId || 'N/A',
+        metadata: { auditType: 'TAX', timeline: { requestReceivedAt: tRequestReceived, completedAt: new Date().toISOString() } }
+      });
       res.json({ success: true });
     } catch { res.status(500).json({ error: "Failed to delete tax entry" }); }
+  });
+
+  app.get("/api/admin/fee-entries", authMiddleware, roleMiddleware(UserRole.ADMIN), async (_req: Request, res: Response) => {
+    try {
+      const entries = await storage.getFeeEntries();
+      res.json(entries);
+    } catch { res.status(500).json({ error: "Failed to get fee entries" }); }
+  });
+
+  // Public endpoint so the patient invoice / book-appointment page can fetch without admin auth
+  app.get("/api/fee-entries", publicApiLimiter, async (_req: Request, res: Response) => {
+    try {
+      const entries = await storage.getFeeEntries();
+      res.json(entries);
+    } catch { res.status(500).json({ error: "Failed to get fee entries" }); }
+  });
+
+  // Data-driven limits for fee inputs: amount fees are capped at the highest
+  // consultation fee in the system; percentage fees are capped at 100%.
+  app.get("/api/admin/fee-limits", authMiddleware, roleMiddleware(UserRole.ADMIN), async (_req: Request, res: Response) => {
+    try {
+      const maxAmount = await storage.getFeeAmountCap();
+      res.json({ maxAmount, maxPercentage: 100 });
+    } catch { res.status(500).json({ error: "Failed to get fee limits" }); }
+  });
+
+  app.post("/api/admin/fee-entries", authMiddleware, roleMiddleware(UserRole.ADMIN), async (req: Request, res: Response) => {
+    const tRequestReceived = new Date().toISOString();
+    const { ipAddress, device, location, sessionId } = getReqInfo(req);
+    const { actorId, actorRole } = await getActorInfo(req);
+    try {
+      const { title, feeType, rate, applicableTo } = req.body;
+      if (!title?.trim() || rate === undefined || rate === null || rate === "") return res.status(400).json({ error: "Title and rate are required" });
+      if (!["amount", "percentage"].includes(feeType)) return res.status(400).json({ error: "feeType must be amount or percentage" });
+      if (!["doctors", "patients", "both"].includes(applicableTo)) return res.status(400).json({ error: "applicableTo must be doctors, patients, or both" });
+      const numericRate = Number(rate);
+      if (Number.isNaN(numericRate) || numericRate < 0) return res.status(400).json({ error: "rate must be a non-negative number" });
+      if (feeType === "percentage" && numericRate > 100) return res.status(400).json({ error: "percentage rate cannot exceed 100" });
+      if (feeType === "amount") {
+        const maxAmount = await storage.getFeeAmountCap();
+        if (maxAmount > 0 && numericRate > maxAmount) {
+          return res.status(400).json({ error: `Amount fee cannot exceed the typical consultation fee (LKR ${maxAmount.toLocaleString()})` });
+        }
+      }
+      const entry = await storage.createFeeEntry(title.trim(), feeType, numericRate, applicableTo);
+      await storage.createAuditLog({
+        actorId, actorRole, action: `CREATE_FEE_ENTRY`, status: 'success',
+        entityType: 'fee_entries', entityId: entry.id, ipAddress, device, location, sessionId: sessionId || 'N/A',
+        metadata: { auditType: 'PAYMENT', title, feeType, rate: numericRate, applicableTo, timeline: { requestReceivedAt: tRequestReceived, completedAt: new Date().toISOString() } }
+      });
+      res.status(201).json(entry);
+    } catch { res.status(500).json({ error: "Failed to create fee entry" }); }
+  });
+
+  app.patch("/api/admin/fee-entries/:id", authMiddleware, roleMiddleware(UserRole.ADMIN), async (req: Request, res: Response) => {
+    const tRequestReceived = new Date().toISOString();
+    const { ipAddress, device, location, sessionId } = getReqInfo(req);
+    const { actorId, actorRole } = await getActorInfo(req);
+    try {
+      const { enabled } = req.body;
+      if (typeof enabled !== "boolean") return res.status(400).json({ error: "enabled (boolean) is required" });
+      const entry = await storage.updateFeeEntryEnabled(req.params.id, enabled);
+      if (!entry) return res.status(404).json({ error: "Fee entry not found" });
+      
+      await storage.createAuditLog({
+        actorId, actorRole, action: `UPDATE_FEE_ENTRY`, status: 'success',
+        entityType: 'fee_entries', entityId: req.params.id, ipAddress, device, location, sessionId: sessionId || 'N/A',
+        metadata: { auditType: 'PAYMENT', timeline: { requestReceivedAt: tRequestReceived, completedAt: new Date().toISOString() } }
+      });
+      res.json(entry);
+    } catch { res.status(500).json({ error: "Failed to update fee entry" }); }
+  });
+
+  app.delete("/api/admin/fee-entries/:id", authMiddleware, roleMiddleware(UserRole.ADMIN), async (req: Request, res: Response) => {
+    const tRequestReceived = new Date().toISOString();
+    const { ipAddress, device, location, sessionId } = getReqInfo(req);
+    const { actorId, actorRole } = await getActorInfo(req);
+    try {
+      await storage.deleteFeeEntry(req.params.id);
+      await storage.createAuditLog({
+        actorId, actorRole, action: `DELETE_FEE_ENTRY`, status: 'success',
+        entityType: 'fee_entries', entityId: req.params.id, ipAddress, device, location, sessionId: sessionId || 'N/A',
+        metadata: { auditType: 'PAYMENT', timeline: { requestReceivedAt: tRequestReceived, completedAt: new Date().toISOString() } }
+      });
+      res.json({ success: true });
+    } catch { res.status(500).json({ error: "Failed to delete fee entry" }); }
   });
 
   // Payout Dashboard
@@ -4893,32 +5364,53 @@ export async function registerRoutes(
 
         const doctorPayouts = [];
 
-        for (const doctor of doctors) {
-          const [paymentsResult, apptResult, chargesResult] = await Promise.all([
-            pool.query(
-              `SELECT consultation_fee, platform_commission, doctor_earnings
-               FROM payments WHERE doctor_id = $1 AND status = 'completed'
-               AND created_at >= $2 AND created_at < $3`,
-              [doctor.id, thisMonthStart, nextMonthStart]
-            ),
-            pool.query(
-              `SELECT status, cancelled_by FROM appointments
-               WHERE doctor_id = $1 AND created_at >= $2 AND created_at < $3`,
-              [doctor.id, thisMonthStart, nextMonthStart]
-            ),
-            pool.query(
-              `SELECT amount_owed FROM doctor_cancellation_charges
-               WHERE doctor_id = $1 AND settled = false`,
-              [doctor.id]
-            ),
-          ]);
+        // Aggregate every doctor's figures in 3 grouped queries instead of 3 per doctor.
+        const [paymentsAgg, apptAgg, chargesAgg] = await Promise.all([
+          pool.query(
+            `SELECT doctor_id, COALESCE(SUM(consultation_fee), 0) AS earn_amount
+             FROM payments
+             WHERE status = 'completed' AND created_at >= $1 AND created_at < $2
+             GROUP BY doctor_id`,
+            [thisMonthStart, nextMonthStart]
+          ),
+          pool.query(
+            `SELECT doctor_id,
+                    COUNT(*) AS total_appts,
+                    COUNT(*) FILTER (WHERE status = 'completed') AS completed_appts
+             FROM appointments
+             WHERE created_at >= $1 AND created_at < $2
+             GROUP BY doctor_id`,
+            [thisMonthStart, nextMonthStart]
+          ),
+          pool.query(
+            `SELECT doctor_id, COALESCE(SUM(amount_owed), 0) AS cancellation_fees
+             FROM doctor_cancellation_charges
+             WHERE settled = false
+             GROUP BY doctor_id`
+          ),
+        ]);
 
-          const earnAmount = paymentsResult.rows.reduce((sum: number, p: any) => sum + (p.consultation_fee || 0), 0);
+        const earnMap = new Map<string, number>(
+          paymentsAgg.rows.map((r: any) => [r.doctor_id, Number(r.earn_amount) || 0])
+        );
+        const apptMap = new Map<string, { total: number; completed: number }>(
+          apptAgg.rows.map((r: any) => [
+            r.doctor_id,
+            { total: Number(r.total_appts) || 0, completed: Number(r.completed_appts) || 0 },
+          ])
+        );
+        const chargesMap = new Map<string, number>(
+          chargesAgg.rows.map((r: any) => [r.doctor_id, Number(r.cancellation_fees) || 0])
+        );
+
+        for (const doctor of doctors) {
+          const earnAmount = earnMap.get(doctor.id) || 0;
           const platformFees = Math.round(earnAmount * commissionRate);
-          const totalAppts = apptResult.rows.length;
-          const completedAppts = apptResult.rows.filter((a: any) => a.status === "completed").length;
+          const apptCounts = apptMap.get(doctor.id) || { total: 0, completed: 0 };
+          const totalAppts = apptCounts.total;
+          const completedAppts = apptCounts.completed;
           const cancellationRate = totalAppts > 0 ? Math.round(((totalAppts - completedAppts) / totalAppts) * 100) : 0;
-          const cancellationFees = chargesResult.rows.reduce((sum: number, c: any) => sum + (c.amount_owed || 0), 0);
+          const cancellationFees = chargesMap.get(doctor.id) || 0;
           const applicableTax = Math.round(earnAmount * totalTaxRate);
           const payoutAmount = Math.max(0, earnAmount - platformFees - cancellationFees - applicableTax);
 
@@ -5099,7 +5591,9 @@ export async function registerRoutes(
         }
 
         if (updates.phone && !/^07[0-9]{8}$/.test(updates.phone)) {
-          return res.status(400).json({ error: "Please enter a valid Sri Lankan mobile number (07XXXXXXXX)" });
+            return res.status(400).json({
+                error: "Please enter a valid Sri Lankan mobile number (07XXXXXXXX)"
+            });
         }
 
         const user = await storage.updateUser(req.user!.id, updates);
@@ -6521,7 +7015,6 @@ export async function registerRoutes(
 
       const tRequestReceived = new Date().toISOString();
       const { ipAddress, device, location, sessionId } = getReqInfo(req);
-      const { actorId, actorRole } = await getActorInfo(req);
       
       try {
         const {
@@ -6540,6 +7033,14 @@ export async function registerRoutes(
            payment = await storage.getPaymentByAppointment(appointmentId);
            appt = await storage.getAppointment(appointmentId);
            slot = appt ? await storage.getAppointmentSlot(appt.slotId) : null;
+        }
+
+        let safeActorId = appt?.patientId;
+        let safeActorRole = "system_webhook";
+
+        if (!safeActorId) {
+          const admins = await storage.getAllUsers("admin");
+          safeActorId = admins && admins.length > 0 ? admins[0].id : 'N/A';
         }
 
         const richMetadata = {
@@ -6578,25 +7079,19 @@ export async function registerRoutes(
 
         if (generatedSig !== md5sig) {
           const tFailed = new Date().toISOString();
-          
           try {
-            const auditLogData = {
-              actorId, actorRole,
+            await storage.createAuditLog({
+              actorId: safeActorId, actorRole: safeActorRole,
               action: 'PAYHERE_WEBHOOK', status: 'failed',
-              entityType: 'payment', entityId: payment?.id || 'N/A', // Add ID if we found it
+              entityType: 'payment', entityId: payment?.id || 'N/A',
               ipAddress, device, location, sessionId: sessionId || 'N/A',
               metadata: {
                 ...richMetadata,
                 reason: 'Security Alert: Invalid signature in PayHere webhook. Possible spoofing.',
                 receivedPayload: { order_id, payhere_amount, payhere_currency, status_code },
-                timeline: {
-                  requestReceivedAt: tRequestReceived,
-                  signatureVerificationFailedAt: tFailed,
-                  completedAt: tFailed,
-                }
+                timeline: { requestReceivedAt: tRequestReceived, signatureVerificationFailedAt: tFailed, completedAt: tFailed }
               }
-            };
-            await storage.createAuditLog(auditLogData);
+            });
           } catch (e) { console.error("Audit log failed:", e); }
           return res.status(400).send("Invalid Signature");
         }
@@ -6644,7 +7139,7 @@ export async function registerRoutes(
             const tCompleted = new Date().toISOString();
             try {
               await storage.createAuditLog({
-                actorId, actorRole,
+                actorId: safeActorId, actorRole: safeActorRole,
                 action: 'PAYHERE_WEBHOOK_SUCCESS', status: 'success',
                 entityType: 'payment', entityId: payment.id,
                 ipAddress, device, location, sessionId: sessionId || 'N/A',
@@ -6654,9 +7149,9 @@ export async function registerRoutes(
                   timeline: { requestReceivedAt: tRequestReceived, dbUpdatesAt: tCompleted, completedAt: tCompleted }
                 }
               });
-            } catch (auditErr) {}
+            } catch (auditErr) { console.error("Audit log failed (Webhook Success):", auditErr); }
 
-          } else {          }
+          }
           
         // PAYMENT FAILED/CANCELED
         } else if (status_code === "-2" || status_code === "-1" || status_code === "0") {
@@ -6681,7 +7176,7 @@ export async function registerRoutes(
             const tCompleted = new Date().toISOString();
             try {
               await storage.createAuditLog({
-                actorId, actorRole,
+                actorId: safeActorId, actorRole: safeActorRole,
                 action: 'PAYHERE_WEBHOOK_FAILED', status: 'failed',
                 entityType: 'payment', entityId: payment.id,
                 ipAddress, device, location, sessionId: sessionId || 'N/A',
@@ -6691,7 +7186,7 @@ export async function registerRoutes(
                   timeline: { requestReceivedAt: tRequestReceived, dbRevertAt: tCompleted, completedAt: tCompleted }
                 }
               });
-            } catch (auditErr) {}
+            } catch (auditErr) { console.error("Audit log failed (Webhook Failed):", auditErr); }
           }
         }
         
@@ -6701,8 +7196,11 @@ export async function registerRoutes(
         // CATCH BLOCK AUDIT LOG
         const tFailed = new Date().toISOString();
         try {
+          const admins = await storage.getAllUsers("admin");
+          const fallbackActorId = admins && admins.length > 0 ? admins[0].id : 'N/A';
+          
           await storage.createAuditLog({
-            actorId, actorRole,
+            actorId: fallbackActorId, actorRole: 'system_webhook',
             action: 'PAYHERE_WEBHOOK_ERROR', status: 'failed',
             entityType: 'system', entityId: 'N/A',
             ipAddress, device, location, sessionId: sessionId || 'N/A',
@@ -6714,7 +7212,7 @@ export async function registerRoutes(
               timeline: { requestReceivedAt: tRequestReceived, completedAt: tFailed }
             }
           });
-        } catch (e) {}
+        } catch (e) { console.error("Audit log failed (Webhook Catch):", e); }
 
         res.status(500).send("Internal Server Error");
       }
@@ -6731,6 +7229,7 @@ export async function registerRoutes(
       const tRequestReceived = new Date().toISOString();
       const { ipAddress, device, location, sessionId } = getReqInfo(req);
       const { actorId, actorRole } = await getActorInfo(req);
+
       try {
         const appointmentId = req.params.id;
         
@@ -6782,18 +7281,18 @@ export async function registerRoutes(
               timeline: { requestReceivedAt: tRequestReceived, completedAt: tCompleted }
             }
           });
-        } catch (e) {}
+        } catch (e) { console.error("Audit log failed (Explicit Fail Success):", e); }
 
         res.json({ success: true, message: "Slot released successfully" });
       } catch (error) {
-        const tFailed = new Date().toISOString();
+       const tFailed = new Date().toISOString();
         try {
           await storage.createAuditLog({
             actorId, actorRole, action: 'EXPLICIT_PAYMENT_FAILED', status: 'failed',
             entityType: 'system', entityId: req.params.id, ipAddress, device, location, sessionId: 'N/A',
             metadata: { auditType: 'PAYMENT', reason: 'Internal Server Error (500)', timeline: { requestReceivedAt: tRequestReceived, completedAt: tFailed } }
           });
-        } catch (e) {}
+        } catch (e) { console.error("Audit log failed (Explicit Fail Error):", e); }
         res.status(500).json({ error: "Failed to release slot" });
       }
     }
@@ -6906,76 +7405,63 @@ export async function registerRoutes(
     }
   );
 
-  // INITIATE REFUND REQUEST (From Admin Payments Page)
-  app.post(
-    "/api/admin/refund-requests/create",
+  app.get(
+    "/api/admin/doctors/:id/analytics",
     authMiddleware,
     roleMiddleware(UserRole.ADMIN),
     async (req: Request, res: Response) => {
-      const tRequestReceived = new Date().toISOString();
       try {
-        // refundAmount fetch
-        const { paymentId, refundReason, refundAmount } = req.body; 
-        
-        const payment = await storage.getPayment(paymentId);
-        if (!payment) {
-          return res.status(404).json({ error: "Payment not found" });
-        }
-
-        const existingRefunds = await db.select().from(refunds).where(eq(refunds.paymentId, paymentId));
-        if (existingRefunds.length > 0) {
-          return res.status(400).json({ error: "A refund request already exists for this payment." });
-        }
-
-        // Calculate Refund Amount Based on Reason
-        let calculatedRefundAmount = payment.totalAmount; // Default: Full Refund
-
-        if (refundReason.startsWith("Patient Cancellation")) {
-          // Patient Cancel 
-          calculatedRefundAmount = payment.consultationFee;
-        } else if (refundReason.startsWith("Other")) {
-          // Other
-          calculatedRefundAmount = Number(refundAmount) || 0;
-          
-          if (calculatedRefundAmount <= 0) {
-            return res.status(400).json({ error: "Custom refund amount must be greater than 0" });
-          }
-          if (calculatedRefundAmount > payment.totalAmount) {
-            return res.status(400).json({ error: "Refund amount cannot exceed the total payment amount" });
-          }
-        }
-
-        // Create a Pending Refund Request
-        const pendingRefund = await storage.createRefundRequest({
-          paymentId: payment.id,
-          appointmentId: payment.appointmentId,
-          patientId: payment.patientId,
-          amount: calculatedRefundAmount,
-          reason: refundReason,
-          status: "pending", 
-        });
-
-        // Audit Log
-        const { ipAddress, device, location, sessionId } = getReqInfo(req);
-        const { actorId, actorRole } = await getActorInfo(req);
-        await storage.createAuditLog({
-          actorId, actorRole,
-          action: 'REFUND_REQUEST_INITIATED', status: 'success',
-          entityType: 'refund', entityId: pendingRefund.id,
-          ipAddress, device, location, sessionId: sessionId || 'N/A',
-          metadata: {
-            auditType: 'PAYMENT',
-            originalAmount: payment.totalAmount,
-            calculatedRefundAmount: calculatedRefundAmount,
-            reason: refundReason,
-            timeline: { requestReceivedAt: tRequestReceived, completedAt: new Date().toISOString() }
-          }
-        });
-
-        res.status(201).json(pendingRefund);
+        const analytics = await storage.getDoctorDetailedAnalytics(req.params.id);
+        res.json(analytics);
       } catch (error) {
-        console.error("Refund Request Error:", error);
-        res.status(500).json({ error: "Failed to create refund request" });
+        console.error("Analytics Error:", error);
+        res.status(500).json({ error: "Failed to fetch detailed analytics" });
+      }
+    }
+  );
+
+  app.patch(
+    "/api/slots/:id/cancel-booking",
+    authMiddleware,
+    roleMiddleware(UserRole.DOCTOR),
+    async (req: AuthenticatedRequest, res: Response) => {
+      try {
+        const slotId = req.params.id;
+        const { reason } = req.body;
+
+        if (!reason) {
+          return res.status(400).json({ error: "Cancellation reason is required" });
+        }
+
+        const profile = await storage.getDoctorProfileByUserId(req.user!.id);
+        if (!profile) {
+          return res.status(404).json({ error: "Doctor profile not found" });
+        }
+
+        const slot = await storage.getAppointmentSlot(slotId);
+        if (!slot || slot.doctorId !== profile.id) {
+          return res.status(403).json({ error: "Not authorized" });
+        }
+
+        // 1. Get the active appointment linked to this slot
+        const appointment = await storage.getAppointmentBySlotId(slotId);
+        if (!appointment) {
+          return res.status(404).json({ error: "No active appointment found for this slot" });
+        }
+
+        // 2. Cancel the appointment (Handles refunds and notifications)
+        const cancelled = await storage.cancelAppointment(
+          appointment.id,
+          reason,
+          req.user!.role
+        );
+
+        await storage.blockSlot(slotId);
+
+        res.json({ success: true, appointment: cancelled });
+      } catch (error) {
+        console.error("Error cancelling booked slot:", error);
+        res.status(500).json({ error: "Failed to cancel appointment" });
       }
     }
   );

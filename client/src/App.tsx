@@ -1,5 +1,5 @@
 import { Switch, Route, useLocation, Redirect } from "wouter";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
@@ -62,6 +62,7 @@ import AdminReportsPage from "./pages/admin/reports";
 import FindDoctors from "./pages/patient/find-doctors";
 import DoctorDetailsPage from "./pages/doctor-details";
 import AdminAuditPage from "./pages/admin/AdminAudit";
+import MaintenancePage from "./pages/maintenance";
 import DoctorWaitingVerification from "@/pages/doctor/doctor_verifing_waiting_dashboard";
 
 function ProtectedRoute({ 
@@ -93,6 +94,35 @@ function ProtectedRoute({
   return <>{children}</>;
 }
 
+function MaintenanceGuard({ children }: { children: React.ReactNode }) {
+  const { user, isLoading } = useAuth();
+  const [location, navigate] = useLocation();
+  const [isMaintenance, setIsMaintenance] = useState(false);
+
+  useEffect(() => {
+    // Wait for auth to finish loading — avoids redirecting admin on page refresh
+    if (isLoading) return;
+    const isAdmin = (user?.role as string) === "admin";
+    if (location === "/maintenance" || location === "/login" || isAdmin) return;
+    fetch("/api/maintenance-status")
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.isActive) {
+          setIsMaintenance(true);
+          navigate("/maintenance");
+        } else {
+          setIsMaintenance(false);
+          if (location === "/maintenance") navigate("/");
+        }
+      })
+      .catch(() => {});
+  }, [location, isLoading]);
+
+  const isAdmin = (user?.role as string) === "admin";
+  if (isMaintenance && location !== "/maintenance" && !isAdmin) return null;
+  return <>{children}</>;
+}
+
 function ScrollToTop() {
   const [location] = useLocation();
   useEffect(() => {
@@ -105,7 +135,9 @@ function Router() {
   return (
     <>
       <ScrollToTop />
+      <MaintenanceGuard>
     <Switch>
+      <Route path="/maintenance" component={MaintenancePage} />
       <Route path="/" component={HomePage} />
       <Route path="/about" component={AboutPage} />
       <Route path="/specializations" component={SpecializationsPage} />
@@ -220,6 +252,7 @@ function Router() {
       
       <Route component={NotFound} />
     </Switch>
+      </MaintenanceGuard>
     </>
   );
 }

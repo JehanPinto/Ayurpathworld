@@ -35,6 +35,7 @@ import {
   PaymentStatus,
   type PlatformSettings,
   type TaxEntry,
+  type FeeEntry,
   type Prescription,
   type Review,
   type ReviewWithDoctor,
@@ -54,6 +55,13 @@ import {
   hospitals,
 } from "@shared/schema";
 import { randomUUID } from "crypto";
+
+export interface DoctorDetailedAnalytics {
+  appointmentStats: { name: string; value: number; color: string }[];
+  revenueData: { month: string; revenue: number }[];
+  ratingDistribution: { rating: string; count: number }[];
+  totals: { revenue: number; appointments: number; cancelled: number };
+}
 
 export interface IStorage {
   getUser(id: string): Promise<User | undefined>;
@@ -234,6 +242,10 @@ export interface IStorage {
     count: number;
     totalOwed: number;
   }>;
+  getPatientUnsettledCharges(patientId: string): Promise<{
+    count: number;
+    totalOwed: number;
+  }>;
   settleDoctorCharges(doctorId: string): Promise<void>;
   respondToReview(
     reviewId: string,
@@ -258,6 +270,19 @@ export interface IStorage {
   getTaxEntries(): Promise<TaxEntry[]>;
   createTaxEntry(title: string, rate: number): Promise<TaxEntry>;
   deleteTaxEntry(id: string): Promise<boolean>;
+  getFeeEntries(): Promise<FeeEntry[]>;
+  createFeeEntry(
+    title: string,
+    feeType: "amount" | "percentage",
+    rate: number,
+    applicableTo: "doctors" | "patients" | "both",
+  ): Promise<FeeEntry>;
+  updateFeeEntryEnabled(
+    id: string,
+    enabled: boolean,
+  ): Promise<FeeEntry | undefined>;
+  deleteFeeEntry(id: string): Promise<boolean>;
+  getFeeAmountCap(): Promise<number>;
   createJobApplication(
     application: InsertJobApplication,
   ): Promise<JobApplication>;
@@ -297,6 +322,8 @@ export interface IStorage {
   createAuditLog(data: InsertAuditLog): Promise<AuditLog>;
   getPaginatedAuditLogs(page: number, limit: number): Promise<any>;
   updateDoctorHospital(doctorProfileId: string, hospitalId: string, updates: Partial<InsertHospital>): Promise<Hospital | null>;
+  getDoctorDetailedAnalytics(doctorId: string): Promise<DoctorDetailedAnalytics>;
+  getAppointmentBySlotId(slotId: string): Promise<Appointment | undefined>;
 }
 
 export class MemStorage implements IStorage {
@@ -1669,6 +1696,62 @@ export class MemStorage implements IStorage {
     return true;
   }
 
+  private feeEntries: FeeEntry[] = [];
+
+  async getFeeEntries(): Promise<FeeEntry[]> {
+    return this.feeEntries;
+  }
+
+  async createFeeEntry(
+    title: string,
+    feeType: "amount" | "percentage",
+    rate: number,
+    applicableTo: "doctors" | "patients" | "both",
+  ): Promise<FeeEntry> {
+    const entry: FeeEntry = {
+      id: randomUUID(),
+      title,
+      feeType,
+      rate,
+      applicableTo,
+      enabled: true,
+      createdAt: new Date().toISOString(),
+    };
+    this.feeEntries.push(entry);
+    return entry;
+  }
+
+  async updateFeeEntryEnabled(
+    id: string,
+    enabled: boolean,
+  ): Promise<FeeEntry | undefined> {
+    const entry = this.feeEntries.find((f) => f.id === id);
+    if (!entry) return undefined;
+    entry.enabled = enabled;
+    return entry;
+  }
+
+  async deleteFeeEntry(id: string): Promise<boolean> {
+    const idx = this.feeEntries.findIndex((f) => f.id === id);
+    if (idx === -1) return false;
+    this.feeEntries.splice(idx, 1);
+    return true;
+  }
+
+  // Median consultation fee — a robust cap for flat-amount fees that isn't
+  // distorted by a few outlier doctors with very high consultation fees.
+  async getFeeAmountCap(): Promise<number> {
+    const fees = Array.from(this.doctorProfiles.values())
+      .map((p) => p.consultationFee ?? 0)
+      .filter((f) => f > 0)
+      .sort((a, b) => a - b);
+    if (fees.length === 0) return 0;
+    const mid = Math.floor(fees.length / 2);
+    return fees.length % 2 === 0
+      ? Math.round((fees[mid - 1] + fees[mid]) / 2)
+      : fees[mid];
+  }
+
   async getDoctorByRegistrationNumber(
     registrationNumber: string,
   ): Promise<DoctorProfile | undefined> {
@@ -1820,7 +1903,6 @@ export class MemStorage implements IStorage {
     return result[0];
   }
 
-  // MemStorage ඇතුළත:
   async createAuditLog(data: InsertAuditLog): Promise<AuditLog> {
     return { ...data, id: "mock-id", createdAt: new Date() } as AuditLog;
   }
