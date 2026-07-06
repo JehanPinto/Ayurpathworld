@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { format, isToday, isYesterday, subDays } from "date-fns";
+import { format, isToday, isYesterday } from "date-fns";
 import { ArrowUpRight, CheckCheck } from "lucide-react";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
@@ -25,12 +25,11 @@ const FILTERS: { key: FilterType; label: string }[] = [
   { key: "announcement",  label: "Announcements" },
 ];
 
-// ─── Demo notifications ───────────────────────────────────────────────────────
-const yesterday    = subDays(new Date(), 1).toISOString();
-const threeDaysAgo = subDays(new Date(), 3).toISOString();
-const fourDaysAgo  = subDays(new Date(), 4).toISOString();
-
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+function isExternalHref(href: string): boolean {
+  return /^https?:\/\//i.test(href);
+}
+
 function isAnnouncement(n: Notification): boolean {
   const title = n.title.toLowerCase();
   return (
@@ -306,12 +305,26 @@ function DoctorNotifCard({
 
           {cta && (
             cta.href ? (
-              <Link href={cta.href} onClick={(e) => { e.stopPropagation(); onClose(); }}>
-                <button className={cn("mt-2 flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg font-medium transition-colors", styles.btn)}>
-                  {cta.label}
-                  <ArrowUpRight className="h-3 w-3" />
-                </button>
-              </Link>
+              isExternalHref(cta.href) ? (
+                <a
+                  href={cta.href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={(e) => { e.stopPropagation(); onClose(); }}
+                >
+                  <button className={cn("mt-2 flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg font-medium transition-colors", styles.btn)}>
+                    {cta.label}
+                    <ArrowUpRight className="h-3 w-3" />
+                  </button>
+                </a>
+              ) : (
+                <Link href={cta.href} onClick={(e) => { e.stopPropagation(); onClose(); }}>
+                  <button className={cn("mt-2 flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg font-medium transition-colors", styles.btn)}>
+                    {cta.label}
+                    <ArrowUpRight className="h-3 w-3" />
+                  </button>
+                </Link>
+              )
             ) : (
               <button
                 onClick={(e) => e.stopPropagation()}

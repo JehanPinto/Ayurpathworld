@@ -11,8 +11,9 @@ import {
   XCircle,
   CalendarPlus,
   User,
+  Info,
 } from "lucide-react";
-import { format, parseISO, isToday } from "date-fns";
+import { format, parseISO, isToday, addHours, isBefore } from "date-fns";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -50,11 +51,17 @@ const isTimeOverlap = (s1: string, e1: string, s2: string, e2: string) => {
 };
 
 const formatTimeAMPM = (time24: string) => {
-  if (!time24) return "";
+  if (time24 === "24:00") return "12:00 AM";
+  
   const [hourStr, min] = time24.split(":");
   let hour = parseInt(hourStr, 10);
-  const ampm = hour >= 12 ? "PM" : "AM";
-  hour = hour % 12 || 12; // Convert 0 or 12 to 12
+  
+  // Determine AM or PM
+  const ampm = hour >= 12 && hour < 24 ? "PM" : "AM";
+  
+  // Convert to 12-hour format
+  hour = hour % 12 || 12; 
+  
   return `${hour.toString()}:${min} ${ampm}`;
 };
 
@@ -74,6 +81,15 @@ export default function DoctorSchedule() {
     queryKey: ["/api/doctor/profile"],
   });
 
+  const { data: settings } = useQuery<any>({
+    queryKey: ["/api/booking-settings"],
+  });
+
+  const cancellationFee = settings?.cancellationFee || 300;
+  
+  const [slotToCancel, setSlotToCancel] = useState<AppointmentSlot | null>(null);
+  const [cancelReason, setCancelReason] = useState("");
+
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [slotToDelete, setSlotToDelete] = useState<AppointmentSlot | null>(null);
   const [newSlot, setNewSlot] = useState({
@@ -86,25 +102,43 @@ export default function DoctorSchedule() {
   });
 
   const maxDate = useMemo(() => {
+    if (!profile) return todayDateStr;
+    const allowedDays = Math.min(profile.maxAdvanceBookingDays || 10, 10); // 🟢 Strict Cap at 10 days
     const d = new Date();
-    const maxDays = profile?.maxAdvanceBookingDays || 30; // Default 30 if not set
-    d.setDate(d.getDate() + maxDays);
+    d.setDate(d.getDate() + allowedDays);
     return format(d, "yyyy-MM-dd");
-  }, [profile]);
+  }, [profile, todayDateStr]);
+
+  const getAvailableStartTimes = (selectedDateStr: string) => {
+    if (selectedDateStr !== todayDateStr) {
+      return timeSlots;
+    }
+
+    const threeHoursFromNow = addHours(new Date(), 3);
+    return timeSlots.filter(time => {
+      const [hours, minutes] = time.split(':');
+      const slotDate = new Date();
+      slotDate.setHours(parseInt(hours, 10), parseInt(minutes, 10), 0, 0);
+      return !isBefore(slotDate, threeHoursFromNow);
+    });
+  };
+
+  const currentAvailableStartTimes = getAvailableStartTimes(newSlot.date);
+
+  // End time must come after the selected start time
+  const validEndTimes = timeSlots.filter((time) => time > newSlot.startTime);
 
   useEffect(() => {
-    if (newSlot.startTime && profile) {
-      const duration = profile.slotDurationMinutes || 30;
-      const calculatedEndTime = addMinutesToTime(newSlot.startTime, duration);
-      
-      setNewSlot((prev) => {
-        if (prev.endTime !== calculatedEndTime) {
-          return { ...prev, endTime: calculatedEndTime };
-        }
-        return prev;
-      });
+    const availableForDate = getAvailableStartTimes(newSlot.date);
+    if (!availableForDate.includes(newSlot.startTime)) {
+      const firstAvailable = availableForDate[0] || "";
+      setNewSlot(prev => ({
+        ...prev,
+        startTime: firstAvailable,
+        endTime: firstAvailable ? timeSlots[timeSlots.indexOf(firstAvailable) + 1] || firstAvailable : ""
+      }));
     }
-  }, [newSlot.startTime, profile]);
+  }, [newSlot.date]);
 
   const {
     data: slots = [],
@@ -152,6 +186,7 @@ export default function DoctorSchedule() {
     },
   });
 
+  // Changed to Deactivate instead of Delete
   const deactivateSlotMutation = useMutation({
     mutationFn: async (slotId: string) => {
       return apiRequest("PATCH", `/api/slots/${slotId}/deactivate`);
@@ -165,20 +200,50 @@ export default function DoctorSchedule() {
     },
   });
 
+  // Mutation for cancelling a booked slot
+  const cancelBookedSlotMutation = useMutation({
+    mutationFn: async ({ slotId, reason }: { slotId: string; reason: string }) => {
+      // NOTE: Ensure your backend endpoint for slot cancellation handles the booked status correctly. 
+      // It should ideally find the connected appointment and cancel it.
+      return apiRequest("PATCH", `/api/slots/${slotId}/cancel-booking`, { reason });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/doctor/slots"] });
+      toast({ title: "Appointment cancelled successfully" });
+      setSlotToCancel(null);
+      setCancelReason("");
+    },
+    onError: (err: any) => {
+      toast({ title: err?.message || "Failed to cancel appointment", variant: "destructive" });
+    },
+  });
+
   const handleAddSlot = () => {
     if (newSlot.consultationType === "in_person" && !newSlot.clinicLocation) {
       toast({ title: "Please select a location", variant: "destructive" });
       return;
     }
 
-    if (newSlot.endTime <= newSlot.startTime) {
-      toast({ title: "End time must be after start time", variant: "destructive" });
-      return;
+    // Time Logic Validation
+    if (newSlot.date === todayDateStr) {
+      const [hours, minutes] = newSlot.startTime.split(':');
+      const slotDate = new Date();
+      slotDate.setHours(parseInt(hours, 10), parseInt(minutes, 10), 0, 0);
+      const threeHoursFromNow = addHours(new Date(), 3);
+      
+      if (isBefore(slotDate, threeHoursFromNow)) {
+        toast({ 
+          title: "Too early for today", 
+          description: "Appointments for today must be scheduled at least 3 hours in advance.", 
+          variant: "destructive" 
+        });
+        return;
+      }
     }
 
     // Include buffer time when checking overlaps with existing slots
     const buffer = profile?.bufferTimeMinutes || 0;
-    const existingSlotsOnDate = slots.filter((s) => s.date === newSlot.date && !s.isBlocked);
+    const existingSlotsOnDate = slots.filter((s) => s.date === newSlot.date);
     
     // We check if the NEW slot overlaps with any EXISTING slot + its buffer
     const overlappingSlot = existingSlotsOnDate.find((existingSlot) => {
@@ -352,7 +417,18 @@ export default function DoctorSchedule() {
 
                       {/* Right: Actions & Status */}
                       <div className="flex items-center justify-end gap-3 border-t sm:border-t-0 pt-3 sm:pt-0 mt-2 sm:mt-0">
-                        {slot.isBooked ? (
+                        {slot.isBlocked ? (
+                          <div className="flex flex-col items-end gap-1.5">
+                            <Badge variant="outline" className="border-red-200 text-red-600 bg-red-50 dark:bg-red-900/20 uppercase tracking-wider px-3 py-1 flex items-center gap-1.5">
+                              <XCircle className="w-3.5 h-3.5" />
+                              CANCELLED
+                            </Badge>
+                            <span className="text-[11px] font-medium text-red-500/80 flex items-center gap-1 px-1">
+                              <AlertCircle className="w-3 h-3" />
+                              Rs. {cancellationFee} deducted from payouts
+                            </span>
+                          </div>
+                        ) : slot.isBooked ? (
                           <>
                             <Badge className="bg-blue-100 text-blue-700 hover:bg-blue-100 dark:bg-blue-900/40 dark:text-blue-300 uppercase tracking-wider px-3 py-1 flex items-center gap-1.5">
                               <User className="w-3.5 h-3.5" />
@@ -361,14 +437,10 @@ export default function DoctorSchedule() {
                             <Button 
                               variant="outline" 
                               size="sm" 
-                              className="text-orange-600 border-orange-200 hover:bg-orange-50 dark:hover:bg-orange-950/20"
-                              onClick={() => toast({ 
-                                title: "Update Soon!", 
-                                description: "Slot cancellation feature is currently under development.",
-                                variant: "default"
-                              })}
+                              className="text-red-600 border-red-200 hover:bg-red-50 dark:hover:bg-red-950/20"
+                              onClick={() => setSlotToCancel(slot)}
                             >
-                              Cancel
+                              <XCircle className="w-4 h-4 mr-1.5" /> Cancel
                             </Button>
                           </>
                         ) : (
@@ -397,6 +469,74 @@ export default function DoctorSchedule() {
           })}
         </div>
       </div>
+
+      {/* Cancel Confirmation Dialog */}
+      <Dialog open={!!slotToCancel} onOpenChange={(open) => { 
+        if (!open) { 
+          setSlotToCancel(null); 
+          setCancelReason(""); 
+        } 
+      }}>
+        <DialogContent className="max-w-md rounded-2xl">
+          <DialogHeader>
+            <DialogTitle className="text-lg font-bold text-red-600 flex items-center gap-2">
+              <AlertCircle className="w-5 h-5" /> Cancel Appointment
+            </DialogTitle>
+            <DialogDescription className="text-sm text-muted-foreground pt-1">
+              {slotToCancel && (
+                <span className="block font-medium text-foreground mb-2">
+                  {format(parseISO(slotToCancel.date), "EEE, MMM d")} {" · "} 
+                  {formatTimeAMPM(slotToCancel.startTime)} – {formatTimeAMPM(slotToCancel.endTime)}
+                </span>
+              )}
+              You are about to cancel a confirmed booking. Please provide a reason for the patient.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-3">
+            {/* Cancellation Fee Warning Box */}
+            <div className="bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-900/50 rounded-xl p-4 flex gap-3 items-start">
+              <Info className="w-5 h-5 text-red-600 dark:text-red-400 shrink-0 mt-0.5" />
+              <div>
+                <h4 className="text-sm font-semibold text-red-800 dark:text-red-300">Cancellation Fee Applies</h4>
+                <p className="text-sm text-red-600 dark:text-red-400/80 mt-1 leading-snug">
+                  Rs. {cancellationFee} will be deducted from your payouts for cancelling this booked session.
+                </p>
+              </div>
+            </div>
+
+            {/* Reason Textarea */}
+            <div className="space-y-2">
+              <Label htmlFor="cancel-reason" className="text-foreground">Reason for Cancellation <span className="text-red-500">*</span></Label>
+              <Textarea
+                id="cancel-reason"
+                placeholder="E.g., Unexpected personal emergency, clinic closure..."
+                value={cancelReason}
+                onChange={(e) => setCancelReason(e.target.value)}
+                className="resize-none"
+                rows={3}
+              />
+            </div>
+          </div>
+
+          <DialogFooter className="flex gap-2 pt-2">
+            <Button variant="outline" className="flex-1" onClick={() => { setSlotToCancel(null); setCancelReason(""); }}>
+              Keep Booking
+            </Button>
+            <Button
+              className="flex-1 bg-red-600 hover:bg-red-700 text-white"
+              disabled={cancelBookedSlotMutation.isPending || cancelReason.trim().length < 5}
+              onClick={() => {
+                if (slotToCancel) {
+                  cancelBookedSlotMutation.mutate({ slotId: slotToCancel.id, reason: cancelReason });
+                }
+              }}
+            >
+              {cancelBookedSlotMutation.isPending ? "Cancelling..." : "Confirm Cancellation"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Delete Confirmation Dialog */}
       <Dialog open={!!slotToDelete} onOpenChange={(open) => { if (!open) setSlotToDelete(null); }}>
@@ -460,59 +600,68 @@ export default function DoctorSchedule() {
           {/* Date Picker */}
           <div className="space-y-2">
             <Label>Date</Label>
-            <Input
-              type="date"
-              min={todayDateStr}
-              max={maxDate}
-              value={newSlot.date}
-              onChange={(e) => {
-                const val = e.target.value;
-                if (val >= todayDateStr && val <= maxDate) {
-                  setNewSlot({ ...newSlot, date: val });
-                } else {
-                  toast({ title: "Invalid Date", description: `You can only schedule up to ${profile?.maxAdvanceBookingDays} days ahead.`, variant: "destructive" });
-                }
-              }}
-              className="rounded-xl border-border"
-            />
-            <p className="text-xs text-muted-foreground">Max booking range is {profile?.maxAdvanceBookingDays} days ahead.</p>
+            <div className="relative flex items-center">
+              <Input
+                type="date"
+                min={todayDateStr}
+                max={maxDate}
+                value={newSlot.date}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  if (val >= todayDateStr && val <= maxDate) {
+                    setNewSlot({ ...newSlot, date: val });
+                  } else if (val > maxDate) {
+                    toast({ title: "Booking Limit Reached", description: `You can only schedule up to ${Math.min(profile?.maxAdvanceBookingDays || 10, 10)} days ahead.`, variant: "destructive" });
+                  }
+                }}
+              />
+            </div>
+            <p className="text-xs text-muted-foreground flex justify-end">
+              Max advance limit: {format(parseISO(maxDate), "MMM dd, yyyy")}
+            </p>
           </div>
 
           {/* Time Pickers */}
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <Label>Start Time</Label>
-              <Select 
-                value={newSlot.startTime} 
-                onValueChange={(v) => {
-                  setNewSlot(prev => ({ 
-                    ...prev, 
-                    startTime: v,
-                    endTime: prev.endTime <= v ? timeSlots[timeSlots.indexOf(v) + 1] || v : prev.endTime 
-                  }));
-                }}
-              >
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent className="max-h-[200px]">
-                  {timeSlots.map((time) => (
-                    <SelectItem key={time} value={time}>{formatTimeAMPM(time)}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+          {currentAvailableStartTimes.length === 0 ? (
+            <div className="p-4 bg-red-50 border border-red-100 rounded-lg text-red-600 text-sm text-center">
+              No available time slots left for today. Please choose a future date.
             </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>Start Time</Label>
+                <Select 
+                  value={newSlot.startTime} 
+                  onValueChange={(v) => {
+                    setNewSlot(prev => ({ 
+                      ...prev, 
+                      startTime: v,
+                      endTime: prev.endTime <= v ? timeSlots[timeSlots.indexOf(v) + 1] || v : prev.endTime 
+                    }));
+                  }}
+                >
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent className="max-h-[200px]">
+                    {currentAvailableStartTimes.map((time) => (
+                      <SelectItem key={time} value={time}>{formatTimeAMPM(time)}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
 
-            <div className="space-y-2">
-              <Label className="font-semibold text-muted-foreground flex items-center justify-between">
-                End Time 
-                <Badge variant="outline" className="text-[10px] h-5 bg-background">Auto</Badge>
-              </Label>
-              <Input 
-                value={formatTimeAMPM(newSlot.endTime)} 
-                disabled 
-                className="bg-muted text-muted-foreground opacity-70"
-              />
+              <div className="space-y-2">
+                <Label>End Time</Label>
+                <Select value={newSlot.endTime} onValueChange={(v) => setNewSlot({ ...newSlot, endTime: v })}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent className="max-h-[200px]">
+                    {validEndTimes.map((time) => (
+                      <SelectItem key={time} value={time}>{formatTimeAMPM(time)}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
-          </div>
+          )}
 
           {/* Mode Picker */}
           <div className="space-y-2">
