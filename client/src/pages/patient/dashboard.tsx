@@ -189,8 +189,13 @@ export default function PatientDashboard() {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
         <Card className="border-primary/50 shadow-sm rounded-2xl bg-transparent">
           <CardContent className="p-4 sm:p-5 flex flex-col items-center justify-center text-center relative overflow-hidden">
-            <div className="rounded-full sm:left-3 text-primary/50 border border-primary/50 bg-primary/10 p-2">
-              <Calendar className="w-4 h-4 sm:w-6 sm:h-6" />
+            <div className="flex items-center gap-2">
+              <div className="rounded-full sm:left-3 text-primary/50 border border-primary/50 bg-primary/10 p-2">
+                <Calendar className="w-4 h-4 sm:w-6 sm:h-6" />
+              </div>
+              <h2 className="text-sm sm:text-base font-semibold text-foreground">
+                Upcoming Appointments
+              </h2>
             </div>
             <div className="flex items-baseline gap-1 mt-2 z-10">
               <span className="text-3xl sm:text-4xl font-extrabold text-foreground">{stats?.upcomingAppointments || 0}</span>
@@ -202,8 +207,13 @@ export default function PatientDashboard() {
 
         <Card className="border-primary/50 shadow-sm rounded-2xl bg-transparent">
           <CardContent className="p-4 sm:p-5 flex flex-col items-center justify-center text-center relative overflow-hidden">
-            <div className="rounded-full sm:left-3 text-primary/50 border border-primary/50 bg-primary/10 p-2">
-              <CheckCircle2 className="w-4 h-4 sm:w-6 sm:h-6" />
+            <div className="flex items-center gap-2">
+              <div className="rounded-full sm:left-3 text-primary/50 border border-primary/50 bg-primary/10 p-2">
+                <CheckCircle2 className="w-4 h-4 sm:w-6 sm:h-6" />
+              </div>
+              <h2 className="text-sm sm:text-base font-semibold text-foreground">
+                Completed Appointments
+              </h2>
             </div>
             <div className="flex items-baseline gap-1 mt-2 z-10">
               <span className="text-3xl sm:text-4xl font-extrabold text-foreground">{stats?.completedAppointments || 0}</span>
@@ -215,8 +225,13 @@ export default function PatientDashboard() {
 
         <Card className="border-primary/50 shadow-sm rounded-2xl bg-transparent">
           <CardContent className="p-4 sm:p-5 flex flex-col items-center justify-center text-center relative overflow-hidden">
-            <div className="text-primary/50 border border-primary/50 bg-primary/10 p-2 rounded-full">
-              <CreditCard className="w-4 h-4 sm:w-6 sm:h-6" />
+            <div className="flex items-center gap-2">
+              <div className="text-primary/50 border border-primary/50 bg-primary/10 p-2 rounded-full">
+                <CreditCard className="w-4 h-4 sm:w-6 sm:h-6" />
+              </div>
+              <h2 className="text-sm sm:text-base font-semibold text-foreground">
+                Total Paid
+              </h2>
             </div>
             <div className="flex items-baseline gap-1 mt-2 z-10">
               <span className="text-2xl sm:text-3xl font-extrabold text-foreground">LKR {(stats?.totalPaidAmount || 0).toLocaleString()}</span>
@@ -227,8 +242,13 @@ export default function PatientDashboard() {
 
         <Card className="border-primary/50 shadow-sm rounded-2xl bg-transparent">
           <CardContent className="p-4 sm:p-5 flex flex-col items-center justify-center text-center relative overflow-hidden">
-            <div className="text-primary/50 border border-primary/50 bg-primary/10 p-2 rounded-full">
-              <FileClock className="w-4 h-4 sm:w-6 sm:h-6" />
+            <div className="flex items-center gap-2">  
+              <div className="text-primary/50 border border-primary/50 bg-primary/10 p-2 rounded-full">
+                <FileClock className="w-4 h-4 sm:w-6 sm:h-6" />
+              </div>
+              <h2 className="text-sm sm:text-base font-semibold text-foreground">
+                Refund Requests
+              </h2>
             </div>
             <div className="flex items-baseline gap-1 mt-2 z-10">
               <span className="text-3xl sm:text-4xl font-extrabold text-foreground">{stats?.refundPendingCount || 0}</span>
