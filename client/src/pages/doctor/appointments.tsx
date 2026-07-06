@@ -95,6 +95,15 @@ export default function DoctorAppointments() {
     onError: () => toast({ title: "Failed to mark as no-show", variant: "destructive" }),
   });
 
+  const confirmMutation = useMutation({
+    mutationFn: (id: string) => apiRequest("PATCH", `/api/doctor/appointments/${id}/confirm`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/doctor/appointments"] });
+      toast({ title: "Appointment confirmed" });
+    },
+    onError: () => toast({ title: "Failed to confirm appointment", variant: "destructive" }),
+  });
+
   const getInitials = (name: string) => {
     if (!name) return "PT";
     return name.split(" ").map(n => n[0]).join("").toUpperCase().slice(0, 2);
@@ -310,6 +319,15 @@ export default function DoctorAppointments() {
                                 </Button>
                               </DropdownMenuTrigger>
                               <DropdownMenuContent align="end">
+                                {appointment.status === "pending" && (
+                                  <DropdownMenuItem
+                                    onClick={() => confirmMutation.mutate(appointment.id)}
+                                    disabled={confirmMutation.isPending}
+                                    data-testid={`action-confirm-${appointment.id}`}
+                                  >
+                                    <Check className="h-4 w-4 mr-2" /> Confirm
+                                  </DropdownMenuItem>
+                                )}
                                 {appointment.status === "confirmed" && !appointment.isCalled && (
                                   <DropdownMenuItem
                                     onClick={() => callMutation.mutate(appointment.id)}

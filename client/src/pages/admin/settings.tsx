@@ -31,58 +31,141 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogDescription,
   DialogFooter,
 } from "@/components/ui/dialog";
 
-function SpinnerBox({
+function EditSettingCard({
   label,
   value,
   unit,
   description,
-  onChange,
+  dialogTitle,
+  onSave,
   min = 0,
-  max = 100,
-  step = 1,
+  max,
   testId,
 }: {
   label: string;
   value: string;
   unit: "%" | "LKR";
   description: string;
-  onChange: (val: string) => void;
+  dialogTitle: string;
+  onSave: (val: string) => void;
   min?: number;
   max?: number;
-  step?: number;
   testId?: string;
 }) {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState(value);
+
   const num = parseFloat(value) || 0;
   const display = unit === "%" ? `${num}%` : String(num);
 
+  // Always pre-fill the popup with the current saved value when it opens
+  const openPopup = () => {
+    setDraft(value);
+    setOpen(true);
+  };
+
+  const draftNum = parseFloat(draft);
+  const isValid =
+    draft.trim() !== "" &&
+    !Number.isNaN(draftNum) &&
+    draftNum >= min &&
+    (max === undefined || draftNum <= max);
+
+  const handleSaveClick = () => {
+    if (!isValid) return;
+    onSave(String(draftNum));
+    setOpen(false);
+  };
+
   return (
-    <div className="flex-1 bg-[#e8f3ef] dark:bg-primary/10 rounded-xl px-6 py-5 flex flex-col gap-3">
-      <p className="text-sm font-medium text-center text-foreground">{label}</p>
-      <div className="flex items-center justify-center gap-3">
-        <p className="text-4xl font-bold text-foreground">{display}</p>
-        <div className="flex flex-col gap-0.5">
-          <button
-            type="button"
-            onClick={() => onChange(String(Math.min(max, +(num + step).toFixed(2))))}
-            className="text-foreground/60 hover:text-foreground transition-colors"
-          >
-            <ChevronUp className="h-4 w-4" />
-          </button>
-          <button
-            type="button"
-            onClick={() => onChange(String(Math.max(min, +(num - step).toFixed(2))))}
-            className="text-foreground/60 hover:text-foreground transition-colors"
-          >
-            <ChevronDown className="h-4 w-4" />
-          </button>
+    <>
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={openPopup}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            openPopup();
+          }
+        }}
+        className="flex-1 bg-[#e8f3ef] dark:bg-primary/10 rounded-xl px-6 py-5 flex flex-col gap-3 cursor-pointer hover:bg-[#ddeee8] dark:hover:bg-primary/15 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+        data-testid={testId ? `card-${testId}` : undefined}
+      >
+        <p className="text-sm font-medium text-center text-foreground">{label}</p>
+        <div className="flex items-center justify-center gap-3">
+          <p className="text-4xl font-bold text-foreground">{display}</p>
+          <div className="flex flex-col gap-0.5">
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); openPopup(); }}
+              aria-label={`Edit ${label}`}
+              className="text-foreground/60 hover:text-foreground transition-colors"
+            >
+              <ChevronUp className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); openPopup(); }}
+              aria-label={`Edit ${label}`}
+              className="text-foreground/60 hover:text-foreground transition-colors"
+            >
+              <ChevronDown className="h-4 w-4" />
+            </button>
+          </div>
         </div>
+        <p className="text-xs text-muted-foreground text-center">{description}</p>
+        <input type="hidden" data-testid={testId} value={value} />
       </div>
-      <p className="text-xs text-muted-foreground text-center">{description}</p>
-      <input type="hidden" data-testid={testId} value={value} />
-    </div>
+
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{dialogTitle}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-2 py-2">
+            <Label htmlFor={`edit-${testId}`} className="text-sm font-medium">
+              {description}
+            </Label>
+            <div className="relative">
+              <Input
+                id={`edit-${testId}`}
+                type="number"
+                inputMode="decimal"
+                min={min}
+                max={max}
+                value={draft}
+                autoFocus
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") handleSaveClick(); }}
+                data-testid={`dialog-input-${testId}`}
+                className={unit === "%" ? "pr-8" : "pr-14"}
+              />
+              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground pointer-events-none">
+                {unit}
+              </span>
+            </div>
+            {draft.trim() !== "" && !isValid && (
+              <p className="text-xs text-destructive" data-testid={`dialog-error-${testId}`}>
+                Enter a valid non-negative number{max !== undefined ? ` (0–${max})` : ""}.
+              </p>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setOpen(false)} data-testid={`dialog-cancel-${testId}`}>
+              Cancel
+            </Button>
+            <Button onClick={handleSaveClick} disabled={!isValid} data-testid={`dialog-save-${testId}`}>
+              Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 
@@ -96,6 +179,7 @@ export default function AdminSettingsPage() {
   };
 
   const [maintenanceDialog, setMaintenanceDialog] = useState(false);
+  const [maintenanceDisableDialog, setMaintenanceDisableDialog] = useState(false);
   const [maintStartTime, setMaintStartTime] = useState(toLocalDatetimeValue(new Date()));
   const [maintEndTime, setMaintEndTime] = useState("");
 
@@ -130,6 +214,8 @@ export default function AdminSettingsPage() {
   const [newFeeType, setNewFeeType] = useState<"" | "amount" | "percentage">("");
   const [newFeeRate, setNewFeeRate] = useState("");
   const [newFeeApplicableTo, setNewFeeApplicableTo] = useState<"" | "doctors" | "patients" | "both">("");
+  // Fee pending delete confirmation
+  const [feeToDelete, setFeeToDelete] = useState<FeeEntry | null>(null);
 
   const [systemTaxes, setSystemTaxes] = useState([
     { id: "vat", title: "VAT", rate: 18, description: "Value-added tax on consultation fees", applicableTo: "doctors", enabled: true },
@@ -283,19 +369,30 @@ export default function AdminSettingsPage() {
       apiRequest("DELETE", `/api/admin/fee-entries/${id}`),
     onSuccess: () => {
       invalidateFees();
+      setFeeToDelete(null);
       toast({ title: "Fee Removed", description: "Custom fee has been deleted." });
+    },
+    onError: () => {
+      setFeeToDelete(null);
     },
   });
 
+  // Parse an integer, falling back to the default only when the value is not a
+  // number (so a legitimate 0 is preserved instead of being coerced away).
+  const toInt = (v: string, fallback: number) => {
+    const n = parseInt(v, 10);
+    return Number.isNaN(n) ? fallback : n;
+  };
+
   const handleSave = () => {
     saveMutation.mutate({
-      platformCommissionRate: parseInt(settings.platformCommissionRate) || 10,
-      bookingCharges: parseInt(settings.bookingCharges) || 100,
-      taxRate: parseInt(settings.taxRate) || 4,
-      maxAdvanceBookingDays: parseInt(settings.maxAdvanceBookingDays) || 30,
-      minBookingNoticeHours: parseInt(settings.minBookingNoticeHours) || 2,
-      defaultSlotDuration: parseInt(settings.defaultSlotDuration) || 30,
-      defaultBufferTime: parseInt(settings.defaultBufferTime) || 10,
+      platformCommissionRate: toInt(settings.platformCommissionRate, 10),
+      bookingCharges: toInt(settings.bookingCharges, 100),
+      taxRate: toInt(settings.taxRate, 4),
+      maxAdvanceBookingDays: toInt(settings.maxAdvanceBookingDays, 30),
+      minBookingNoticeHours: toInt(settings.minBookingNoticeHours, 2),
+      defaultSlotDuration: toInt(settings.defaultSlotDuration, 30),
+      defaultBufferTime: toInt(settings.defaultBufferTime, 10),
       emailNotifications: settings.emailNotifications,
       smsNotifications: settings.smsNotifications,
       pushNotifications: settings.pushNotifications,
@@ -305,7 +402,7 @@ export default function AdminSettingsPage() {
       allowClinicPayments: settings.allowClinicPayments,
       defaultLanguage: settings.defaultLanguage,
       maintenanceMode: settings.maintenanceMode,
-      cancellationFee: parseInt(settings.cancellationFee) || 300,
+      cancellationFee: toInt(settings.cancellationFee, 300),
       stampDutyEnabled: systemTaxes.find((t) => t.id === "stamp")?.enabled ?? false,
       vatEnabled: systemTaxes.find((t) => t.id === "vat")?.enabled ?? true,
       withholdingTaxEnabled: systemTaxes.find((t) => t.id === "withholding")?.enabled ?? true,
@@ -319,14 +416,19 @@ export default function AdminSettingsPage() {
       setMaintEndTime("");
       setMaintenanceDialog(true);
     } else {
-      // Turn off immediately — no popup needed
-      update("maintenanceMode", false);
-      saveMutation.mutate({
-        maintenanceMode: false,
-        maintenanceStartTime: null,
-        maintenanceEndTime: null,
-      });
+      // Turning off is high-impact — confirm before saving
+      setMaintenanceDisableDialog(true);
     }
+  };
+
+  const handleMaintenanceDisableConfirm = () => {
+    setMaintenanceDisableDialog(false);
+    update("maintenanceMode", false);
+    saveMutation.mutate({
+      maintenanceMode: false,
+      maintenanceStartTime: null,
+      maintenanceEndTime: null,
+    });
   };
 
   const handleMaintenanceConfirm = () => {
@@ -404,6 +506,22 @@ export default function AdminSettingsPage() {
   const update = (key: string, value: unknown) =>
     setSettings((prev) => ({ ...prev, [key]: value }));
 
+  // Save a single payment/commission field via the edit popup: update the card
+  // immediately (optimistic), persist just that field, and revert on failure.
+  const saveSingleSetting = (
+    key: "platformCommissionRate" | "bookingCharges" | "taxRate" | "cancellationFee",
+    value: string,
+  ) => {
+    const numeric = parseInt(value, 10);
+    if (Number.isNaN(numeric) || numeric < 0) return;
+    const prev = settings[key];
+    update(key, String(numeric));
+    saveMutation.mutate(
+      { [key]: numeric } as Partial<PlatformSettings>,
+      { onError: () => update(key, prev) },
+    );
+  };
+
   if (isLoading) return <LoadingPage message="Loading settings..." />;
 
   if (isError) {
@@ -441,46 +559,48 @@ export default function AdminSettingsPage() {
 
             {/* 3 spinner boxes */}
             <div className="flex gap-4">
-              <SpinnerBox
+              <EditSettingCard
                 label="Platform Commission (%)"
                 value={settings.platformCommissionRate}
                 unit="%"
                 description="Percentage charged on each consultation"
-                onChange={(v) => update("platformCommissionRate", v)}
+                dialogTitle="Edit Platform Commission"
+                onSave={(v) => saveSingleSetting("platformCommissionRate", v)}
                 min={0}
                 max={100}
                 testId="input-commission"
               />
-              <SpinnerBox
+              <EditSettingCard
                 label="Booking Charges (LKR)"
                 value={settings.bookingCharges}
                 unit="LKR"
                 description="Fixed fee per appointment booking"
-                onChange={(v) => update("bookingCharges", v)}
+                dialogTitle="Edit Booking Charges"
+                onSave={(v) => saveSingleSetting("bookingCharges", v)}
                 min={0}
                 max={10000}
-                step={50}
                 testId="input-booking-charges"
               />
-              <SpinnerBox
+              <EditSettingCard
                 label="Tax Rate (%)"
                 value={settings.taxRate}
                 unit="%"
                 description="Tax percentage on consultation fees"
-                onChange={(v) => update("taxRate", v)}
+                dialogTitle="Edit Tax Rate"
+                onSave={(v) => saveSingleSetting("taxRate", v)}
                 min={0}
                 max={50}
                 testId="input-tax"
               />
-              <SpinnerBox
+              <EditSettingCard
                 label="Cancellation fees (LKR)"
                 value={settings.cancellationFee}
                 unit="LKR"
                 description="Fixed fee per consultation"
-                onChange={(v) => update("cancellationFee", v)}
+                dialogTitle="Edit Cancellation Fees"
+                onSave={(v) => saveSingleSetting("cancellationFee", v)}
                 min={0}
                 max={10000}
-                step={50}
                 testId="input-cancellation-fee"
               />
             </div>
@@ -778,7 +898,7 @@ export default function AdminSettingsPage() {
                           data-testid={`switch-fee-${fee.id}`}
                         />
                         <button
-                          onClick={() => deleteFeeMutation.mutate(fee.id)}
+                          onClick={() => setFeeToDelete(fee)}
                           disabled={deleteFeeMutation.isPending}
                           className="text-destructive hover:text-destructive/70 transition-colors shrink-0"
                           data-testid={`button-delete-fee-${fee.id}`}
@@ -791,6 +911,37 @@ export default function AdminSettingsPage() {
                 </div>
               </div>
             </div>
+
+            {/* Delete Fee confirmation */}
+            <Dialog open={!!feeToDelete} onOpenChange={(open) => { if (!open) setFeeToDelete(null); }}>
+              <DialogContent className="max-w-sm rounded-2xl">
+                <DialogHeader>
+                  <DialogTitle className="text-lg font-bold">Delete this fee?</DialogTitle>
+                  <DialogDescription className="text-sm text-muted-foreground pt-1">
+                    Are you sure you want to delete{" "}
+                    <span className="font-semibold text-foreground">{feeToDelete?.title}</span>? This action cannot be undone.
+                  </DialogDescription>
+                </DialogHeader>
+                <DialogFooter className="flex gap-2 pt-2">
+                  <Button
+                    variant="outline"
+                    className="flex-1"
+                    onClick={() => setFeeToDelete(null)}
+                    data-testid="button-cancel-delete-fee"
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    className="flex-1 bg-red-600 hover:bg-red-700 text-white"
+                    disabled={deleteFeeMutation.isPending}
+                    onClick={() => { if (feeToDelete) deleteFeeMutation.mutate(feeToDelete.id); }}
+                    data-testid="button-confirm-delete-fee"
+                  >
+                    {deleteFeeMutation.isPending ? "Deleting..." : "Delete"}
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
 
           </div>
 
@@ -1030,6 +1181,29 @@ export default function AdminSettingsPage() {
           <Button variant="outline" onClick={() => setMaintenanceDialog(false)}>Cancel</Button>
           <Button variant="destructive" onClick={handleMaintenanceConfirm} disabled={saveMutation.isPending}>
             {saveMutation.isPending ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Enabling...</> : "Enable Maintenance"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    {/* Confirm before turning maintenance off */}
+    <Dialog open={maintenanceDisableDialog} onOpenChange={setMaintenanceDisableDialog}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2 text-destructive">
+            <AlertTriangle className="h-5 w-5" />
+            Turn off Maintenance Mode?
+          </DialogTitle>
+        </DialogHeader>
+        <div className="py-2">
+          <p className="text-sm text-muted-foreground">
+            Turning off Maintenance Mode will make the platform live to <strong>all users</strong> immediately. Continue?
+          </p>
+        </div>
+        <DialogFooter className="gap-2">
+          <Button variant="outline" onClick={() => setMaintenanceDisableDialog(false)} data-testid="button-cancel-disable-maintenance">Cancel</Button>
+          <Button variant="destructive" onClick={handleMaintenanceDisableConfirm} disabled={saveMutation.isPending} data-testid="button-confirm-disable-maintenance">
+            {saveMutation.isPending ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Saving...</> : "Turn Off Maintenance"}
           </Button>
         </DialogFooter>
       </DialogContent>

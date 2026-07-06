@@ -2797,9 +2797,7 @@ export class DbStorage implements IStorage {
   }
 
   async bookAppointmentWithPaymentAtomic(
-    appointment: InsertAppointment,
-    paymentData: InsertPayment,
-    slotId: string,
+appointment: InsertAppointment, paymentData: InsertPayment, slotId: string, auditInfo: { ipAddress: string; device: string; location: string; sessionId: string; },
   ): Promise<{ appointment: Appointment; payment: Payment } | null> {
     const client = await pool.connect();
     try {
