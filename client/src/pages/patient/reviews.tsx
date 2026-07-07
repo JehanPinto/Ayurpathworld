@@ -44,7 +44,7 @@ export default function PatientReviews() {
     queryKey: ["/api/appointments"],
   });
 
-  // 🟢 Data Mutations
+  // Data Mutations
   const createMutation = useMutation({
     mutationFn: (data: { appointmentId: string; doctorId: string; rating: number; comment: string }) =>
       apiRequest("POST", `/api/appointments/${data.appointmentId}/review`, data),
@@ -79,7 +79,7 @@ export default function PatientReviews() {
     },
   });
 
-  // 🟢 Find pending reviews (completed appointments without a review)
+  // Find pending reviews (completed appointments without a review)
   const pendingAppointments = appointments.filter(
     (app) => app.status === "completed" && !reviews.some((r) => r.appointmentId === app.id)
   );
@@ -164,7 +164,7 @@ export default function PatientReviews() {
           </TabsTrigger>
         </TabsList>
 
-        {/* 🟢 TAB 1: PENDING REVIEWS */}
+        {/* TAB 1: PENDING REVIEWS */}
         <TabsContent value="pending" className="mt-0 outline-none">
           <Card className="border-0 bg-transparent shadow-none">
             {pendingReviewsList.length === 0 ? (
@@ -217,19 +217,6 @@ export default function PatientReviews() {
             </div>
           ) : (
             <div className="grid lg:grid-cols-3 gap-8">
-
-              {/* Stats Sidebar */}
-              <div className="lg:col-span-1">
-                <Card className="bg-[#eef8f3] dark:bg-emerald-900/10 border-0 shadow-sm rounded-[2rem] sticky top-6 p-6 sm:p-8">
-                  <h3 className="text-xl font-black text-slate-900 dark:text-white mb-6">Rating Summary</h3>
-                  <div className="text-center bg-white/60 dark:bg-zinc-900/40 backdrop-blur-sm rounded-3xl p-6 border border-white/50 dark:border-zinc-800/50 mb-6">
-                    <p className="text-6xl font-black text-secondary drop-shadow-sm">{averageRating.toFixed(1)}</p>
-                    <div className="flex justify-center mt-3 gap-1">
-                      {[1, 2, 3, 4, 5].map(s => <Star key={s} className={`w-4 h-4 ${s <= Math.round(averageRating) ? "fill-amber-500 text-amber-500" : "text-slate-200 dark:text-zinc-800"}`} />)}
-                    </div>
-                  </div>
-                </Card>
-              </div>
 
               {/* 📋 Reviews List */}
               <div className="lg:col-span-2 space-y-6">

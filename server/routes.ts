@@ -2126,7 +2126,7 @@ export async function registerRoutes(
     },
   );
 
-  // 🟢 FIX: Added documentAccessLimiter here
+  // FIX: Added documentAccessLimiter here
   app.get(
     "/api/documents/:filename",
     documentAccessLimiter,
