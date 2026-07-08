@@ -662,42 +662,19 @@ export default function DoctorSchedule() {
                 </SelectContent>
               </Select>
             </div>
-          ) : (
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label>Start Time</Label>
-                <Select 
-                  value={newSlot.startTime} 
-                  onValueChange={(v) => {
-                    setNewSlot(prev => ({ 
-                      ...prev, 
-                      startTime: v,
-                      endTime: prev.endTime <= v ? timeSlots[timeSlots.indexOf(v) + 1] || v : prev.endTime 
-                    }));
-                  }}
-                >
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent className="max-h-[200px]">
-                    {currentAvailableStartTimes.map((time) => (
-                      <SelectItem key={time} value={time}>{formatTimeAMPM(time)}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
 
-              <div className="space-y-2">
-                <Label>End Time</Label>
-                <Select value={newSlot.endTime} onValueChange={(v) => setNewSlot({ ...newSlot, endTime: v })}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent className="max-h-[200px]">
-                    {validEndTimes.map((time) => (
-                      <SelectItem key={time} value={time}>{formatTimeAMPM(time)}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
+            <div className="space-y-2">
+              <Label>End Time</Label>
+              <Select value={newSlot.endTime} onValueChange={(v) => setNewSlot({ ...newSlot, endTime: v })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent className="max-h-[200px]">
+                  {timeSlots.filter(t => t > newSlot.startTime).map((time) => (
+                    <SelectItem key={time} value={time}>{formatTimeAMPM(time)}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
-          )}
+          </div>
 
           {/* Mode Picker */}
           <div className="space-y-2">
