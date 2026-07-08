@@ -31,8 +31,7 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { AppointmentSlot, DoctorWithDetails } from "@shared/schema";
 import { Modal } from "@/components/ui/modal";
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@radix-ui/react-dialog";
-import { DialogFooter, DialogHeader } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
 const generateTimeSlots = () => {
   const slots = [];
@@ -46,9 +45,6 @@ const generateTimeSlots = () => {
   return slots;
 };
 const timeSlots = generateTimeSlots();
-
-// Seconds ain karala HH:mm format ekata ganna
-const normalizeTime = (t: string) => t ? t.substring(0, 5) : "";
 
 const isTimeOverlap = (s1: string, e1: string, s2: string, e2: string) => {
   // 9:00-9:30 saha 9:30-10:00 overlap wenne nathi wenna check kireema
