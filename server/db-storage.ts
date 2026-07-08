@@ -3065,25 +3065,47 @@ appointment: InsertAppointment, paymentData: InsertPayment, slotId: string, audi
     };
   }
 
-  async getAppointmentBySlotId(slotId: string): Promise<Appointment | undefined> {
-    const result = await db
+  async getDoctorExportData(
+    doctorId: string,
+    startDate: string,
+    endDate: string
+  ): Promise<{ payments: Payment[]; appointments: AppointmentWithDetails[] }> {
+    // Fetch payments within the date range
+    const paymentRows = await db
+      .select()
+      .from(payments)
+      .where(
+        and(
+          eq(payments.doctorId, doctorId),
+          gte(payments.createdAt, new Date(`${startDate}T00:00:00.000Z`)),
+          lte(payments.createdAt, new Date(`${endDate}T23:59:59.999Z`))
+        )
+      )
+      .orderBy(desc(payments.createdAt));
+
+    // Fetch appointments within the date range
+    const appointmentRows = await db
       .select()
       .from(appointments)
       .where(
         and(
-          eq(appointments.slotId, slotId),
-          inArray(appointments.status, [AppointmentStatus.PENDING, AppointmentStatus.CONFIRMED])
+          eq(appointments.doctorId, doctorId),
+          gte(appointments.appointmentDate, startDate),
+          lte(appointments.appointmentDate, endDate)
         )
       )
-      .limit(1);
-      
-    if (!result[0]) return undefined;
-    
-    return {
-      ...result[0],
-      createdAt: toISOString(result[0].createdAt),
-      updatedAt: toISOString(result[0].updatedAt),
-    } as Appointment;
+      .orderBy(desc(appointments.appointmentDate));
+
+    const detailedAppointments = await this.buildAppointmentsWithDetails(appointmentRows);
+
+    return { 
+      payments: paymentRows.map(p => ({
+        ...p,
+        createdAt: toISOString(p.createdAt),
+        updatedAt: toISOString(p.updatedAt),
+      })) as Payment[], 
+      appointments: detailedAppointments 
+    };
   }
 }
 

@@ -323,7 +323,11 @@ export interface IStorage {
   getPaginatedAuditLogs(page: number, limit: number): Promise<any>;
   updateDoctorHospital(doctorProfileId: string, hospitalId: string, updates: Partial<InsertHospital>): Promise<Hospital | null>;
   getDoctorDetailedAnalytics(doctorId: string): Promise<DoctorDetailedAnalytics>;
-  getAppointmentBySlotId(slotId: string): Promise<Appointment | undefined>;
+  getDoctorExportData(
+    doctorId: string,
+    startDate: string,
+    endDate: string
+  ): Promise<{ payments: Payment[]; appointments: AppointmentWithDetails[] }>;
 }
 
 export class MemStorage implements IStorage {
@@ -1908,6 +1912,21 @@ export class MemStorage implements IStorage {
   }
   async getPaginatedAuditLogs(page: number, limit: number): Promise<any> {
     return { data: [], totalCount: 0, totalPages: 1, currentPage: page };
+  }
+
+  async getDoctorExportData(
+    doctorId: string,
+    startDate: string,
+    endDate: string
+  ): Promise<{ payments: Payment[]; appointments: AppointmentWithDetails[] }> {
+    const payments = Array.from(this.payments.values()).filter(
+      (p) => p.doctorId === doctorId && p.createdAt >= startDate && p.createdAt <= endDate + "T23:59:59.999Z"
+    );
+    const appointments = await this.getDoctorAppointments(doctorId);
+    const filteredAppointments = appointments.filter(
+      (a) => a.appointmentDate >= startDate && a.appointmentDate <= endDate
+    );
+    return { payments, appointments: filteredAppointments };
   }
 }
 
