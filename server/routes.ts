@@ -2126,7 +2126,7 @@ export async function registerRoutes(
     },
   );
 
-  // 🟢 FIX: Added documentAccessLimiter here
+  // FIX: Added documentAccessLimiter here
   app.get(
     "/api/documents/:filename",
     documentAccessLimiter,
@@ -3038,10 +3038,21 @@ export async function registerRoutes(
           doctorId: profile.id,
         });
 
+        const now = new Date();
+        // Server time eken ada dawasa saha current time eka gannawa
+        const serverToday = now.toISOString().split("T")[0];
+        const currentTimeStr = `${now.getHours().toString().padStart(2, "0")}:${now.getMinutes().toString().padStart(2, "0")}`;
+
+        if (data.date === serverToday && data.startTime < currentTimeStr) {
+          return res.status(400).json({ error: "Cannot schedule slots for past times today." });
+        }
+
         const existingSlots = await storage.getAvailableSlots(profile.id, data.date);
-        
+
+        const normalizeTime = (t: string) => (t ? t.substring(0, 5) : "");
+
         const isOverlap = (s1: string, e1: string, s2: string, e2: string) => {
-          return s1 < e2 && s2 < e1; // This is actually correct. The problem is usually in the frontend UI state or buffer logic. Let's ensure this strictly checks exclusive bounds.
+          return normalizeTime(s1) < normalizeTime(e2) && normalizeTime(s2) < normalizeTime(e1);
         };
 
         const hasOverlap = existingSlots.some((slot) => 
@@ -7176,48 +7187,62 @@ export async function registerRoutes(
     }
   );
 
-  app.patch(
-    "/api/slots/:id/cancel-booking",
+  app.post(
+    "/api/doctor/export",
     authMiddleware,
     roleMiddleware(UserRole.DOCTOR),
     async (req: AuthenticatedRequest, res: Response) => {
       try {
-        const slotId = req.params.id;
-        const { reason } = req.body;
-
-        if (!reason) {
-          return res.status(400).json({ error: "Cancellation reason is required" });
-        }
-
+        const { startDate, endDate, reportType, format } = req.body;
+        
         const profile = await storage.getDoctorProfileByUserId(req.user!.id);
-        if (!profile) {
-          return res.status(404).json({ error: "Doctor profile not found" });
+        if (!profile) return res.status(404).json({ error: "Doctor profile not found" });
+
+        const data = await storage.getDoctorExportData(profile.id, startDate, endDate);
+
+        if (format === "json") {
+          return res.json({
+            reportGeneratedAt: new Date().toISOString(),
+            dateRange: { startDate, endDate },
+            data: {
+              ...(reportType === "earnings" || reportType === "all" ? { payments: data.payments } : {}),
+              ...(reportType === "appointments" || reportType === "all" ? { appointments: data.appointments } : {}),
+            }
+          });
         }
 
-        const slot = await storage.getAppointmentSlot(slotId);
-        if (!slot || slot.doctorId !== profile.id) {
-          return res.status(403).json({ error: "Not authorized" });
+        // Generate CSV format
+        if (format === "csv") {
+          let csvContent = `Report Generated: ${new Date().toISOString()}\nDate Range: ${startDate} to ${endDate}\n\n`;
+
+          if (reportType === "earnings" || reportType === "all") {
+            csvContent += "--- EARNINGS REPORT ---\n";
+            csvContent += "Date,Status,Method,Total Amount (LKR),Platform Commission (LKR),Your Earnings (LKR)\n";
+            data.payments.forEach(p => {
+              csvContent += `"${p.createdAt.split('T')[0]}","${p.status}","${p.method}","${p.totalAmount}","${p.platformCommission}","${p.doctorEarnings}"\n`;
+            });
+            csvContent += "\n";
+          }
+
+          if (reportType === "appointments" || reportType === "all") {
+            csvContent += "--- APPOINTMENTS REPORT ---\n";
+            csvContent += "Date,Time,Patient Name,Type,Status,Symptoms\n";
+            data.appointments.forEach(a => {
+              // Wrap strings in quotes to avoid CSV breaking on commas inside text
+              const safeSymptoms = a.symptoms.replace(/"/g, '""');
+              csvContent += `"${a.appointmentDate}","${a.appointmentTime}","${a.patient.fullName}","${a.consultationType}","${a.status}","${safeSymptoms}"\n`;
+            });
+          }
+
+          res.setHeader('Content-Type', 'text/csv');
+          res.setHeader('Content-Disposition', `attachment; filename=doctor_report_${startDate}_to_${endDate}.csv`);
+          return res.status(200).send(csvContent);
         }
 
-        // 1. Get the active appointment linked to this slot
-        const appointment = await storage.getAppointmentBySlotId(slotId);
-        if (!appointment) {
-          return res.status(404).json({ error: "No active appointment found for this slot" });
-        }
-
-        // 2. Cancel the appointment (Handles refunds and notifications)
-        const cancelled = await storage.cancelAppointment(
-          appointment.id,
-          reason,
-          req.user!.role
-        );
-
-        await storage.blockSlot(slotId);
-
-        res.json({ success: true, appointment: cancelled });
+        res.status(400).json({ error: "Invalid format requested" });
       } catch (error) {
-        console.error("Error cancelling booked slot:", error);
-        res.status(500).json({ error: "Failed to cancel appointment" });
+        console.error("Export Error:", error);
+        res.status(500).json({ error: "Failed to generate report" });
       }
     }
   );

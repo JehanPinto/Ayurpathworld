@@ -56,6 +56,16 @@ export default function DoctorEarnings() {
   const [selectedDay, setSelectedDay] = useState<string>("all");
   const [debouncedSearch, setDebouncedSearch] = useState("");
 
+  // Export Modal States
+  const [isExportOpen, setIsExportOpen] = useState(false);
+  const [exportType, setExportType] = useState<"earnings" | "appointments" | "all">("all");
+  const [exportFormat, setExportFormat] = useState<"csv" | "json">("csv");
+  const [exportDateRange, setExportDateRange] = useState("all_time");
+
+  // Custom Date Range States
+  const [customStartDate, setCustomStartDate] = useState(format(startOfMonth(new Date()), "yyyy-MM-dd"));
+  const [customEndDate, setCustomEndDate] = useState(format(new Date(), "yyyy-MM-dd"));
+  
   useEffect(() => {
     const handler = setTimeout(() => {
       setDebouncedSearch(searchQuery);

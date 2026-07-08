@@ -1328,3 +1328,12 @@ export type InsertAuditLog = z.infer<typeof insertAuditLogSchemaDb>;
 export const insertRefundSchemaDb = createInsertSchema(refunds).omit({ id: true, createdAt: true, updatedAt: true, processedAt: true });
 export type Refund = typeof refunds.$inferSelect;
 export type InsertRefund = z.infer<typeof insertRefundSchemaDb>;
+
+export const doctorExportSchema = z.object({
+  startDate: z.string().min(10, "Start date is required"),
+  endDate: z.string().min(10, "End date is required"),
+  reportType: z.enum(["earnings", "appointments", "all"]),
+  format: z.enum(["csv", "json"]),
+});
+
+export type DoctorExportInput = z.infer<typeof doctorExportSchema>;
