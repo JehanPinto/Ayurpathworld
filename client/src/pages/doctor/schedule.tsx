@@ -31,6 +31,7 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { AppointmentSlot, DoctorWithDetails } from "@shared/schema";
 import { Modal } from "@/components/ui/modal";
+import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
 const generateTimeSlots = () => {
@@ -45,6 +46,14 @@ const generateTimeSlots = () => {
   return slots;
 };
 const timeSlots = generateTimeSlots();
+
+// Normalize a time string (e.g. "9:00", "09:00", "09:00:00") to a padded "HH:MM"
+// so it can be compared lexicographically and formatted consistently.
+const normalizeTime = (time: string) => {
+  if (!time) return "";
+  const [h, m] = time.split(":");
+  return `${(h ?? "00").padStart(2, "0")}:${(m ?? "00").padStart(2, "0")}`;
+};
 
 const isTimeOverlap = (s1: string, e1: string, s2: string, e2: string) => {
   // 9:00-9:30 saha 9:30-10:00 overlap wenne nathi wenna check kireema
@@ -520,7 +529,7 @@ export default function DoctorSchedule() {
                 id="cancel-reason"
                 placeholder="E.g., Unexpected personal emergency, clinic closure..."
                 value={cancelReason}
-                onChange={(e) => setCancelReason(e.target.value)}
+                onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setCancelReason(e.target.value)}
                 className="resize-none"
                 rows={3}
               />
