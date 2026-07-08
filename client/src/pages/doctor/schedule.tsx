@@ -630,33 +630,47 @@ export default function DoctorSchedule() {
           </div>
 
           {/* Time Pickers */}
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <Label>Start Time</Label>
-              <Select 
-                value={newSlot.startTime} 
-                onValueChange={(v) => {
-                  setNewSlot(prev => ({ 
-                    ...prev, 
-                    startTime: v,
-                    endTime: prev.endTime <= v ? timeSlots[timeSlots.indexOf(v) + 1] || v : prev.endTime 
-                  }));
-                }}
-              >
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent className="max-h-[200px]">
-                  {timeSlots.map((time) => {
-                    // Ada dawase past time ekak nam option eka disable karanawa
-                    const isPastTime = newSlot.date === todayDateStr && time < getCurrentTimeStr();
-                    
-                    return (
-                      <SelectItem key={time} value={time} disabled={isPastTime}>
-                        {formatTimeAMPM(time)}
-                      </SelectItem>
-                    );
-                  })}
-                </SelectContent>
-              </Select>
+          {newSlot.date === todayDateStr ? (
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>Start Time</Label>
+                <Select 
+                  value={newSlot.startTime} 
+                  onValueChange={(v) => {
+                    setNewSlot(prev => ({ 
+                      ...prev, 
+                      startTime: v,
+                      endTime: prev.endTime <= v ? timeSlots[timeSlots.indexOf(v) + 1] || v : prev.endTime 
+                    }));
+                  }}
+                >
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent className="max-h-[200px]">
+                    {timeSlots.map((time) => {
+                      // Ada dawase past time ekak nam option eka disable karanawa
+                      const isPastTime = newSlot.date === todayDateStr && time < getCurrentTimeStr();
+                      
+                      return (
+                        <SelectItem key={time} value={time} disabled={isPastTime}>
+                          {formatTimeAMPM(time)}
+                        </SelectItem>
+                      );
+                    })}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label>End Time</Label>
+                <Select value={newSlot.endTime} onValueChange={(v) => setNewSlot({ ...newSlot, endTime: v })}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent className="max-h-[200px]">
+                    {validEndTimes.map((time) => (
+                      <SelectItem key={time} value={time}>{formatTimeAMPM(time)}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
           ) : (
             <div className="grid grid-cols-2 gap-4">
