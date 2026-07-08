@@ -132,46 +132,65 @@ function formatTime12h(time?: string | null): string {
   return `${hour12}:${m.toString().padStart(2, "0")} ${period}`;
 }
 
-const loginLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: process.env.NODE_ENV === "production" ? 10 : 100,
-  message: { error: "Too many login attempts. Please try again in 15 minutes." },
-  standardHeaders: true,
-  legacyHeaders: false,
-  skipSuccessfulRequests: true,
-});
+// ─── LOAD TESTING MODE ───────────────────────────────────────────────────────
+// Set LOAD_TESTING=true in AWS Elastic Beanstalk environment properties to
+// bypass all rate limits during load tests.
+// Remove the flag (or set it to anything else) to restore normal limits.
+// No code changes needed to toggle this.
+const IS_LOAD_TESTING = process.env.LOAD_TESTING === "true";
+const noopMiddleware: import("express").RequestHandler = (_req, _res, next) => next();
+// ─────────────────────────────────────────────────────────────────────────────
 
-const registrationLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000,
-  max: process.env.NODE_ENV === "production" ? 3 : 100,
-  message: { error: "Too many registration attempts, try again later" },
-  standardHeaders: true,
-  legacyHeaders: false,
-});
+const loginLimiter = IS_LOAD_TESTING
+  ? noopMiddleware
+  : rateLimit({
+      windowMs: 15 * 60 * 1000,
+      max: process.env.NODE_ENV === "production" ? 10 : 100,
+      message: { error: "Too many login attempts. Please try again in 15 minutes." },
+      standardHeaders: true,
+      legacyHeaders: false,
+      skipSuccessfulRequests: true,
+    });
 
-const uploadLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: process.env.NODE_ENV === "production" ? 10 : 1000,
-  message: { error: "Too many upload attempts, try again later" },
-  standardHeaders: true,
-  legacyHeaders: false,
-});
+const registrationLimiter = IS_LOAD_TESTING
+  ? noopMiddleware
+  : rateLimit({
+      windowMs: 60 * 60 * 1000,
+      max: process.env.NODE_ENV === "production" ? 3 : 100,
+      message: { error: "Too many registration attempts, try again later" },
+      standardHeaders: true,
+      legacyHeaders: false,
+    });
 
-const publicApiLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: process.env.NODE_ENV === "production" ? 100 : 500,
-  message: { error: "Too many requests to public endpoints, please try again later." },
-  standardHeaders: true,
-  legacyHeaders: false,
-});
+const uploadLimiter = IS_LOAD_TESTING
+  ? noopMiddleware
+  : rateLimit({
+      windowMs: 15 * 60 * 1000,
+      max: process.env.NODE_ENV === "production" ? 10 : 1000,
+      message: { error: "Too many upload attempts, try again later" },
+      standardHeaders: true,
+      legacyHeaders: false,
+    });
 
-const documentAccessLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: process.env.NODE_ENV === "production" ? 30 : 200,
-  message: { error: "Too many document access attempts, please try again later." },
-  standardHeaders: true,
-  legacyHeaders: false,
-});
+const publicApiLimiter = IS_LOAD_TESTING
+  ? noopMiddleware
+  : rateLimit({
+      windowMs: 15 * 60 * 1000,
+      max: process.env.NODE_ENV === "production" ? 100 : 500,
+      message: { error: "Too many requests to public endpoints, please try again later." },
+      standardHeaders: true,
+      legacyHeaders: false,
+    });
+
+const documentAccessLimiter = IS_LOAD_TESTING
+  ? noopMiddleware
+  : rateLimit({
+      windowMs: 15 * 60 * 1000,
+      max: process.env.NODE_ENV === "production" ? 30 : 200,
+      message: { error: "Too many document access attempts, please try again later." },
+      standardHeaders: true,
+      legacyHeaders: false,
+    });
 
 interface RegistrationSession {
   token: string;
