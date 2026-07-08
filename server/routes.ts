@@ -3038,10 +3038,21 @@ export async function registerRoutes(
           doctorId: profile.id,
         });
 
+        const now = new Date();
+        // Server time eken ada dawasa saha current time eka gannawa
+        const serverToday = now.toISOString().split("T")[0];
+        const currentTimeStr = `${now.getHours().toString().padStart(2, "0")}:${now.getMinutes().toString().padStart(2, "0")}`;
+
+        if (data.date === serverToday && data.startTime < currentTimeStr) {
+          return res.status(400).json({ error: "Cannot schedule slots for past times today." });
+        }
+
         const existingSlots = await storage.getAvailableSlots(profile.id, data.date);
-        
+
+        const normalizeTime = (t: string) => (t ? t.substring(0, 5) : "");
+
         const isOverlap = (s1: string, e1: string, s2: string, e2: string) => {
-          return s1 < e2 && s2 < e1; // This is actually correct. The problem is usually in the frontend UI state or buffer logic. Let's ensure this strictly checks exclusive bounds.
+          return normalizeTime(s1) < normalizeTime(e2) && normalizeTime(s2) < normalizeTime(e1);
         };
 
         const hasOverlap = existingSlots.some((slot) => 
