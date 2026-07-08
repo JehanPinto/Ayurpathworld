@@ -31,8 +31,7 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { AppointmentSlot, DoctorWithDetails } from "@shared/schema";
 import { Modal } from "@/components/ui/modal";
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@radix-ui/react-dialog";
-import { DialogFooter, DialogHeader } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
 const generateTimeSlots = () => {
   const slots = [];
@@ -46,9 +45,6 @@ const generateTimeSlots = () => {
   return slots;
 };
 const timeSlots = generateTimeSlots();
-
-// Seconds ain karala HH:mm format ekata ganna
-const normalizeTime = (t: string) => t ? t.substring(0, 5) : "";
 
 const isTimeOverlap = (s1: string, e1: string, s2: string, e2: string) => {
   // 9:00-9:30 saha 9:30-10:00 overlap wenne nathi wenna check kireema
@@ -634,33 +630,47 @@ export default function DoctorSchedule() {
           </div>
 
           {/* Time Pickers */}
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <Label>Start Time</Label>
-              <Select 
-                value={newSlot.startTime} 
-                onValueChange={(v) => {
-                  setNewSlot(prev => ({ 
-                    ...prev, 
-                    startTime: v,
-                    endTime: prev.endTime <= v ? timeSlots[timeSlots.indexOf(v) + 1] || v : prev.endTime 
-                  }));
-                }}
-              >
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent className="max-h-[200px]">
-                  {timeSlots.map((time) => {
-                    // Ada dawase past time ekak nam option eka disable karanawa
-                    const isPastTime = newSlot.date === todayDateStr && time < getCurrentTimeStr();
-                    
-                    return (
-                      <SelectItem key={time} value={time} disabled={isPastTime}>
-                        {formatTimeAMPM(time)}
-                      </SelectItem>
-                    );
-                  })}
-                </SelectContent>
-              </Select>
+          {newSlot.date === todayDateStr ? (
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>Start Time</Label>
+                <Select 
+                  value={newSlot.startTime} 
+                  onValueChange={(v) => {
+                    setNewSlot(prev => ({ 
+                      ...prev, 
+                      startTime: v,
+                      endTime: prev.endTime <= v ? timeSlots[timeSlots.indexOf(v) + 1] || v : prev.endTime 
+                    }));
+                  }}
+                >
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent className="max-h-[200px]">
+                    {timeSlots.map((time) => {
+                      // Ada dawase past time ekak nam option eka disable karanawa
+                      const isPastTime = newSlot.date === todayDateStr && time < getCurrentTimeStr();
+                      
+                      return (
+                        <SelectItem key={time} value={time} disabled={isPastTime}>
+                          {formatTimeAMPM(time)}
+                        </SelectItem>
+                      );
+                    })}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label>End Time</Label>
+                <Select value={newSlot.endTime} onValueChange={(v) => setNewSlot({ ...newSlot, endTime: v })}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent className="max-h-[200px]">
+                    {validEndTimes.map((time) => (
+                      <SelectItem key={time} value={time}>{formatTimeAMPM(time)}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
 
             <div className="space-y-2">
