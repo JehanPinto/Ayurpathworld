@@ -291,7 +291,8 @@ export default function BookAppointmentPage() {
             merchant_id: hashData.merchant_id,
             return_url: window.location.href,
             cancel_url: window.location.href,
-            notify_url: "https://localhost:5000/api/payhere/notify",
+            // notify_url: "https://localhost:5000/api/payhere/notify",     //   <- meka local ekedi
+            notify_url: "https://dev.ayurpath.world/api/payhere/notify",    //   <- meka host ekedi 
             order_id: `booking-${appointmentData.id}`,
             items: "AyurPath Consultation",
             amount: hashData.formattedAmount,
