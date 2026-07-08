@@ -51,6 +51,12 @@ export const PaymentMethod = {
   AT_CLINIC: "at_clinic",
 } as const;
 
+export const RefundStatus = {
+  PROCESSING: "processing",
+  COMPLETED: "completed",
+  NOT_ELIGIBLE: "not_eligible",
+} as const;
+
 export const ConsultationType = {
   IN_PERSON: "in_person",
   ONLINE: "online",
@@ -289,6 +295,11 @@ export const payments = pgTable("payments", {
   refundAmount: integer("refund_amount"),
   refundReason: text("refund_reason"),
   refundDate: varchar("refund_date", { length: 10 }),
+  cancellationFee: integer("cancellation_fee"),
+  refundStatus: varchar("refund_status", { length: 20 }),
+  refundBankName: varchar("refund_bank_name", { length: 255 }),
+  refundAccountNumber: varchar("refund_account_number", { length: 50 }),
+  refundBranch: varchar("refund_branch", { length: 255 }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => ({
@@ -857,6 +868,17 @@ export const insertPaymentSchema = z.object({
   refundAmount: z.number().optional(),
   refundReason: z.string().optional(),
   refundDate: z.string().optional(),
+  cancellationFee: z.number().min(0).optional(),
+  refundStatus: z
+    .enum([
+      RefundStatus.PROCESSING,
+      RefundStatus.COMPLETED,
+      RefundStatus.NOT_ELIGIBLE,
+    ])
+    .optional(),
+  refundBankName: z.string().optional(),
+  refundAccountNumber: z.string().optional(),
+  refundBranch: z.string().optional(),
 });
 
 export type InsertPayment = z.infer<typeof insertPaymentSchema>;
