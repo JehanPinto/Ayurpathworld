@@ -970,6 +970,7 @@ export async function registerRoutes(
         res.status(201).json({ user: userWithoutPassword, token });
 
       } catch (error) {
+        console.error("Doctor registration failed:", error);
         const tFailed = new Date().toISOString();
         const { ipAddress, device, location, sessionId } = getReqInfo(req);
         const { actorId, actorRole } = await getActorInfo(req);
@@ -1003,16 +1004,33 @@ export async function registerRoutes(
           return res.status(400).json({ error: "Validation failed", details: error.errors });
         }
 
+        if ((error as any)?.code === '23505' && (error as any)?.constraint === 'doctor_profiles_registration_number_unique') {
+          try {
+            await storage.createAuditLog({
+              actorId, actorRole,
+              action: 'DOCTOR_REGISTERED', status: 'failed',
+              entityType: 'user', entityId: 'N/A',
+              ipAddress, device, location, sessionId: 'N/A',
+              metadata: {
+                auditType: "AUTH",
+                reason: 'validation failed (400 Bad Request) - duplicate registration number',
+                timeline: { requestReceivedAt: tRequestReceived, completedAt: tFailed }
+              }
+            });
+          } catch (e) {}
+          return res.status(400).json({ error: "This registration number is already registered. Please check your registration number and try again." });
+        }
+
         try {
           await storage.createAuditLog({
-            actorId, actorRole, 
+            actorId, actorRole,
             action: 'DOCTOR_REGISTERED', status: 'failed',
-            entityType: 'system', entityId: 'N/A', 
+            entityType: 'system', entityId: 'N/A',
             ipAddress, device, location, sessionId: 'N/A',
-            metadata: { 
+            metadata: {
               auditType: "AUTH",
-              reason: 'server error (500)', 
-              timeline: { requestReceivedAt: tRequestReceived, completedAt: tFailed } 
+              reason: 'server error (500)',
+              timeline: { requestReceivedAt: tRequestReceived, completedAt: tFailed }
             }
           });
         } catch (e) {}
@@ -1675,6 +1693,7 @@ export async function registerRoutes(
         const { password: _, ...userWithoutPassword } = updatedUser;
         res.cookie("token", token, cookieOptions).json({ user: userWithoutPassword, token });
       } catch (error) {
+        console.error("Failed to complete registration:", error);
         const tFailed = new Date().toISOString();
         if (error instanceof z.ZodError) {
           try {
@@ -2048,6 +2067,7 @@ export async function registerRoutes(
 
       res.json({ token, email });
     } catch (error) {
+      console.error("Failed to create registration session:", error);
       res.status(500).json({ error: "Failed to create registration session" });
     }
   });
