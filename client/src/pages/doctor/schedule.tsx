@@ -672,19 +672,7 @@ export default function DoctorSchedule() {
                 </Select>
               </div>
             </div>
-
-            <div className="space-y-2">
-              <Label>End Time</Label>
-              <Select value={newSlot.endTime} onValueChange={(v) => setNewSlot({ ...newSlot, endTime: v })}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent className="max-h-[200px]">
-                  {timeSlots.filter(t => t > newSlot.startTime).map((time) => (
-                    <SelectItem key={time} value={time}>{formatTimeAMPM(time)}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
+          ) : null}
 
           {/* Mode Picker */}
           <div className="space-y-2">
