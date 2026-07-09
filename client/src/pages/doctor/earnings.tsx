@@ -1,6 +1,5 @@
 import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { format, startOfMonth } from "date-fns";
 import {
   Download,
   AlertTriangle,
@@ -21,13 +20,17 @@ import {
   Activity,
   Info,
   Hourglass,
-  CheckSquare
+  CheckSquare,
+  ArrowDown,
+  FileJson,
+  FileText,
+  CalendarDays
 } from "lucide-react";
 import { BarChart, Bar, XAxis, Tooltip, ResponsiveContainer } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { LoadingPage } from "@/components/ui/loading-spinner";
+import { LoadingPage, LoadingSpinner  } from "@/components/ui/loading-spinner";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -35,6 +38,7 @@ import { Modal } from "@/components/ui/modal";
 import { Pagination } from "@/components/ui/pagination";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { endOfMonth, format, parseISO, startOfMonth, subMonths } from "date-fns";
 
 export default function DoctorEarnings() {
   const { toast } = useToast();
@@ -97,6 +101,60 @@ export default function DoctorEarnings() {
       const res = await fetch("/api/booking-settings");
       if (!res.ok) throw new Error("Failed to load settings");
       return res.json();
+    }
+  });
+
+  const exportMutation = useMutation({
+    mutationFn: async () => {
+      let start = customStartDate;
+      let end = customEndDate;
+      const today = new Date();
+
+      // Add the "all_time" condition here
+      if (exportDateRange === "all_time") {
+        start = "2020-01-01"; // Set a past date to cover everything
+        end = format(today, "yyyy-MM-dd");
+      } else if (exportDateRange === "this_month") {
+        start = format(startOfMonth(today), "yyyy-MM-dd");
+        end = format(endOfMonth(today), "yyyy-MM-dd");
+      } else if (exportDateRange === "last_month") {
+        const lastMonth = subMonths(today, 1);
+        start = format(startOfMonth(lastMonth), "yyyy-MM-dd");
+        end = format(endOfMonth(lastMonth), "yyyy-MM-dd");
+      }
+
+      const res = await fetch("/api/doctor/export", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${localStorage.getItem("token")}`,
+        },
+        body: JSON.stringify({
+          startDate: start,
+          endDate: end,
+          reportType: exportType,
+          format: exportFormat
+        }),
+      });
+
+      if (!res.ok) throw new Error("Export failed");
+      
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `AyurPath_Report_${start}_to_${end}.${exportFormat}`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      a.remove();
+    },
+    onSuccess: () => {
+      toast({ title: "Report downloaded successfully!" });
+      setIsExportOpen(false);
+    },
+    onError: () => {
+      toast({ title: "Failed to generate report", variant: "destructive" });
     }
   });
 
@@ -193,8 +251,9 @@ export default function DoctorEarnings() {
           <Button onClick={() => setIsWithdrawModalOpen(true)} className="bg-secondary hover:bg-secondary/90 text-secondary-foreground rounded-full shadow-sm font-bold">
             <Landmark className="w-4 h-4 mr-2" /> Withdraw Funds
           </Button>
-          <Button className="bg-primary hover:bg-primary/90 text-primary-foreground rounded-full shadow-sm font-bold">
-            Export Report <Download className="w-4 h-4 ml-2" />
+          <Button onClick={() => setIsExportOpen(true)} className="bg-emerald-600 hover:bg-emerald-700 text-white">
+            <Download className="h-4 w-4 mr-2" />
+            Export Report
           </Button>
         </div>
       </div>
@@ -698,7 +757,101 @@ export default function DoctorEarnings() {
 
         </div>
       </Modal>
+      
+      <Modal
+        isOpen={isExportOpen}
+        onClose={() => setIsExportOpen(false)}
+        title="Export Data Report"
+        description="Download your earnings and appointment history for your personal records."
+        icon={<Download className="w-6 h-6 text-emerald-600" />}
+        footer={
+          <>
+            <Button variant="outline" onClick={() => setIsExportOpen(false)}>Cancel</Button>
+            <Button onClick={() => exportMutation.mutate()} disabled={exportMutation.isPending} className="bg-emerald-600 hover:bg-emerald-700 text-white">
+              {exportMutation.isPending ? <LoadingSpinner size="sm" className="mr-2" /> : <Download className="w-4 h-4 mr-2" />}
+              {exportMutation.isPending ? "Generating..." : "Download File"}
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-5 py-2">
+          
+          {/* Data to Include */}
+          <div className="space-y-2">
+            <Label className="text-foreground font-semibold">Data to Include</Label>
+            <div className="grid grid-cols-3 gap-2">
+              <button
+                className={`flex flex-col items-center justify-center p-3 rounded-lg border text-sm transition-colors ${exportType === "all" ? "bg-emerald-50 border-emerald-500 text-emerald-700" : "bg-card hover:bg-muted"}`}
+                onClick={() => setExportType("all")}
+              >
+                <FileText className="w-5 h-5 mb-1 opacity-80" /> All Data
+              </button>
+              <button
+                className={`flex flex-col items-center justify-center p-3 rounded-lg border text-sm transition-colors ${exportType === "earnings" ? "bg-emerald-50 border-emerald-500 text-emerald-700" : "bg-card hover:bg-muted"}`}
+                onClick={() => setExportType("earnings")}
+              >
+                <DollarSign className="w-5 h-5 mb-1 opacity-80" /> Earnings
+              </button>
+              <button
+                className={`flex flex-col items-center justify-center p-3 rounded-lg border text-sm transition-colors ${exportType === "appointments" ? "bg-emerald-50 border-emerald-500 text-emerald-700" : "bg-card hover:bg-muted"}`}
+                onClick={() => setExportType("appointments")}
+              >
+                <CalendarDays className="w-5 h-5 mb-1 opacity-80" /> Appointments
+              </button>
+            </div>
+          </div>
 
+          {/* Date Range */}
+          <div className="space-y-3 border-t pt-4">
+            <Label className="text-foreground font-semibold">Date Range</Label>
+            <Select value={exportDateRange} onValueChange={setExportDateRange}>
+              <SelectTrigger>
+                <SelectValue placeholder="Select date range" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all_time">All Time</SelectItem>
+                <SelectItem value="this_month">This Month</SelectItem>
+                <SelectItem value="last_month">Last Month</SelectItem>
+                <SelectItem value="custom">Custom Date Range</SelectItem>
+              </SelectContent>
+            </Select>
+
+            {exportDateRange === "custom" && (
+              <div className="grid grid-cols-2 gap-3 pt-2 animate-in slide-in-from-top-2">
+                <div className="space-y-1.5">
+                  <Label className="text-xs text-muted-foreground">Start Date</Label>
+                  <Input type="date" value={customStartDate} onChange={(e) => setCustomStartDate(e.target.value)} max={customEndDate} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs text-muted-foreground">End Date</Label>
+                  <Input type="date" value={customEndDate} onChange={(e) => setCustomEndDate(e.target.value)} min={customStartDate} max={format(new Date(), "yyyy-MM-dd")} />
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* File Format */}
+          <div className="space-y-2 border-t pt-4">
+            <Label className="text-foreground font-semibold">File Format</Label>
+            <div className="flex gap-2">
+              <button
+                className={`flex-1 flex items-center justify-center gap-2 p-2.5 rounded-lg border text-sm transition-colors ${exportFormat === "csv" ? "bg-emerald-50 border-emerald-500 text-emerald-700" : "bg-card hover:bg-muted"}`}
+                onClick={() => setExportFormat("csv")}
+              >
+                <FileText className="w-4 h-4" /> CSV (Excel)
+              </button>
+              <button
+                className={`flex-1 flex items-center justify-center gap-2 p-2.5 rounded-lg border text-sm transition-colors ${exportFormat === "json" ? "bg-emerald-50 border-emerald-500 text-emerald-700" : "bg-card hover:bg-muted"}`}
+                onClick={() => setExportFormat("json")}
+              >
+                <FileJson className="w-4 h-4" /> JSON Data
+              </button>
+            </div>
+            <p className="text-xs text-muted-foreground text-center pt-1">CSV format is highly recommended for opening in Microsoft Excel or Google Sheets.</p>
+          </div>
+
+        </div>
+      </Modal>
     </div>
   );
 }

@@ -329,6 +329,11 @@ export interface IStorage {
   getAdminPayoutsManagement(tab: string, page: number, limit: number, search: string): Promise<any>;
   processAdminPayout(payoutId: string, action: 'approve' | 'reject', adminId: string, rejectReason?: string): Promise<any>;
   processFreePayout(doctorId: string, amount: number, adminId: string): Promise<any>;
+  getDoctorExportData(
+    doctorId: string,
+    startDate: string,
+    endDate: string
+  ): Promise<{ payments: Payment[]; appointments: AppointmentWithDetails[] }>;
 }
 
 export class MemStorage implements IStorage {
