@@ -12,6 +12,7 @@ import {
   FileText,
   ChevronDown,
   MessageSquare,
+  Copy,
 } from "lucide-react";
 import { format, isToday, isTomorrow, parseISO, isPast } from "date-fns";
 import { Button } from "@/components/ui/button";
@@ -45,6 +46,8 @@ export default function DoctorAppointments() {
   const [consultationNotes, setConsultationNotes] = useState("");
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
   const [cancelReason, setCancelReason] = useState("");
+  const [callDialogOpen, setCallDialogOpen] = useState(false);
+  const [phoneCopied, setPhoneCopied] = useState(false);
 
   const { data: appointments = [], isLoading, isError } = useQuery<AppointmentWithDetails[]>({
     queryKey: ["/api/doctor/appointments"],
@@ -107,6 +110,27 @@ export default function DoctorAppointments() {
   const getInitials = (name: string) => {
     if (!name) return "PT";
     return name.split(" ").map(n => n[0]).join("").toUpperCase().slice(0, 2);
+  };
+
+  const handleCallPatient = (appointment: AppointmentWithDetails) => {
+    // Keep existing behaviour: notify patient + show "Called" badge
+    callMutation.mutate(appointment.id);
+    // Also open the phone number popup so the doctor can copy and dial
+    setSelectedAppointment(appointment);
+    setPhoneCopied(false);
+    setCallDialogOpen(true);
+  };
+
+  const handleCopyPhone = async () => {
+    const phone = selectedAppointment?.patient?.phone;
+    if (!phone) return;
+    try {
+      await navigator.clipboard.writeText(phone);
+      setPhoneCopied(true);
+      setTimeout(() => setPhoneCopied(false), 2000);
+    } catch {
+      toast({ title: "Failed to copy number", variant: "destructive" });
+    }
   };
 
   const formatTime = (timeStr: string | undefined) => {
@@ -330,7 +354,7 @@ export default function DoctorAppointments() {
                                 )}
                                 {appointment.status === "confirmed" && !appointment.isCalled && (
                                   <DropdownMenuItem
-                                    onClick={() => callMutation.mutate(appointment.id)}
+                                    onClick={() => handleCallPatient(appointment)}
                                     disabled={callMutation.isPending}
                                     data-testid={`action-call-${appointment.id}`}
                                   >
@@ -465,6 +489,54 @@ export default function DoctorAppointments() {
               {cancelMutation.isPending && <LoadingSpinner size="sm" className="mr-2" />}
               Cancel Appointment
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Call Patient — phone number popup */}
+      <Dialog open={callDialogOpen} onOpenChange={setCallDialogOpen}>
+        <DialogContent className="sm:max-w-sm" data-testid="dialog-call-patient">
+          <DialogHeader>
+            <DialogTitle>Call Patient</DialogTitle>
+            <DialogDescription>
+              Copy the patient's phone number and dial it from your phone.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col items-center gap-3 py-4">
+            <Avatar className="h-14 w-14">
+              <AvatarImage src={selectedAppointment?.patient?.profileImage} />
+              <AvatarFallback className="bg-violet-100 text-violet-600 font-semibold">
+                {getInitials(selectedAppointment?.patient?.fullName || "")}
+              </AvatarFallback>
+            </Avatar>
+            <p className="font-medium text-center" data-testid="text-call-patient-name">
+              {selectedAppointment?.patient?.fullName}
+            </p>
+            {selectedAppointment?.patient?.phone ? (
+              <p className="text-3xl font-bold tracking-wide tabular-nums" data-testid="text-call-patient-phone">
+                {selectedAppointment.patient.phone}
+              </p>
+            ) : (
+              <p className="text-sm text-muted-foreground">No phone number on file</p>
+            )}
+          </div>
+          <DialogFooter className="flex-row justify-center gap-2 sm:justify-center">
+            <Button variant="outline" onClick={() => setCallDialogOpen(false)} data-testid="button-call-close">
+              Close
+            </Button>
+            {selectedAppointment?.patient?.phone && (
+              <Button onClick={handleCopyPhone} data-testid="button-call-copy">
+                {phoneCopied ? (
+                  <>
+                    <Check className="h-4 w-4 mr-2" /> Copied!
+                  </>
+                ) : (
+                  <>
+                    <Copy className="h-4 w-4 mr-2" /> Copy Number
+                  </>
+                )}
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>
