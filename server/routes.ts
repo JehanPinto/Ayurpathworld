@@ -110,6 +110,35 @@ function validateDoctorFees(fees: { consultationFee?: number; onlineConsultation
 }
 
 // Bank details format validation
+// Compute the doctor's cancellation fee charged to a patient who cancels.
+// Returns 0 if the fee is disabled or the cancellation is outside the doctor's window.
+// The fee never exceeds the consultation fee.
+function computeDoctorCancellationFee(
+  doctor: {
+    cancellationFeeEnabled?: boolean | null;
+    cancellationFeeType?: string | null;
+    cancellationFeeAmount?: number | null;
+    cancellationWindowHours?: number | null;
+  } | undefined | null,
+  consultationFee: number,
+  appointmentDate: string,
+  appointmentTime: string,
+): number {
+  if (!doctor?.cancellationFeeEnabled) return 0;
+  const windowHours = doctor.cancellationWindowHours ?? 0;
+  if (windowHours > 0) {
+    const apptDateTime = new Date(`${appointmentDate}T${appointmentTime}`);
+    const hoursUntil = (apptDateTime.getTime() - Date.now()) / (1000 * 60 * 60);
+    if (hoursUntil > windowHours) return 0; // cancelled before the window → no fee
+  }
+  const rawAmount = doctor.cancellationFeeAmount || 0;
+  const fee =
+    doctor.cancellationFeeType === "percentage"
+      ? Math.round((consultationFee * rawAmount) / 100)
+      : rawAmount;
+  return Math.max(0, Math.min(fee, consultationFee));
+}
+
 function validateBankDetails(acc?: string | null, branch?: string | null) {
   if (acc && !/^\d{6,20}$/.test(acc.replace(/\s|-/g, ''))) {
     return "Invalid bank account number format (must be 6-20 digits)";
@@ -3701,17 +3730,34 @@ export async function registerRoutes(
 
       try {
 
-        if (req.user!.role === UserRole.PATIENT) {
-          return res.status(403).json({ error: "Patients are not allowed to cancel appointments directly." });
-        }
-
-        const { reason } = req.body;
+        const { reason, bankName, bankAccountNumber, bankBranch } = req.body;
         const existing = await storage.getAppointment(req.params.id);
 
         if (!existing) {
           return res.status(404).json({ error: "Appointment not found" });
         }
-        
+
+        const isPatient = req.user!.role === UserRole.PATIENT;
+        const PATIENT_DAILY_CANCEL_LIMIT = 5;
+
+        if (isPatient) {
+          // Patients may only cancel their own appointments.
+          if (existing.patientId !== req.user!.id) {
+            return res.status(403).json({ error: "You can only cancel your own appointments." });
+          }
+          // Enforce the daily cancellation limit.
+          const cancelledToday = await storage.countPatientCancellationsToday(req.user!.id);
+          if (cancelledToday >= PATIENT_DAILY_CANCEL_LIMIT) {
+            return res.status(429).json({
+              error: `You have reached your daily cancellation limit (${PATIENT_DAILY_CANCEL_LIMIT} per day). Please try again tomorrow.`,
+            });
+          }
+          // Bank details are required so the refund can be paid out.
+          if (!bankName?.trim() || !bankAccountNumber?.trim() || !bankBranch?.trim()) {
+            return res.status(400).json({ error: "Please provide your bank name, account number and branch for the refund." });
+          }
+        }
+
         const cancellableStatuses = [AppointmentStatus.PENDING, AppointmentStatus.CONFIRMED];
         if (!cancellableStatuses.includes(existing.status as AppointmentStatus)) {
           return res.status(400).json({
@@ -3719,17 +3765,38 @@ export async function registerRoutes(
           });
         }
 
+        const doctorProfile = await storage.getDoctorProfile(existing.doctorId);
+
+        // For a patient cancellation, work out the doctor's cancellation fee (deducted from the refund).
+        let patientCancellationFee = 0;
+        if (isPatient) {
+          const pmt = await storage.getPaymentByAppointment(existing.id);
+          const consultationRefundBase = pmt
+            ? pmt.totalAmount - (pmt.bookingCharges || 0) - (pmt.tax || 0)
+            : (doctorProfile?.consultationFee || 0);
+          patientCancellationFee = computeDoctorCancellationFee(
+            doctorProfile,
+            consultationRefundBase,
+            existing.appointmentDate,
+            existing.appointmentTime,
+          );
+        }
+
         const appointment = await storage.cancelAppointment(
           req.params.id,
           reason,
           req.user!.role,
+          isPatient
+            ? {
+                cancellationFee: patientCancellationFee,
+                refundBankName: bankName,
+                refundAccountNumber: bankAccountNumber,
+                refundBranch: bankBranch,
+              }
+            : undefined,
         );
 
         if (appointment && existing) {
-          const doctorProfile = await storage.getDoctorProfile(
-            existing.doctorId,
-          );
-
           // When the doctor cancels, charge the flat cancellation fee from platform settings
           if (req.user!.role === UserRole.DOCTOR && doctorProfile) {
             const platformSettings = await storage.getPlatformSettings();

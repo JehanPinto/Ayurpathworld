@@ -64,10 +64,13 @@ interface DashboardLayoutProps {
   children: ReactNode;
 }
 
-const patientNavItems = [
+const patientMainNavItems = [
   { icon: LayoutDashboard, label: "Dashboard", href: "/patient" },
-   { icon: Stethoscope, label: "Find Doctors", href: "/patient/find-doctors" },
+  { icon: Stethoscope, label: "Find Doctors", href: "/patient/find-doctors" },
   { icon: Calendar, label: "My Appointments", href: "/patient/appointments" },
+];
+
+const patientManagementNavItems = [
   { icon: Star, label: "My Reviews", href: "/patient/reviews" },
   { icon: Settings, label: "Settings", href: "/patient/settings" },
 ];
@@ -146,8 +149,6 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
       prefetch("/api/specializations");
     }
   }, [user?.id]);
-
-  const navItems = patientNavItems;
 
   const getInitials = (name: string) => {
     return name
@@ -322,23 +323,42 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
                 </SidebarGroup>
               </>
             ) : (
-              <SidebarGroup>
-                <SidebarGroupLabel>Navigation</SidebarGroupLabel>
-                <SidebarGroupContent>
-                  <SidebarMenu>
-                    {navItems.map((item) => (
-                      <SidebarMenuItem key={item.href}>
-                        <SidebarMenuButton asChild isActive={location === item.href}>
-                          <Link href={item.href}>
-                            <item.icon className="h-4 w-4" />
-                            <span>{item.label}</span>
-                          </Link>
-                        </SidebarMenuButton>
-                      </SidebarMenuItem>
-                    ))}
-                  </SidebarMenu>
-                </SidebarGroupContent>
-              </SidebarGroup>
+              <>
+                <SidebarGroup>
+                  <SidebarGroupLabel>Main</SidebarGroupLabel>
+                  <SidebarGroupContent>
+                    <SidebarMenu>
+                      {patientMainNavItems.map((item) => (
+                        <SidebarMenuItem key={item.href}>
+                          <SidebarMenuButton asChild isActive={location === item.href}>
+                            <Link href={item.href}>
+                              <item.icon className="h-4 w-4" />
+                              <span>{item.label}</span>
+                            </Link>
+                          </SidebarMenuButton>
+                        </SidebarMenuItem>
+                      ))}
+                    </SidebarMenu>
+                  </SidebarGroupContent>
+                </SidebarGroup>
+                <SidebarGroup>
+                  <SidebarGroupLabel>Management</SidebarGroupLabel>
+                  <SidebarGroupContent>
+                    <SidebarMenu>
+                      {patientManagementNavItems.map((item) => (
+                        <SidebarMenuItem key={item.href}>
+                          <SidebarMenuButton asChild isActive={location === item.href}>
+                            <Link href={item.href}>
+                              <item.icon className="h-4 w-4" />
+                              <span>{item.label}</span>
+                            </Link>
+                          </SidebarMenuButton>
+                        </SidebarMenuItem>
+                      ))}
+                    </SidebarMenu>
+                  </SidebarGroupContent>
+                </SidebarGroup>
+              </>
             )}
           </SidebarContent>
 

@@ -54,6 +54,13 @@ export default function DoctorAppointments() {
     staleTime: 60 * 1000,
   });
 
+  // Platform cancellation charge deducted from the doctor's payouts when they cancel.
+  const { data: bookingSettings } = useQuery<any>({
+    queryKey: ["/api/booking-settings"],
+    staleTime: 5 * 60 * 1000,
+  });
+  const platformCancellationFee = bookingSettings?.cancellationFee ?? 300;
+
   const completeMutation = useMutation({
     mutationFn: ({ id, notes }: { id: string; notes?: string }) =>
       apiRequest("PATCH", `/api/appointments/${id}/complete`, { consultationNotes: notes }),
@@ -160,7 +167,7 @@ export default function DoctorAppointments() {
     return <Badge className="bg-blue-100 text-blue-600 hover:bg-blue-100 border-0 text-xs font-medium">Home Visit</Badge>;
   };
 
-  const getStatusBadge = (status: string) => {
+  const getStatusBadge = (status: string, cancelledBy?: string | null) => {
     switch (status) {
       case "confirmed":
         return (
@@ -181,12 +188,14 @@ export default function DoctorAppointments() {
           </span>
         );
       case "cancelled":
-      case "no_show":
+      case "no_show": {
+        const label = status === "no_show" ? "No Show" : cancelledBy === "patient" ? "Canceled by Patient" : cancelledBy === "doctor" ? "Canceled by you" : "Cancelled";
         return (
           <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-red-50 text-red-700 border border-red-200 text-sm font-medium">
-            <X className="h-3.5 w-3.5" /> {status === "no_show" ? "No Show" : "Cancelled"}
+            <User className="h-3.5 w-3.5" /> {label}
           </span>
         );
+      }
       default:
         return null;
     }
@@ -332,8 +341,9 @@ export default function DoctorAppointments() {
                         </div>
 
                         {/* Right: status + actions */}
-                        <div className="flex items-center gap-2 shrink-0">
-                          {getStatusBadge(appointment.status)}
+                        <div className="flex flex-col items-end gap-1.5 shrink-0">
+                          <div className="flex items-center gap-2">
+                          {getStatusBadge(appointment.status, appointment.cancelledBy)}
 
                           {["pending", "confirmed"].includes(appointment.status) && (
                             <DropdownMenu>
@@ -383,6 +393,13 @@ export default function DoctorAppointments() {
                                 </DropdownMenuItem>
                               </DropdownMenuContent>
                             </DropdownMenu>
+                          )}
+                          </div>
+                          {["cancelled", "no_show"].includes(appointment.status) && appointment.cancelledBy === "doctor" && (
+                            <p className="text-sm font-medium text-red-600">Rs.{platformCancellationFee} deducted from payouts</p>
+                          )}
+                          {["cancelled", "no_show"].includes(appointment.status) && appointment.cancelledBy === "patient" && (
+                            <p className="text-sm font-medium text-amber-600">Rs.{appointment.payment?.cancellationFee ?? 0} was charged from the patient</p>
                           )}
                         </div>
                       </div>
@@ -469,6 +486,12 @@ export default function DoctorAppointments() {
                   {selectedAppointment?.appointmentDate} at {selectedAppointment?.appointmentTime}
                 </p>
               </div>
+            </div>
+            <div className="flex items-start gap-2.5 rounded-lg border border-amber-200 bg-amber-50 dark:border-amber-900/40 dark:bg-amber-950/20 p-3">
+              <AlertCircle className="h-4 w-4 shrink-0 text-amber-600 mt-0.5" />
+              <p className="text-sm text-amber-700 dark:text-amber-300">
+                Cancelling this appointment will charge you a <span className="font-semibold">Rs.{platformCancellationFee}</span> cancellation fee, deducted from your payouts. The patient will receive a full consultation-fee refund.
+              </p>
             </div>
             <Textarea
               placeholder="Reason for cancellation..."

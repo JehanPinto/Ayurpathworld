@@ -57,6 +57,11 @@ export const RefundStatus = {
   NOT_ELIGIBLE: "not_eligible",
 } as const;
 
+export const CancellationFeeType = {
+  AMOUNT: "amount",
+  PERCENTAGE: "percentage",
+} as const;
+
 export const ConsultationType = {
   IN_PERSON: "in_person",
   ONLINE: "online",
@@ -175,6 +180,11 @@ export const doctorProfiles = pgTable("doctor_profiles", {
   consultationFee: integer("consultation_fee").notNull().default(0),
   onlineConsultationFee: integer("online_consultation_fee"),
   homeVisitFee: integer("home_visit_fee"),
+  // Per-doctor cancellation policy: fee charged to the patient for late cancellations.
+  cancellationFeeEnabled: boolean("cancellation_fee_enabled").default(false),
+  cancellationFeeType: varchar("cancellation_fee_type", { length: 20 }), // "amount" | "percentage"
+  cancellationFeeAmount: integer("cancellation_fee_amount").default(0), // rupees (amount) or percent value (percentage)
+  cancellationWindowHours: integer("cancellation_window_hours"), // apply fee if cancelled within this many hours of the appointment
   status: varchar("status", { length: 20 }).notNull().default("pending"),
   rejectionReason: text("rejection_reason"),
   verificationDocuments: text("verification_documents")
@@ -688,6 +698,12 @@ export const insertDoctorProfileSchema = z.object({
   consultationFee: z.number().min(0, "Fee must be positive"),
   onlineConsultationFee: z.number().min(0).optional(),
   homeVisitFee: z.number().min(0).optional(),
+  cancellationFeeEnabled: z.boolean().optional(),
+  cancellationFeeType: z
+    .enum([CancellationFeeType.AMOUNT, CancellationFeeType.PERCENTAGE])
+    .optional(),
+  cancellationFeeAmount: z.number().min(0).optional(),
+  cancellationWindowHours: z.number().min(0).optional(),
   status: z
     .enum([
       DoctorStatus.PENDING,
