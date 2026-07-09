@@ -3737,6 +3737,11 @@ export async function registerRoutes(
           return res.status(404).json({ error: "Appointment not found" });
         }
 
+        // A cancellation reason is required for both patient- and doctor-initiated cancellations (SCRUM-58/59).
+        if (!reason?.trim()) {
+          return res.status(400).json({ error: "A cancellation reason is required." });
+        }
+
         const isPatient = req.user!.role === UserRole.PATIENT;
         const PATIENT_DAILY_CANCEL_LIMIT = 5;
 
