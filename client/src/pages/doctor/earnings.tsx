@@ -396,6 +396,18 @@ export default function DoctorEarnings() {
               <span>Tax & Levies Deducted</span>
               <span>-LKR {formatLKR(breakdown.tax)}</span>
             </div>
+            {Array.isArray(breakdown.customFeeItems) && breakdown.customFeeItems.map((f: any, i: number) => (
+              <div key={i} className="flex justify-between text-sm text-destructive font-medium">
+                <span>{f.title} Deducted</span>
+                <span>-LKR {formatLKR(f.amount)}</span>
+              </div>
+            ))}
+            {(breakdown.otherFees ?? 0) > 0 && (
+              <div className="flex justify-between text-sm text-destructive font-medium">
+                <span>Other Fees Deducted</span>
+                <span>-LKR {formatLKR(breakdown.otherFees)}</span>
+              </div>
+            )}
             <div className="flex justify-between text-sm text-destructive font-medium border-b border-border pb-4">
               <span>Cancellation Penalties (This Month)</span>
               <span>-LKR {formatLKR(breakdown.cancellationFee)}</span>
@@ -652,6 +664,14 @@ export default function DoctorEarnings() {
                   <span>Platform Fee Deduction</span>
                   <span>-LKR {formatLKR(selectedRecord.platformFee)}</span>
                 </div>
+                {Array.isArray(selectedRecord.taxBreakdown) && selectedRecord.taxBreakdown
+                  .filter((f: any) => f.kind === "fee" && (f.applicableTo === "doctors" || f.applicableTo === "both"))
+                  .map((f: any, i: number) => (
+                    <div key={i} className="flex justify-between text-sm text-destructive">
+                      <span>{f.title}{f.feeType === "percentage" ? ` (${f.rate}%)` : ""} Deduction</span>
+                      <span>-LKR {formatLKR(f.amount)}</span>
+                    </div>
+                  ))}
                 <div className="flex justify-between text-sm text-destructive border-b border-border/50 pb-3">
                   <span>Tax & Levies Deduction</span>
                   <span>-LKR {formatLKR(selectedRecord.tax)}</span>

@@ -115,10 +115,14 @@ export default function PatientDashboard() {
                 <tbody>
                   <tr><td>Ayurvedic Consultation – Dr. ${tx.doctorName}</td><td>${formatFee(tx.consultationFee || 0)}</td></tr>
                   <tr><td>Service & Booking Fee</td><td>${formatFee(tx.bookingCharges || 0)}</td></tr>
-                  ${(Array.isArray(tx.taxBreakdown) && tx.taxBreakdown.length > 0
-                    ? tx.taxBreakdown.map((t: any) => `<tr><td>${t.title}${t.feeType === "amount" ? "" : ` (${t.rate}%)`}</td><td>${formatFee(t.amount)}</td></tr>`).join("")
-                    : `<tr><td>Tax</td><td>${formatFee(tx.tax || 0)}</td></tr>`
-                  )}
+                  ${(() => {
+                    const items = Array.isArray(tx.taxBreakdown)
+                      ? tx.taxBreakdown.filter((t: any) => !(t.kind === "fee" && t.applicableTo === "doctors"))
+                      : [];
+                    return items.length > 0
+                      ? items.map((t: any) => `<tr><td>${t.title}${t.feeType === "amount" ? "" : ` (${t.rate}%)`}</td><td>${formatFee(t.amount)}</td></tr>`).join("")
+                      : `<tr><td>Tax</td><td>${formatFee(tx.tax || 0)}</td></tr>`;
+                  })()}
                 </tbody>
               </table>
             </div>
@@ -528,20 +532,24 @@ export default function PatientDashboard() {
                             <td className="p-3 sm:p-4 text-xs sm:text-sm">Service & Booking Fee</td>
                             <td className="p-3 sm:p-4 text-xs sm:text-sm text-right font-medium">{formatFee(selectedTx.bookingCharges || 0)}</td>
                           </tr>
-                          {Array.isArray(selectedTx.taxBreakdown) && selectedTx.taxBreakdown.length > 0
-                            ? selectedTx.taxBreakdown.map((t: any, i: number) => (
-                                <tr key={i} className="border-b border-border/50 last:border-0">
-                                  <td className="p-3 sm:p-4 text-xs sm:text-sm">{t.title}{t.feeType === "amount" ? "" : ` (${t.rate}%)`}</td>
-                                  <td className="p-3 sm:p-4 text-xs sm:text-sm text-right font-medium">{formatFee(t.amount)}</td>
-                                </tr>
-                              ))
-                            : (
-                                <tr>
-                                  <td className="p-3 sm:p-4 text-xs sm:text-sm">Tax</td>
-                                  <td className="p-3 sm:p-4 text-xs sm:text-sm text-right font-medium">{formatFee(selectedTx.tax || 0)}</td>
-                                </tr>
-                              )
-                          }
+                          {(() => {
+                            const items = Array.isArray(selectedTx.taxBreakdown)
+                              ? selectedTx.taxBreakdown.filter((t: any) => !(t.kind === "fee" && t.applicableTo === "doctors"))
+                              : [];
+                            return items.length > 0
+                              ? items.map((t: any, i: number) => (
+                                  <tr key={i} className="border-b border-border/50 last:border-0">
+                                    <td className="p-3 sm:p-4 text-xs sm:text-sm">{t.title}{t.feeType === "amount" ? "" : ` (${t.rate}%)`}</td>
+                                    <td className="p-3 sm:p-4 text-xs sm:text-sm text-right font-medium">{formatFee(t.amount)}</td>
+                                  </tr>
+                                ))
+                              : (
+                                  <tr>
+                                    <td className="p-3 sm:p-4 text-xs sm:text-sm">Tax</td>
+                                    <td className="p-3 sm:p-4 text-xs sm:text-sm text-right font-medium">{formatFee(selectedTx.tax || 0)}</td>
+                                  </tr>
+                                );
+                          })()}
                         </tbody>
                       </table>
                     </div>
