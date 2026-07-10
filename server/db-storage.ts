@@ -3422,6 +3422,49 @@ appointment: InsertAppointment, paymentData: InsertPayment, slotId: string, audi
       appointments: detailedAppointments 
     };
   }
+
+  async getPaymentStats(): Promise<{
+    totalRevenue: number;
+    platformEarnings: number;
+    totalPayoutsOwed: number;
+    refundedAmount: number;
+  }> {
+    const statsRes = await pool.query(`
+      SELECT 
+        COALESCE(SUM(CASE WHEN status = 'completed' THEN total_amount ELSE 0 END), 0) as total_revenue,
+        COALESCE(SUM(CASE WHEN status = 'completed' THEN platform_commission ELSE 0 END), 0) as platform_earnings,
+        COALESCE(SUM(CASE WHEN status = 'completed' THEN doctor_earnings ELSE 0 END), 0) as total_payouts_owed,
+        COALESCE(SUM(CASE WHEN status = 'refunded' THEN refund_amount ELSE 0 END), 0) as refunded_amount
+      FROM payments
+    `);
+
+    const row = statsRes.rows[0];
+    return {
+      totalRevenue: Number(row.total_revenue),
+      platformEarnings: Number(row.platform_earnings),
+      totalPayoutsOwed: Number(row.total_payouts_owed),
+      refundedAmount: Number(row.refunded_amount),
+    };
+  }
+
+  async getRefundStats() {
+    const statsRes = await pool.query(`
+      SELECT 
+        COUNT(*) FILTER (WHERE status = 'pending') as pending_count,
+        COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '30 days') as requests_last_30_days,
+        COALESCE(SUM(amount) FILTER (WHERE status = 'completed' AND created_at >= NOW() - INTERVAL '30 days'), 0) as refunded_last_30_days,
+        COALESCE(SUM(amount) FILTER (WHERE status = 'pending'), 0) as refundable_total
+      FROM refunds
+    `);
+    
+    const row = statsRes.rows[0];
+    return { 
+      pendingCount: Number(row.pending_count), 
+      requestsLast30DaysCount: Number(row.requests_last_30_days), 
+      refundedLast30DaysAmount: Number(row.refunded_last_30_days), 
+      refundableTotalAmount: Number(row.refundable_total) 
+    };
+  }
 }
 
 export const dbStorage = new DbStorage();

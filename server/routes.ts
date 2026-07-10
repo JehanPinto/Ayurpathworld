@@ -3336,7 +3336,7 @@ export async function registerRoutes(
           dependentGender: bookingData.dependentGender,
           dependentContact: bookingData.dependentContact,
           isCalled: false,
-          status: AppointmentStatus.CONFIRMED,
+          status: AppointmentStatus.PENDING,
         };
 
         const appointment = await storage.createAppointment(appointmentData);
@@ -3421,7 +3421,7 @@ export async function registerRoutes(
           totalAmount,
           status:
             bookingData.paymentMethod === PaymentMethod.ONLINE
-              ? PaymentStatus.COMPLETED
+              ? PaymentStatus.PENDING
               : PaymentStatus.UNPAID,
           method: bookingData.paymentMethod,
         };
@@ -7182,46 +7182,50 @@ export async function registerRoutes(
   // ==========================================
   // BACKGROUND CLEANUP JOB (INDUSTRY STANDARD)
   // ==========================================
+  // This catches users who completely close their browser tab during checkout
+  // and fail to trigger the frontend "onDismissed" event.
   // setInterval(async () => {
   //   try {
-  //     const fifteenMinsAgo = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+  //     // 15 minutes is the standard checkout hold time
+  //     const fifteenMinsAgo = new Date(Date.now() - 15 * 60 * 1000);
       
   //     const query = `
   //       SELECT id, slot_id 
   //       FROM appointments 
   //       WHERE status = 'pending' AND created_at < $1
   //     `;
+  //     // Pass the actual Date object, node-postgres handles the conversion securely
   //     const result = await pool.query(query, [fifteenMinsAgo]);
       
   //     if (result.rows.length > 0) {
   //       console.log(`[CLEANUP JOB] Found ${result.rows.length} abandoned appointments. Releasing slots...`);
         
   //       for (const row of result.rows) {
-  //         // 1. Appointment cancelled
+  //         // 1. Fail the associated payment first (FK Constraint requirement)
   //         await pool.query(
-  //           `UPDATE appointments SET status = 'cancelled', cancel_reason = 'Payment Timeout (Auto Cancelled)' WHERE id = $1`, 
+  //           `UPDATE payments SET status = 'failed', total_amount = 0, doctor_earnings = 0 WHERE appointment_id = $1`, 
+  //           [row.id]
+  //         );
+
+  //         // 2. Cancel the abandoned appointment
+  //         await pool.query(
+  //           `UPDATE appointments SET status = 'cancelled', cancel_reason = 'Payment Timeout (Auto Cancelled by System)', cancelled_by = 'system' WHERE id = $1`, 
   //           [row.id]
   //         );
           
-  //         // 2. Payment faied
-  //         await pool.query(
-  //           `UPDATE payments SET status = 'failed' WHERE appointment_id = $1`, 
-  //           [row.id]
-  //         );
-          
-  //         // 3. Slot free
+  //         // 3. Free the slot back up to the public!
   //         await pool.query(
   //           `UPDATE appointment_slots SET is_booked = false WHERE id = $1`, 
   //           [row.slot_id]
   //         );
           
-  //         console.log(`[CLEANUP JOB] Successfully released appointment: ${row.id} and slot: ${row.slot_id}`);
+  //         console.log(`[CLEANUP JOB] Successfully released abandoned appointment: ${row.id} and slot: ${row.slot_id}`);
   //       }
   //     }
   //   } catch (err) {
   //     console.error("[CLEANUP JOB ERROR]:", err);
   //   }
-  // }, 5 * 60 * 1000); // 5 * 60 * 1000 = 5 minutes
+  // }, 5 * 60 * 1000); // Runs every 5 minutes
 
   app.get(
     "/api/admin/audit-logs",
@@ -7716,6 +7720,21 @@ export async function registerRoutes(
         res.status(500).json({ error: "Failed to generate report" });
       }
     }
+  );
+
+  app.get(
+    "/api/admin/payment-stats",
+    authMiddleware,
+    roleMiddleware(UserRole.ADMIN),
+    async (req: Request, res: Response) => {
+      try {
+        const stats = await storage.getPaymentStats();
+        res.json(stats);
+      } catch (error) {
+        console.error("Failed to fetch payment stats:", error);
+        res.status(500).json({ error: "Failed to fetch payment stats" });
+      }
+    },
   );
   
   return httpServer;
