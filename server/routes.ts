@@ -3396,8 +3396,9 @@ export async function registerRoutes(
           const amt = Math.round(consultationFee * (t.rate / 100));
           taxBreakdown.push({ title: t.title, rate: t.rate, amount: amt, applicableTo: t.applicableTo, kind: "tax" });
         }
-        // Patient-facing custom fees appear on the invoice
-        for (const f of patientFees) {
+        // Custom fees: record ALL enabled fees (patient, doctor, or both), each tagged
+        // with applicableTo. Patient invoice shows patients/both; doctor earnings shows doctors/both.
+        for (const f of enabledFees) {
           taxBreakdown.push({ title: f.title, rate: f.rate, amount: feeAmount(f), applicableTo: f.applicableTo, kind: "fee", feeType: f.feeType });
         }
 
@@ -5353,6 +5354,77 @@ export async function registerRoutes(
       });
       res.json({ success: true });
     } catch { res.status(500).json({ error: "Failed to delete tax entry" }); }
+  });
+
+  // Fee entries (admin only) — mirror of tax entries. Storage, booking-price
+  // calc, and both frontends already support fees; only these routes were missing.
+  app.get("/api/admin/fee-entries", authMiddleware, roleMiddleware(UserRole.ADMIN), async (_req: Request, res: Response) => {
+    try {
+      const entries = await storage.getFeeEntries();
+      res.json(entries);
+    } catch { res.status(500).json({ error: "Failed to get fee entries" }); }
+  });
+
+  // Public endpoint so the book-appointment page can fetch fees without admin auth
+  app.get("/api/fee-entries", publicApiLimiter, async (_req: Request, res: Response) => {
+    try {
+      const entries = await storage.getFeeEntries();
+      res.json(entries);
+    } catch { res.status(500).json({ error: "Failed to get fee entries" }); }
+  });
+
+  // Caps for the add-fee form (max flat amount = median consultation fee; max percentage = 100%)
+  app.get("/api/admin/fee-limits", authMiddleware, roleMiddleware(UserRole.ADMIN), async (_req: Request, res: Response) => {
+    try {
+      const maxAmount = await storage.getFeeAmountCap();
+      res.json({ maxAmount, maxPercentage: 100 });
+    } catch { res.status(500).json({ error: "Failed to get fee limits" }); }
+  });
+
+  app.post("/api/admin/fee-entries", authMiddleware, roleMiddleware(UserRole.ADMIN), async (req: Request, res: Response) => {
+    const tRequestReceived = new Date().toISOString();
+    const { ipAddress, device, location, sessionId } = getReqInfo(req);
+    const { actorId, actorRole } = await getActorInfo(req);
+
+    try {
+      const { title, feeType, rate, applicableTo } = req.body;
+      if (!title?.trim() || rate === undefined) return res.status(400).json({ error: "Title and rate are required" });
+      if (!["amount", "percentage"].includes(feeType)) return res.status(400).json({ error: "feeType must be amount or percentage" });
+      if (!["doctors", "patients", "both"].includes(applicableTo)) return res.status(400).json({ error: "applicableTo must be doctors, patients, or both" });
+      const entry = await storage.createFeeEntry(title.trim(), feeType, Number(rate), applicableTo);
+      await storage.createAuditLog({
+        actorId, actorRole, action: `CREATE_FEE_ENTRY`, status: 'success',
+        entityType: 'fee_entry', entityId: entry.id, ipAddress, device, location, sessionId: sessionId || 'N/A',
+        metadata: { auditType: 'FEE', timeline: { requestReceivedAt: tRequestReceived, completedAt: new Date().toISOString() } }
+      });
+      res.status(201).json(entry);
+    } catch { res.status(500).json({ error: "Failed to create fee entry" }); }
+  });
+
+  app.patch("/api/admin/fee-entries/:id", authMiddleware, roleMiddleware(UserRole.ADMIN), async (req: Request, res: Response) => {
+    try {
+      const { enabled } = req.body;
+      if (typeof enabled !== "boolean") return res.status(400).json({ error: "enabled must be a boolean" });
+      const entry = await storage.updateFeeEntryEnabled(req.params.id, enabled);
+      if (!entry) return res.status(404).json({ error: "Fee entry not found" });
+      res.json(entry);
+    } catch { res.status(500).json({ error: "Failed to update fee entry" }); }
+  });
+
+  app.delete("/api/admin/fee-entries/:id", authMiddleware, roleMiddleware(UserRole.ADMIN), async (req: Request, res: Response) => {
+    const tRequestReceived = new Date().toISOString();
+    const { ipAddress, device, location, sessionId } = getReqInfo(req);
+    const { actorId, actorRole } = await getActorInfo(req);
+
+    try {
+      await storage.deleteFeeEntry(req.params.id);
+      await storage.createAuditLog({
+        actorId, actorRole, action: `DELETE_FEE_ENTRY`, status: 'success',
+        entityType: 'fee_entry', entityId: req.params.id, ipAddress, device, location, sessionId: sessionId || 'N/A',
+        metadata: { auditType: 'FEE', timeline: { requestReceivedAt: tRequestReceived, completedAt: new Date().toISOString() } }
+      });
+      res.json({ success: true });
+    } catch { res.status(500).json({ error: "Failed to delete fee entry" }); }
   });
 
   app.put(
@@ -7438,6 +7510,28 @@ export async function registerRoutes(
         const tmTax = parseInt(thisMonthRes.rows[0].tax);
         const tmNetBeforeCancel = parseInt(thisMonthRes.rows[0].net);
         const tmCancel = parseInt(thisMonthCancelsRes.rows[0].deducted);
+        // Doctor-facing custom fees this month = gross - platform - net (they're baked into doctor_earnings)
+        const tmCustomFees = Math.max(0, tmGross - tmPlatform - tmNetBeforeCancel);
+        // Break the custom fees down BY NAME from each payment's stored breakdown, so the
+        // doctor sees the actual fee titles (e.g. "nicol fee"), not just a lumped total.
+        const feeItemsRes = await pool.query(`
+            SELECT tax_breakdown FROM payments
+            WHERE doctor_id = $1 AND status = 'completed'
+            AND created_at >= date_trunc('month', CURRENT_DATE AT TIME ZONE 'UTC')
+        `, [profile.id]);
+        const feeTotals = new Map<string, number>();
+        for (const row of feeItemsRes.rows) {
+          const tb = Array.isArray(row.tax_breakdown) ? row.tax_breakdown : [];
+          for (const item of tb) {
+            if (item?.kind === 'fee' && (item.applicableTo === 'doctors' || item.applicableTo === 'both')) {
+              feeTotals.set(item.title, (feeTotals.get(item.title) || 0) + (Number(item.amount) || 0));
+            }
+          }
+        }
+        const customFeeItems = Array.from(feeTotals.entries()).map(([title, amount]) => ({ title, amount }));
+        // Fees from bookings made before per-fee breakdowns were stored can't be named — lump them.
+        const namedFeeSum = customFeeItems.reduce((s, f) => s + f.amount, 0);
+        const otherFees = Math.max(0, tmCustomFees - namedFeeSum);
         const thisMonthNet = Math.max(0, tmNetBeforeCancel - tmCancel);
 
         // 5. CHART DATA (Last 6 Months)
@@ -7460,7 +7554,7 @@ export async function registerRoutes(
         let queryStr = `
             SELECT 
                 p.id, p.created_at as "date", p.status, p.method, p.total_amount as "grossAmount",
-                p.platform_commission as "platformFee", p.tax, p.doctor_earnings as "netEarnings",
+                p.platform_commission as "platformFee", p.tax, p.doctor_earnings as "netEarnings", p.tax_breakdown as "taxBreakdown",
                 a.id as "appointmentId", a.consultation_type as "appointmentType", a.symptoms, a.status as "appointmentStatus",
                 s.date as "slotDate", s.start_time as "slotStartTime", s.end_time as "slotEndTime",
                 u.full_name as "patientName", u.email as "patientEmail", u.phone as "patientPhone", u.gender as "patientGender"
@@ -7492,7 +7586,7 @@ export async function registerRoutes(
 
         res.json({
           stats: { withdrawableBalance, thisMonthNet, inPersonNet, onlineNet, cancellationsCount, cancellationDeducted: unsettledCancels, pendingPayouts, completedPayoutsLifetime, completedPayoutsThisMonth },
-          breakdown: { gross: tmGross, platformFee: tmPlatform, tax: tmTax, cancellationFee: tmCancel, net: thisMonthNet },
+          breakdown: { gross: tmGross, platformFee: tmPlatform, tax: tmTax, customFees: tmCustomFees, customFeeItems, otherFees, cancellationFee: tmCancel, net: thisMonthNet },
           chartData,
           history: { data: historyResult.rows, totalCount, totalPages: Math.ceil(totalCount / limit) || 1, currentPage: page }
         });
