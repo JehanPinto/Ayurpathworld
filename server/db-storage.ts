@@ -3379,6 +3379,49 @@ appointment: InsertAppointment, paymentData: InsertPayment, slotId: string, audi
       client.release();
     }
   }
+
+  async getDoctorExportData(
+    doctorId: string,
+    startDate: string,
+    endDate: string
+  ): Promise<{ payments: Payment[]; appointments: AppointmentWithDetails[] }> {
+    // Fetch payments within the date range
+    const paymentRows = await db
+      .select()
+      .from(payments)
+      .where(
+        and(
+          eq(payments.doctorId, doctorId),
+          gte(payments.createdAt, new Date(`${startDate}T00:00:00.000Z`)),
+          lte(payments.createdAt, new Date(`${endDate}T23:59:59.999Z`))
+        )
+      )
+      .orderBy(desc(payments.createdAt));
+
+    // Fetch appointments within the date range
+    const appointmentRows = await db
+    .select()
+      .from(appointments)
+      .where(
+        and(
+          eq(appointments.doctorId, doctorId),
+          gte(appointments.appointmentDate, startDate),
+          lte(appointments.appointmentDate, endDate)
+        )
+      )
+      .orderBy(desc(appointments.appointmentDate));
+
+    const detailedAppointments = await this.buildAppointmentsWithDetails(appointmentRows);
+
+    return { 
+      payments: paymentRows.map(p => ({
+        ...p,
+        createdAt: toISOString(p.createdAt),
+        updatedAt: toISOString(p.updatedAt),
+      })) as Payment[], 
+      appointments: detailedAppointments 
+    };
+  }
 }
 
 export const dbStorage = new DbStorage();
