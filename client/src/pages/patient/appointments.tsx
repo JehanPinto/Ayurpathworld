@@ -1,7 +1,11 @@
 import { useState, useEffect } from "react";
 import { useLocation } from "wouter";
-import { useQuery } from "@tanstack/react-query";
-import { format, parseISO, isAfter, isBefore } from "date-fns";
+import { useQuery, useMutation } from "@tanstack/react-query";
+import { format, parseISO, isAfter, isBefore, isToday } from "date-fns";
+import { apiRequest, queryClient } from "@/lib/queryClient";
+import { Textarea } from "@/components/ui/textarea";
+import { LoadingSpinner } from "@/components/ui/loading-spinner";
+import { SRI_LANKAN_BANKS } from "@/lib/banks";
 import {
   Calendar,
   Search,
@@ -18,6 +22,8 @@ import {
   Receipt,
   User,
   CreditCard,
+  XCircle,
+  RotateCcw,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -63,6 +69,79 @@ export default function PatientAppointmentsPage() {
   });
   const hasOwedCharges = (owedCharges?.totalOwed ?? 0) > 0;
 
+  // --- Cancellation flow ---
+  const PATIENT_DAILY_CANCEL_LIMIT = 5;
+  const [cancelTarget, setCancelTarget] = useState<AppointmentWithDetails | null>(null);
+  const [cancelReason, setCancelReason] = useState("");
+  const [bankName, setBankName] = useState("");
+  const [bankAccountNumber, setBankAccountNumber] = useState("");
+  const [bankBranch, setBankBranch] = useState("");
+
+  const cancellationsToday = appointments.filter(
+    (a) =>
+      a.cancelledBy === "patient" &&
+      a.status === "cancelled" &&
+      a.updatedAt &&
+      isToday(parseISO(a.updatedAt)),
+  ).length;
+  const cancellationsLeft = Math.max(0, PATIENT_DAILY_CANCEL_LIMIT - cancellationsToday);
+
+  // Human-readable cancellation charge for the confirmation dialog.
+  const getCancellationCharge = (apt: AppointmentWithDetails | null): string => {
+    const doc = apt?.doctor as any;
+    if (!doc?.cancellationFeeEnabled || !doc?.cancellationFeeAmount) return "Rs.0";
+    if (doc.cancellationFeeType === "percentage") return `${doc.cancellationFeeAmount}% of the consultation fee`;
+    return `Rs.${doc.cancellationFeeAmount}`;
+  };
+
+  const openCancelDialog = (apt: AppointmentWithDetails) => {
+    setCancelTarget(apt);
+    setCancelReason("");
+    setBankName("");
+    setBankAccountNumber("");
+    setBankBranch("");
+  };
+  const closeCancelDialog = () => setCancelTarget(null);
+
+  const cancelMutation = useMutation({
+    mutationFn: (vars: { id: string; reason: string; bankName: string; bankAccountNumber: string; bankBranch: string }) =>
+      apiRequest("PATCH", `/api/appointments/${vars.id}/cancel`, {
+        reason: vars.reason,
+        bankName: vars.bankName,
+        bankAccountNumber: vars.bankAccountNumber,
+        bankBranch: vars.bankBranch,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/appointments"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/patient/owed-charges"] });
+      toast({ title: "Appointment cancelled", description: "Your refund is now processing." });
+      closeCancelDialog();
+    },
+    onError: (err: any) => {
+      toast({ title: "Could not cancel", description: err?.message || "Please try again.", variant: "destructive" });
+    },
+  });
+
+  const submitCancel = () => {
+    if (!cancelTarget) return;
+    cancelMutation.mutate({ id: cancelTarget.id, reason: cancelReason, bankName, bankAccountNumber, bankBranch });
+  };
+
+  // --- Refund detail popup ---
+  const [refundTarget, setRefundTarget] = useState<AppointmentWithDetails | null>(null);
+
+  // Route "View Details" / card clicks: cancelled + completed refund -> refund popup; otherwise the summary.
+  const handleDetails = (apt: AppointmentWithDetails) => {
+    const isCancelled = ["cancelled", "no_show"].includes(apt.status);
+    const refundCompleted = apt.payment?.refundStatus === "completed";
+    if (isCancelled) {
+      if (refundCompleted) setRefundTarget(apt);
+      // while the refund is still processing there are no details to show yet
+    } else {
+      setSelectedAppointment(apt);
+    }
+  };
+
   const getInitials = (name: string) => {
     if (!name) return "DR";
     return name.split(" ").map((n) => n[0]).join("").toUpperCase().slice(0, 2);
@@ -82,6 +161,9 @@ export default function PatientAppointmentsPage() {
     if (fee === undefined || fee === null) return "N/A";
     return new Intl.NumberFormat('en-LK', { style: 'currency', currency: 'LKR', minimumFractionDigits: 2 }).format(fee);
   };
+
+  const formatLKRWhole = (amount: number) =>
+    new Intl.NumberFormat("en-LK", { maximumFractionDigits: 0 }).format(amount);
 
   const copyToClipboard = (text: string, label: string) => {
     navigator.clipboard.writeText(text);
@@ -154,21 +236,19 @@ export default function PatientAppointmentsPage() {
         <p className="text-sm md:text-base text-muted-foreground font-medium">View and manage your appointments</p>
       </div>
 
-      {/* Owed to AyurPath notice — only shown when the patient has an outstanding cancellation charge */}
-      {hasOwedCharges && (
-        <div
-          className="flex items-start gap-3 rounded-2xl border border-red-200 bg-red-50 dark:border-red-900/40 dark:bg-red-950/20 p-4 md:p-5"
-          data-testid="banner-owed-to-ayurpath"
-        >
-          <AlertTriangle className="h-5 w-5 shrink-0 text-red-500 mt-0.5" />
-          <div className="space-y-0.5">
-            <p className="font-semibold text-red-700 dark:text-red-300">Owed to AyurPath</p>
-            <p className="text-sm text-red-600/90 dark:text-red-300/80">
-              When you cancel an appointment, the cancellation charge is billed back to you. The cancellation charge is determined by the doctor.
-            </p>
-          </div>
+      {/* Owed to AyurPath notice — always shown as a standing cancellation-charge notice */}
+      <div
+        className="flex items-start gap-3 rounded-2xl border border-red-200 bg-red-50 dark:border-red-900/40 dark:bg-red-950/20 p-4 md:p-5"
+        data-testid="banner-owed-to-ayurpath"
+      >
+        <AlertTriangle className="h-5 w-5 shrink-0 text-red-500 mt-0.5" />
+        <div className="space-y-0.5">
+          <p className="font-semibold text-red-700 dark:text-red-300">Owed to AyurPath</p>
+          <p className="text-sm text-red-600/90 dark:text-red-300/80">
+            When you cancel an appointment, the cancellation charge is billed back to you. The cancellation charge determined by doctor.
+          </p>
         </div>
-      )}
+      </div>
 
       {/* Filters Section */}
       <div className="flex flex-col sm:flex-row gap-3 md:gap-4 items-center bg-card p-3 md:p-4 rounded-2xl border border-border shadow-sm">
@@ -226,11 +306,12 @@ export default function PatientAppointmentsPage() {
           ) : (
             <div className="space-y-4">
               {filteredUpcoming.map((appointment) => (
-                <AppointmentCard 
-                  key={appointment.id} 
-                  appointment={appointment} 
+                <AppointmentCard
+                  key={appointment.id}
+                  appointment={appointment}
                   onFeedbackClick={() => setLocation("/patient/reviews")}
-                  onDetailsClick={setSelectedAppointment}
+                  onDetailsClick={handleDetails}
+                  onCancelClick={openCancelDialog}
                 />
               ))}
             </div>
@@ -243,11 +324,12 @@ export default function PatientAppointmentsPage() {
           ) : (
             <div className="space-y-4">
               {filteredPast.map((appointment) => (
-                <AppointmentCard 
-                  key={appointment.id} 
-                  appointment={appointment} 
+                <AppointmentCard
+                  key={appointment.id}
+                  appointment={appointment}
                   onFeedbackClick={() => setLocation("/patient/reviews")}
-                  onDetailsClick={setSelectedAppointment}
+                  onDetailsClick={handleDetails}
+                  onCancelClick={openCancelDialog}
                 />
               ))}
             </div>
@@ -469,6 +551,236 @@ export default function PatientAppointmentsPage() {
             </div>
           </div>
         )}
+      </Modal>
+
+      {/* Cancel appointment dialog */}
+      <Modal
+        isOpen={!!cancelTarget}
+        onClose={closeCancelDialog}
+        title="Cancel This Appointment?"
+        description="Do you want to permanently cancel this appointment?"
+        icon={<XCircle className="w-5 h-5 text-destructive" />}
+        className="max-w-lg w-[95vw]"
+        footer={
+          <div className="flex w-full gap-3 justify-end flex-wrap">
+            <Button
+              variant="destructive"
+              className="rounded-full px-6 gap-1.5"
+              onClick={submitCancel}
+              disabled={
+                cancelMutation.isPending ||
+                !cancelReason.trim() ||
+                !bankName.trim() ||
+                !bankAccountNumber.trim() ||
+                !bankBranch.trim() ||
+                cancellationsLeft <= 0
+              }
+              data-testid="button-confirm-cancel"
+            >
+              {cancelMutation.isPending && <LoadingSpinner size="sm" className="mr-1" />}
+              Reject <XCircle className="w-4 h-4" />
+            </Button>
+            <Button variant="outline" className="rounded-full px-6 border-border" onClick={closeCancelDialog}>
+              Back to Appointment
+            </Button>
+          </div>
+        }
+      >
+        {cancelTarget && (
+          <div className="space-y-4">
+            {/* Owed to AyurPath warning */}
+            <div className="flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 dark:border-red-900/40 dark:bg-red-950/20 p-4">
+              <AlertTriangle className="h-5 w-5 shrink-0 text-red-500 mt-0.5" />
+              <div className="space-y-0.5">
+                <p className="font-semibold text-red-700 dark:text-red-300">Owed to AyurPath</p>
+                <p className="text-sm text-red-600/90 dark:text-red-300/80">
+                  When you cancel an appointment, the cancellation charge is billed back to you. The cancellation charge is {getCancellationCharge(cancelTarget)}.
+                </p>
+              </div>
+            </div>
+
+            {(() => {
+              const danger = cancellationsLeft === 0;
+              const warn = cancellationsLeft > 0 && cancellationsLeft <= 2;
+              const wrap = danger
+                ? "border-red-200 bg-red-50 dark:border-red-900/40 dark:bg-red-950/20"
+                : warn
+                ? "border-amber-200 bg-amber-50 dark:border-amber-900/40 dark:bg-amber-950/20"
+                : "border-primary/20 bg-primary/5";
+              const iconWrap = danger
+                ? "bg-red-100 text-red-600 dark:bg-red-900/40 dark:text-red-300"
+                : warn
+                ? "bg-amber-100 text-amber-600 dark:bg-amber-900/40 dark:text-amber-300"
+                : "bg-primary/10 text-primary";
+              const dotOn = danger ? "bg-red-500" : warn ? "bg-amber-500" : "bg-primary";
+              const title = danger
+                ? "text-red-700 dark:text-red-300"
+                : warn
+                ? "text-amber-700 dark:text-amber-300"
+                : "text-foreground";
+              return (
+                <div
+                  className={`flex items-center justify-between gap-3 rounded-xl border px-4 py-3 ${wrap}`}
+                  data-testid="text-cancellations-left"
+                >
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <div className={`h-9 w-9 rounded-full flex items-center justify-center shrink-0 ${iconWrap}`}>
+                      <RotateCcw className="h-4 w-4" />
+                    </div>
+                    <div className="leading-tight min-w-0">
+                      <p className={`text-sm font-bold ${title}`}>
+                        {danger
+                          ? "No cancellations left today"
+                          : `${cancellationsLeft} of ${PATIENT_DAILY_CANCEL_LIMIT} cancellations left today`}
+                      </p>
+                      <p className="text-[11px] text-muted-foreground">Your daily limit resets tomorrow.</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    {Array.from({ length: PATIENT_DAILY_CANCEL_LIMIT }).map((_, i) => (
+                      <span
+                        key={i}
+                        className={`h-2.5 w-2.5 rounded-full transition-colors ${i < cancellationsLeft ? dotOn : "bg-muted-foreground/20"}`}
+                      />
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
+
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium">Tell Why you cancel this appointment</label>
+              <Textarea
+                placeholder="Enter the reason"
+                value={cancelReason}
+                onChange={(e) => setCancelReason(e.target.value)}
+                rows={3}
+                data-testid="input-cancel-reason"
+              />
+            </div>
+
+            <div className="space-y-3">
+              <p className="text-sm text-muted-foreground">Enter your bank details for refund</p>
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium">Bank Name <span className="text-red-500">*</span></label>
+                <Select value={bankName} onValueChange={setBankName}>
+                  <SelectTrigger data-testid="select-bank-name">
+                    <SelectValue placeholder="Select your bank" />
+                  </SelectTrigger>
+                  <SelectContent className="max-h-[260px]">
+                    {SRI_LANKAN_BANKS.map((b) => (
+                      <SelectItem key={b.name} value={b.name}>{b.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium">Account Number <span className="text-red-500">*</span></label>
+                <Input placeholder="10066655578" value={bankAccountNumber} onChange={(e) => setBankAccountNumber(e.target.value)} data-testid="input-bank-account" />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium">Branch <span className="text-red-500">*</span></label>
+                <Input placeholder="Galle main" value={bankBranch} onChange={(e) => setBankBranch(e.target.value)} data-testid="input-bank-branch" />
+              </div>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* Cancellation refund detail popup */}
+      <Modal
+        isOpen={!!refundTarget}
+        onClose={() => setRefundTarget(null)}
+        title="Cancellation refund"
+        description="Review and confirm refund details"
+        icon={<Receipt className="w-5 h-5 text-primary" />}
+        className="max-w-lg w-[95vw]"
+        footer={
+          <div className="flex w-full justify-end">
+            <Button variant="outline" className="rounded-full px-6 border-border" onClick={() => setRefundTarget(null)}>
+              Close
+            </Button>
+          </div>
+        }
+      >
+        {refundTarget && (() => {
+          const p = refundTarget.payment;
+          const amountPaid = p?.totalAmount ?? 0;
+          const booking = p?.bookingCharges ?? 0;
+          const tax = p?.tax ?? 0;
+          const cancellationFee = p?.cancellationFee ?? 0;
+          const refundAmount = p?.refundAmount ?? Math.max(0, amountPaid - booking - tax - cancellationFee);
+          const byDoctor = refundTarget.cancelledBy === "doctor";
+          const typeLabel = refundTarget.consultationType === "online" ? "Online Consultation"
+            : refundTarget.consultationType === "home_visit" ? "Home Visit" : "In Person Consultation";
+          return (
+            <div className="space-y-4">
+              {/* Patient + type */}
+              <div className="flex items-start justify-between gap-3 rounded-2xl bg-muted/40 border border-border p-4">
+                <div>
+                  <p className="font-bold text-foreground">{refundTarget.patient?.fullName}</p>
+                  <p className="text-sm text-muted-foreground">
+                    Ayurvedic consultation · {format(parseISO(refundTarget.appointmentDate), "MMM d, yyyy")}
+                  </p>
+                </div>
+                <Badge className={`shrink-0 border-0 ${
+                  refundTarget.consultationType === "online" ? "bg-indigo-100 text-indigo-700"
+                  : refundTarget.consultationType === "home_visit" ? "bg-blue-100 text-blue-700"
+                  : "bg-purple-100 text-purple-700"
+                }`}>
+                  {typeLabel}
+                </Badge>
+              </div>
+
+              {/* Eligibility banner */}
+              <div className="flex items-center gap-2 rounded-xl bg-red-50 dark:bg-red-950/20 border border-red-100 dark:border-red-900/30 px-4 py-2.5">
+                <Stethoscope className="w-4 h-4 text-red-500 shrink-0" />
+                <p className="text-sm font-medium text-red-600 dark:text-red-300">
+                  {byDoctor ? "Doctor cancelled" : "Patient cancelled"} — Only consultation fee refund eligible
+                </p>
+              </div>
+
+              {/* Breakdown */}
+              <div className="rounded-2xl border border-border overflow-hidden">
+                <div className="flex items-center justify-between px-4 py-3 border-b border-border">
+                  <span className="text-foreground">Amount Paid</span>
+                  <span className="font-bold text-foreground">LKR {formatLKRWhole(amountPaid)}</span>
+                </div>
+                <div className="flex items-center justify-between px-4 py-3 border-b border-border">
+                  <span className="text-foreground flex items-center gap-2">
+                    Booking Charges
+                    <span className="text-[10px] font-semibold text-amber-600 bg-amber-50 dark:bg-amber-950/30 px-2 py-0.5 rounded">Non-refundable</span>
+                  </span>
+                  <span className="font-semibold text-red-600">− LKR {formatLKRWhole(booking)}</span>
+                </div>
+                <div className="flex items-center justify-between px-4 py-3 border-b border-border">
+                  <span className="text-foreground flex items-center gap-2">
+                    Tax
+                    <span className="text-[10px] font-semibold text-amber-600 bg-amber-50 dark:bg-amber-950/30 px-2 py-0.5 rounded">Non-refundable</span>
+                  </span>
+                  <span className="font-semibold text-red-600">− LKR {formatLKRWhole(tax)}</span>
+                </div>
+                {!byDoctor && cancellationFee > 0 && (
+                  <div className="flex items-center justify-between px-4 py-3 border-b border-border">
+                    <span className="text-foreground">Cancellation fee</span>
+                    <span className="font-semibold text-red-600">− LKR {formatLKRWhole(cancellationFee)}</span>
+                  </div>
+                )}
+                <div className="flex items-center justify-between px-4 py-3.5 bg-emerald-50/60 dark:bg-emerald-950/20">
+                  <span className="font-bold text-foreground">Total refunded to patient</span>
+                  <span className="font-black text-lg text-emerald-700 dark:text-emerald-400">LKR {formatLKRWhole(refundAmount)}</span>
+                </div>
+              </div>
+
+              <div className="flex items-start gap-2 rounded-xl bg-amber-50 dark:bg-amber-950/20 border border-amber-100 dark:border-amber-900/30 px-4 py-3">
+                <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                <p className="text-sm text-amber-700 dark:text-amber-300">
+                  Refund will be credited to your provided bank account within 3–5 business days.
+                </p>
+              </div>
+            </div>
+          );
+        })()}
       </Modal>
 
     </div>

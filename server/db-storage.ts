@@ -3,6 +3,7 @@ import {
   AppointmentStatus,
   DoctorStatus,
   PaymentStatus,
+  RefundStatus,
   UserRole,
   appointmentSlots,
   appointments,
@@ -147,6 +148,10 @@ function mapDoctorProfile(row: any): DoctorProfile {
     consultationFee: row.consultationFee || 0,
     onlineConsultationFee: row.onlineConsultationFee || undefined,
     homeVisitFee: row.homeVisitFee || undefined,
+    cancellationFeeEnabled: row.cancellationFeeEnabled ?? false,
+    cancellationFeeType: row.cancellationFeeType || undefined,
+    cancellationFeeAmount: row.cancellationFeeAmount ?? 0,
+    cancellationWindowHours: row.cancellationWindowHours ?? undefined,
     status: row.status || "pending",
     verificationDocuments: row.verificationDocuments || [],
     bankName: row.bankName || undefined,
@@ -1031,6 +1036,12 @@ export class DbStorage implements IStorage {
     id: string,
     reason: string,
     cancelledBy: string,
+    options?: {
+      cancellationFee?: number;
+      refundBankName?: string;
+      refundAccountNumber?: string;
+      refundBranch?: string;
+    },
   ): Promise<Appointment | undefined> {
     console.log(
       `[DB-STORAGE] 🛑 Cancelling appointment ID: ${id} by ${cancelledBy}`,
@@ -1089,10 +1100,24 @@ export class DbStorage implements IStorage {
         .from(refunds)
         .where(eq(refunds.paymentId, payment.id));
 
-      if (existingRefunds.length === 0) {
-        // Original refund calculation eka (tax saha booking charge adu karala)
-        const amountToRefund = payment.totalAmount - (payment.bookingCharges || 0) - (payment.tax || 0);
+      // Refund base = consultation fee only (booking charge + tax are non-refundable).
+      const consultationRefund = payment.totalAmount - (payment.bookingCharges || 0) - (payment.tax || 0);
+      // Patient cancellations additionally deduct the doctor's cancellation fee.
+      const cancellationFee = Math.max(0, Math.min(options?.cancellationFee || 0, consultationRefund));
+      const amountToRefund = consultationRefund - cancellationFee;
 
+      // Record the fee, bank details and refund status on the payment for the refund receipt.
+      await this.updatePayment(payment.id, {
+        cancellationFee,
+        refundAmount: amountToRefund,
+        refundStatus: RefundStatus.PROCESSING,
+        refundReason: reason || undefined,
+        ...(options?.refundBankName ? { refundBankName: options.refundBankName } : {}),
+        ...(options?.refundAccountNumber ? { refundAccountNumber: options.refundAccountNumber } : {}),
+        ...(options?.refundBranch ? { refundBranch: options.refundBranch } : {}),
+      } as any);
+
+      if (existingRefunds.length === 0) {
         if (amountToRefund > 0) {
           await this.createRefundRequest({
             paymentId: payment.id,
@@ -1100,7 +1125,7 @@ export class DbStorage implements IStorage {
             patientId: updated.patientId,
             amount: amountToRefund,
             // Cancel karapu reason eka Admin Refund table ekata yawenawa
-            reason: `${cancelledBy.toUpperCase()} CANCELLATION: ${reason || 'No specific reason provided'}`, 
+            reason: `${cancelledBy.toUpperCase()} CANCELLATION: ${reason || 'No specific reason provided'}`,
             status: "pending",
           });
           console.log(`[DB-STORAGE] ✅ Auto-Refund request created successfully.`);
@@ -1115,6 +1140,17 @@ export class DbStorage implements IStorage {
       createdAt: toISOString(updated.createdAt),
       updatedAt: toISOString(updated.updatedAt),
     } as Appointment;
+  }
+
+  // How many appointments this patient has self-cancelled today (for the daily cancel limit).
+  async countPatientCancellationsToday(patientId: string): Promise<number> {
+    const result = await pool.query(
+      `SELECT COUNT(*)::int AS cnt FROM appointments
+       WHERE patient_id = $1 AND status = 'cancelled' AND cancelled_by = 'patient'
+       AND updated_at::date = CURRENT_DATE`,
+      [patientId],
+    );
+    return result.rows[0]?.cnt ?? 0;
   }
 
   async getPayment(id: string): Promise<Payment | undefined> {
@@ -2772,6 +2808,7 @@ export class DbStorage implements IStorage {
           status: PaymentStatus.REFUNDED,
           refundAmount: refundRecord.amount,
           refundReason: refundRecord.reason,
+          refundStatus: RefundStatus.COMPLETED,
           refundDate: new Date().toISOString().split("T")[0],
         })
         .where(eq(payments.id, refundRecord.paymentId));

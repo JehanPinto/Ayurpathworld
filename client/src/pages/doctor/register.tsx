@@ -59,6 +59,7 @@ import { z } from "zod";
 import { HospitalModal } from "@/components/ui/hospital-modal";
 import type { InsertHospital } from "@shared/schema";
 import { HospitalViewModal } from "@/components/ui/hospital-view-modal";
+import { SRI_LANKAN_BANKS } from "@/lib/banks";
 
 const buildPersonalInfoSchema = (requirePassword: boolean) =>
   z
@@ -186,35 +187,6 @@ const DOCUMENT_CATEGORIES = [
     required: false,
     icon: FileText,
   },
-];
-
-const SRI_LANKAN_BANKS = [
-  { name: "Amana Bank PLC", domain: "amanabank.lk" },
-  { name: "Axis Bank Ltd", domain: "axisbank.com" },
-  { name: "Bank of Ceylon", domain: "boc.lk" },
-  { name: "Cargills Bank PLC", domain: "cargillsbank.com" },
-  { name: "Citibank, N.A.", domain: "citibank.com" },
-  { name: "Commercial Bank of Ceylon PLC", domain: "combank.lk" },
-  { name: "Deutsche Bank AG", domain: "db.com" },
-  { name: "DFCC Bank PLC", domain: "dfcc.lk" },
-  { name: "Habib Bank Ltd", domain: "hbl.com" },
-  { name: "Hatton National Bank PLC", domain: "hnb.net" },
-  { name: "HSBC", domain: "hsbc.lk" },
-  { name: "ICICI Bank Ltd", domain: "icicibank.com" },
-  { name: "Indian Bank", domain: "indianbank.in" },
-  { name: "Indian Overseas Bank", domain: "iob.in" },
-  { name: "MCB Bank Ltd", domain: "mcb.com.pk" },
-  { name: "National Development Bank PLC", domain: "ndbbank.com" },
-  { name: "Nations Trust Bank PLC", domain: "nationstrust.com" },
-  { name: "Pan Asia Banking Corporation PLC", domain: "pabcbank.com" },
-  { name: "People's Bank", domain: "peoplesbank.lk" },
-  { name: "Public Bank Berhad", domain: "publicbankgroup.com" },
-  { name: "Sampath Bank PLC", domain: "sampath.lk" },
-  { name: "Seylan Bank PLC", domain: "seylan.lk" },
-  { name: "Standard Chartered Bank", domain: "sc.com" },
-  { name: "State Bank of India", domain: "sbi.co.in" },
-  { name: "Union Bank of Colombo PLC", domain: "unionb.com" },
-  { name: "Other", domain: "" },
 ];
 
 export default function DoctorRegisterPage() {
