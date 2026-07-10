@@ -3757,6 +3757,11 @@ export async function registerRoutes(
           return res.status(404).json({ error: "Appointment not found" });
         }
 
+        // A cancellation reason is required for both patient- and doctor-initiated cancellations (SCRUM-58/59).
+        if (!reason?.trim()) {
+          return res.status(400).json({ error: "A cancellation reason is required." });
+        }
+
         const isPatient = req.user!.role === UserRole.PATIENT;
         const PATIENT_DAILY_CANCEL_LIMIT = 5;
 
@@ -3836,6 +3841,8 @@ export async function registerRoutes(
             : null;
           const patientUser = await storage.getUser(existing.patientId);
           const doctorName = doctorUser?.fullName || "your doctor";
+          // Strip any existing "Dr." prefix so we never render "Dr. Dr. Name".
+          const doctorDisplay = doctorName.replace(/^Dr\.?\s*/i, "");
           const patientName = patientUser?.fullName || "A patient";
           const months = [
             "Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -3845,49 +3852,61 @@ export async function registerRoutes(
           const formattedDate = `${parseInt(dy)} ${months[parseInt(mo) - 1]}`;
           const formattedTime = formatTime12h(existing.appointmentTime);
 
-          // Notify patient
-          await storage.createNotification({
-            userId: existing.patientId,
-            title: "Appointment cancelled",
-            message: `Your ${formattedDate} at ${formattedTime} appointment with Dr. ${doctorName} has been cancelled. You may rebook at your convenience.`,
-            type: "appointment",
-            isRead: false,
-            relatedId: appointment.id,
-          });
-
-          await storage.createNotification({
-            userId: existing.patientId, title: "Appointment cancelled",
-            message: `Your appointment with Dr. ${doctorUser?.fullName} has been cancelled.`,
-            type: "appointment", isRead: false, relatedId: appointment.id,
-          });
-
-          // Notify doctor
-          if (doctorProfile) {
-            await storage.createNotification({
-              userId: doctorProfile.userId,
-              title: "Appointment Cancellation Notice",
-              message: `${patientName} has cancelled their ${formattedDate} at ${formattedTime} appointment.`,
-              type: "appointment",
-              isRead: false,
-              relatedId: appointment.id,
-            });
-          }
-
-          // Notify all admins about the cancelled appointment
-          const cancelAdmins = await storage.getAllUsers("admin");
-          const cancelledBy = req.user!.role === UserRole.DOCTOR ? `Dr. ${doctorName}` : patientName;
-          await Promise.all(
-            cancelAdmins.map((a) =>
-              storage.createNotification({
-                userId: a.id,
+          // Role-aware cancellation notifications (SCRUM-65).
+          // Wrapped so a notification failure can never break a successful cancellation.
+          try {
+            if (req.user!.role === UserRole.PATIENT) {
+              // Patient cancelled -> notify the doctor.
+              if (doctorProfile) {
+                await storage.createNotification({
+                  userId: doctorProfile.userId,
+                  title: "Appointment cancelled by patient",
+                  message: `${patientName} cancelled their ${formattedDate} at ${formattedTime} appointment.`,
+                  type: "appointment",
+                  isRead: false,
+                  relatedId: appointment.id,
+                });
+              }
+            } else if (req.user!.role === UserRole.DOCTOR) {
+              // Doctor cancelled -> notify the patient.
+              await storage.createNotification({
+                userId: existing.patientId,
                 title: "Appointment cancelled",
-                message: `${cancelledBy} cancelled the ${formattedDate} at ${formattedTime} appointment (${patientName} with Dr. ${doctorName}).`,
-                type: "system",
+                message: `Dr. ${doctorDisplay} cancelled your ${formattedDate} at ${formattedTime} appointment. A full consultation-fee refund is being processed.`,
+                type: "appointment",
                 isRead: false,
                 relatedId: appointment.id,
-              }),
-            ),
-          );
+              });
+            } else {
+              // Admin cancelled -> notify the patient.
+              await storage.createNotification({
+                userId: existing.patientId,
+                title: "Appointment cancelled",
+                message: `Your ${formattedDate} at ${formattedTime} appointment with Dr. ${doctorDisplay} has been cancelled.`,
+                type: "appointment",
+                isRead: false,
+                relatedId: appointment.id,
+              });
+            }
+
+            // Always notify admins about the cancelled appointment.
+            const cancelAdmins = await storage.getAllUsers("admin");
+            const cancelledBy = req.user!.role === UserRole.DOCTOR ? `Dr. ${doctorDisplay}` : patientName;
+            await Promise.all(
+              cancelAdmins.map((a) =>
+                storage.createNotification({
+                  userId: a.id,
+                  title: "Appointment cancelled",
+                  message: `${cancelledBy} cancelled the ${formattedDate} at ${formattedTime} appointment (${patientName} with Dr. ${doctorDisplay}).`,
+                  type: "system",
+                  isRead: false,
+                  relatedId: appointment.id,
+                }),
+              ),
+            );
+          } catch (notifyErr) {
+            console.error("Cancellation notifications failed:", notifyErr);
+          }
         }
 
         res.json(appointment);

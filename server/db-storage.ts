@@ -2812,6 +2812,21 @@ export class DbStorage implements IStorage {
           refundDate: new Date().toISOString().split("T")[0],
         })
         .where(eq(payments.id, refundRecord.paymentId));
+
+      // Notify the patient that their refund is complete (SCRUM-65).
+      // Wrapped so a notification failure never breaks refund processing.
+      try {
+        await this.createNotification({
+          userId: refundRecord.patientId,
+          title: "Refund completed",
+          message: `Your refund of LKR ${refundRecord.amount} has been completed and will reflect in your account shortly.`,
+          type: "payment",
+          isRead: false,
+          relatedId: refundRecord.appointmentId,
+        });
+      } catch (notifyErr) {
+        console.error("Refund-completed notification failed:", notifyErr);
+      }
     }
 
     // AUTO AUDIT LOG FOR REFUNDS
