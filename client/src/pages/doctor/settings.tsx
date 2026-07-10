@@ -1116,10 +1116,13 @@ export default function DoctorSettings() {
                             </FormControl>
                             <SelectContent>
                               <SelectItem value="15">15 minutes</SelectItem>
-                              <SelectItem value="20">20 minutes</SelectItem>
                               <SelectItem value="30">30 minutes</SelectItem>
                               <SelectItem value="45">45 minutes</SelectItem>
-                              <SelectItem value="60">60 minutes</SelectItem>
+                              <SelectItem value="60">1 hour</SelectItem>
+                              <SelectItem value="75">1 hour 15 minutes</SelectItem>
+                              <SelectItem value="90">1 hour 30 minutes</SelectItem>
+                              <SelectItem value="105">1 hour 45 minutes</SelectItem>
+                              <SelectItem value="120">2 hours</SelectItem>
                             </SelectContent>
                           </Select>
                           <FormMessage />

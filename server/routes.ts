@@ -3096,13 +3096,21 @@ export async function registerRoutes(
           return res.status(400).json({ error: "Cannot schedule slots for past times today." });
         }
 
+        const duration = profile.slotDurationMinutes || 30;
+        const [h, m] = data.startTime.split(":").map(Number);
+        const endD = new Date();
+        endD.setHours(h, m + duration, 0, 0);
+
+        data.endTime = `${endD.getHours().toString().padStart(2, "0")}:${endD.getMinutes().toString().padStart(2, "0")}`;
+
         const existingSlots = await storage.getAvailableSlots(profile.id, data.date);
 
         const normalizeTime = (t: string) => (t ? t.substring(0, 5) : "");
-
         const isOverlap = (s1: string, e1: string, s2: string, e2: string) => {
           return normalizeTime(s1) < normalizeTime(e2) && normalizeTime(s2) < normalizeTime(e1);
         };
+
+
 
         const hasOverlap = existingSlots.some((slot) => 
           !slot.isBlocked && 
