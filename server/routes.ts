@@ -110,6 +110,35 @@ function validateDoctorFees(fees: { consultationFee?: number; onlineConsultation
 }
 
 // Bank details format validation
+// Compute the doctor's cancellation fee charged to a patient who cancels.
+// Returns 0 if the fee is disabled or the cancellation is outside the doctor's window.
+// The fee never exceeds the consultation fee.
+function computeDoctorCancellationFee(
+  doctor: {
+    cancellationFeeEnabled?: boolean | null;
+    cancellationFeeType?: string | null;
+    cancellationFeeAmount?: number | null;
+    cancellationWindowHours?: number | null;
+  } | undefined | null,
+  consultationFee: number,
+  appointmentDate: string,
+  appointmentTime: string,
+): number {
+  if (!doctor?.cancellationFeeEnabled) return 0;
+  const windowHours = doctor.cancellationWindowHours ?? 0;
+  if (windowHours > 0) {
+    const apptDateTime = new Date(`${appointmentDate}T${appointmentTime}`);
+    const hoursUntil = (apptDateTime.getTime() - Date.now()) / (1000 * 60 * 60);
+    if (hoursUntil > windowHours) return 0; // cancelled before the window → no fee
+  }
+  const rawAmount = doctor.cancellationFeeAmount || 0;
+  const fee =
+    doctor.cancellationFeeType === "percentage"
+      ? Math.round((consultationFee * rawAmount) / 100)
+      : rawAmount;
+  return Math.max(0, Math.min(fee, consultationFee));
+}
+
 function validateBankDetails(acc?: string | null, branch?: string | null) {
   if (acc && !/^\d{6,20}$/.test(acc.replace(/\s|-/g, ''))) {
     return "Invalid bank account number format (must be 6-20 digits)";
@@ -989,6 +1018,7 @@ export async function registerRoutes(
         res.status(201).json({ user: userWithoutPassword, token });
 
       } catch (error) {
+        console.error("Doctor registration failed:", error);
         const tFailed = new Date().toISOString();
         const { ipAddress, device, location, sessionId } = getReqInfo(req);
         const { actorId, actorRole } = await getActorInfo(req);
@@ -1022,16 +1052,33 @@ export async function registerRoutes(
           return res.status(400).json({ error: "Validation failed", details: error.errors });
         }
 
+        if ((error as any)?.code === '23505' && (error as any)?.constraint === 'doctor_profiles_registration_number_unique') {
+          try {
+            await storage.createAuditLog({
+              actorId, actorRole,
+              action: 'DOCTOR_REGISTERED', status: 'failed',
+              entityType: 'user', entityId: 'N/A',
+              ipAddress, device, location, sessionId: 'N/A',
+              metadata: {
+                auditType: "AUTH",
+                reason: 'validation failed (400 Bad Request) - duplicate registration number',
+                timeline: { requestReceivedAt: tRequestReceived, completedAt: tFailed }
+              }
+            });
+          } catch (e) {}
+          return res.status(400).json({ error: "This registration number is already registered. Please check your registration number and try again." });
+        }
+
         try {
           await storage.createAuditLog({
-            actorId, actorRole, 
+            actorId, actorRole,
             action: 'DOCTOR_REGISTERED', status: 'failed',
-            entityType: 'system', entityId: 'N/A', 
+            entityType: 'system', entityId: 'N/A',
             ipAddress, device, location, sessionId: 'N/A',
-            metadata: { 
+            metadata: {
               auditType: "AUTH",
-              reason: 'server error (500)', 
-              timeline: { requestReceivedAt: tRequestReceived, completedAt: tFailed } 
+              reason: 'server error (500)',
+              timeline: { requestReceivedAt: tRequestReceived, completedAt: tFailed }
             }
           });
         } catch (e) {}
@@ -1694,6 +1741,7 @@ export async function registerRoutes(
         const { password: _, ...userWithoutPassword } = updatedUser;
         res.cookie("token", token, cookieOptions).json({ user: userWithoutPassword, token });
       } catch (error) {
+        console.error("Failed to complete registration:", error);
         const tFailed = new Date().toISOString();
         if (error instanceof z.ZodError) {
           try {
@@ -2067,6 +2115,7 @@ export async function registerRoutes(
 
       res.json({ token, email });
     } catch (error) {
+      console.error("Failed to create registration session:", error);
       res.status(500).json({ error: "Failed to create registration session" });
     }
   });
@@ -3066,13 +3115,21 @@ export async function registerRoutes(
           return res.status(400).json({ error: "Cannot schedule slots for past times today." });
         }
 
+        const duration = profile.slotDurationMinutes || 30;
+        const [h, m] = data.startTime.split(":").map(Number);
+        const endD = new Date();
+        endD.setHours(h, m + duration, 0, 0);
+
+        data.endTime = `${endD.getHours().toString().padStart(2, "0")}:${endD.getMinutes().toString().padStart(2, "0")}`;
+
         const existingSlots = await storage.getAvailableSlots(profile.id, data.date);
 
         const normalizeTime = (t: string) => (t ? t.substring(0, 5) : "");
-
         const isOverlap = (s1: string, e1: string, s2: string, e2: string) => {
           return normalizeTime(s1) < normalizeTime(e2) && normalizeTime(s2) < normalizeTime(e1);
         };
+
+
 
         const hasOverlap = existingSlots.some((slot) => 
           !slot.isBlocked && 
@@ -3720,17 +3777,39 @@ export async function registerRoutes(
 
       try {
 
-        if (req.user!.role === UserRole.PATIENT) {
-          return res.status(403).json({ error: "Patients are not allowed to cancel appointments directly." });
-        }
-
-        const { reason } = req.body;
+        const { reason, bankName, bankAccountNumber, bankBranch } = req.body;
         const existing = await storage.getAppointment(req.params.id);
 
         if (!existing) {
           return res.status(404).json({ error: "Appointment not found" });
         }
-        
+
+        // A cancellation reason is required for both patient- and doctor-initiated cancellations (SCRUM-58/59).
+        if (!reason?.trim()) {
+          return res.status(400).json({ error: "A cancellation reason is required." });
+        }
+
+        const isPatient = req.user!.role === UserRole.PATIENT;
+        const PATIENT_DAILY_CANCEL_LIMIT = 5;
+
+        if (isPatient) {
+          // Patients may only cancel their own appointments.
+          if (existing.patientId !== req.user!.id) {
+            return res.status(403).json({ error: "You can only cancel your own appointments." });
+          }
+          // Enforce the daily cancellation limit.
+          const cancelledToday = await storage.countPatientCancellationsToday(req.user!.id);
+          if (cancelledToday >= PATIENT_DAILY_CANCEL_LIMIT) {
+            return res.status(429).json({
+              error: `You have reached your daily cancellation limit (${PATIENT_DAILY_CANCEL_LIMIT} per day). Please try again tomorrow.`,
+            });
+          }
+          // Bank details are required so the refund can be paid out.
+          if (!bankName?.trim() || !bankAccountNumber?.trim() || !bankBranch?.trim()) {
+            return res.status(400).json({ error: "Please provide your bank name, account number and branch for the refund." });
+          }
+        }
+
         const cancellableStatuses = [AppointmentStatus.PENDING, AppointmentStatus.CONFIRMED];
         if (!cancellableStatuses.includes(existing.status as AppointmentStatus)) {
           return res.status(400).json({
@@ -3738,17 +3817,38 @@ export async function registerRoutes(
           });
         }
 
+        const doctorProfile = await storage.getDoctorProfile(existing.doctorId);
+
+        // For a patient cancellation, work out the doctor's cancellation fee (deducted from the refund).
+        let patientCancellationFee = 0;
+        if (isPatient) {
+          const pmt = await storage.getPaymentByAppointment(existing.id);
+          const consultationRefundBase = pmt
+            ? pmt.totalAmount - (pmt.bookingCharges || 0) - (pmt.tax || 0)
+            : (doctorProfile?.consultationFee || 0);
+          patientCancellationFee = computeDoctorCancellationFee(
+            doctorProfile,
+            consultationRefundBase,
+            existing.appointmentDate,
+            existing.appointmentTime,
+          );
+        }
+
         const appointment = await storage.cancelAppointment(
           req.params.id,
           reason,
           req.user!.role,
+          isPatient
+            ? {
+                cancellationFee: patientCancellationFee,
+                refundBankName: bankName,
+                refundAccountNumber: bankAccountNumber,
+                refundBranch: bankBranch,
+              }
+            : undefined,
         );
 
         if (appointment && existing) {
-          const doctorProfile = await storage.getDoctorProfile(
-            existing.doctorId,
-          );
-
           // When the doctor cancels, charge the flat cancellation fee from platform settings
           if (req.user!.role === UserRole.DOCTOR && doctorProfile) {
             const platformSettings = await storage.getPlatformSettings();
@@ -3768,6 +3868,8 @@ export async function registerRoutes(
             : null;
           const patientUser = await storage.getUser(existing.patientId);
           const doctorName = doctorUser?.fullName || "your doctor";
+          // Strip any existing "Dr." prefix so we never render "Dr. Dr. Name".
+          const doctorDisplay = doctorName.replace(/^Dr\.?\s*/i, "");
           const patientName = patientUser?.fullName || "A patient";
           const months = [
             "Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -3777,49 +3879,61 @@ export async function registerRoutes(
           const formattedDate = `${parseInt(dy)} ${months[parseInt(mo) - 1]}`;
           const formattedTime = formatTime12h(existing.appointmentTime);
 
-          // Notify patient
-          await storage.createNotification({
-            userId: existing.patientId,
-            title: "Appointment cancelled",
-            message: `Your ${formattedDate} at ${formattedTime} appointment with Dr. ${doctorName} has been cancelled. You may rebook at your convenience.`,
-            type: "appointment",
-            isRead: false,
-            relatedId: appointment.id,
-          });
-
-          await storage.createNotification({
-            userId: existing.patientId, title: "Appointment cancelled",
-            message: `Your appointment with Dr. ${doctorUser?.fullName} has been cancelled.`,
-            type: "appointment", isRead: false, relatedId: appointment.id,
-          });
-
-          // Notify doctor
-          if (doctorProfile) {
-            await storage.createNotification({
-              userId: doctorProfile.userId,
-              title: "Appointment Cancellation Notice",
-              message: `${patientName} has cancelled their ${formattedDate} at ${formattedTime} appointment.`,
-              type: "appointment",
-              isRead: false,
-              relatedId: appointment.id,
-            });
-          }
-
-          // Notify all admins about the cancelled appointment
-          const cancelAdmins = await storage.getAllUsers("admin");
-          const cancelledBy = req.user!.role === UserRole.DOCTOR ? `Dr. ${doctorName}` : patientName;
-          await Promise.all(
-            cancelAdmins.map((a) =>
-              storage.createNotification({
-                userId: a.id,
+          // Role-aware cancellation notifications (SCRUM-65).
+          // Wrapped so a notification failure can never break a successful cancellation.
+          try {
+            if (req.user!.role === UserRole.PATIENT) {
+              // Patient cancelled -> notify the doctor.
+              if (doctorProfile) {
+                await storage.createNotification({
+                  userId: doctorProfile.userId,
+                  title: "Appointment cancelled by patient",
+                  message: `${patientName} cancelled their ${formattedDate} at ${formattedTime} appointment.`,
+                  type: "appointment",
+                  isRead: false,
+                  relatedId: appointment.id,
+                });
+              }
+            } else if (req.user!.role === UserRole.DOCTOR) {
+              // Doctor cancelled -> notify the patient.
+              await storage.createNotification({
+                userId: existing.patientId,
                 title: "Appointment cancelled",
-                message: `${cancelledBy} cancelled the ${formattedDate} at ${formattedTime} appointment (${patientName} with Dr. ${doctorName}).`,
-                type: "system",
+                message: `Dr. ${doctorDisplay} cancelled your ${formattedDate} at ${formattedTime} appointment. A full consultation-fee refund is being processed.`,
+                type: "appointment",
                 isRead: false,
                 relatedId: appointment.id,
-              }),
-            ),
-          );
+              });
+            } else {
+              // Admin cancelled -> notify the patient.
+              await storage.createNotification({
+                userId: existing.patientId,
+                title: "Appointment cancelled",
+                message: `Your ${formattedDate} at ${formattedTime} appointment with Dr. ${doctorDisplay} has been cancelled.`,
+                type: "appointment",
+                isRead: false,
+                relatedId: appointment.id,
+              });
+            }
+
+            // Always notify admins about the cancelled appointment.
+            const cancelAdmins = await storage.getAllUsers("admin");
+            const cancelledBy = req.user!.role === UserRole.DOCTOR ? `Dr. ${doctorDisplay}` : patientName;
+            await Promise.all(
+              cancelAdmins.map((a) =>
+                storage.createNotification({
+                  userId: a.id,
+                  title: "Appointment cancelled",
+                  message: `${cancelledBy} cancelled the ${formattedDate} at ${formattedTime} appointment (${patientName} with Dr. ${doctorDisplay}).`,
+                  type: "system",
+                  isRead: false,
+                  relatedId: appointment.id,
+                }),
+              ),
+            );
+          } catch (notifyErr) {
+            console.error("Cancellation notifications failed:", notifyErr);
+          }
         }
 
         res.json(appointment);
@@ -7563,6 +7677,65 @@ export async function registerRoutes(
       res.status(400).json({ error: error.message || "Failed to process free payout" });
     }
   });
+
+  app.post(
+    "/api/doctor/export",
+    authMiddleware,
+    roleMiddleware(UserRole.DOCTOR),
+    async (req: AuthenticatedRequest, res: Response) => {
+      try {
+        const { startDate, endDate, reportType, format } = req.body;
+        
+        const profile = await storage.getDoctorProfileByUserId(req.user!.id);
+        if (!profile) return res.status(404).json({ error: "Doctor profile not found" });
+
+        const data = await storage.getDoctorExportData(profile.id, startDate, endDate);
+
+        if (format === "json") {
+          return res.json({
+            reportGeneratedAt: new Date().toISOString(),
+            dateRange: { startDate, endDate },
+            data: {
+              ...(reportType === "earnings" || reportType === "all" ? { payments: data.payments } : {}),
+              ...(reportType === "appointments" || reportType === "all" ? { appointments: data.appointments } : {}),
+            }
+          });
+        }
+
+        // Generate CSV format
+        if (format === "csv") {
+          let csvContent = `Report Generated: ${new Date().toISOString()}\nDate Range: ${startDate} to ${endDate}\n\n`;
+          
+          if (reportType === "earnings" || reportType === "all") {
+            csvContent += "--- EARNINGS REPORT ---\n";
+            csvContent += "Date,Status,Method,Total Amount (LKR),Platform Commission (LKR),Your Earnings (LKR)\n";
+            data.payments.forEach(p => {
+              csvContent += `"${p.createdAt.split('T')[0]}","${p.status}","${p.method}","${p.totalAmount}","${p.platformCommission}","${p.doctorEarnings}"\n`;
+            });
+            csvContent += "\n";
+          }
+
+          if (reportType === "appointments" || reportType === "all") {
+            csvContent += "--- APPOINTMENTS REPORT ---\n";
+            csvContent += "Date,Time,Patient Name,Type,Status,Symptoms\n";
+            data.appointments.forEach(a => {
+              // Wrap strings in quotes to avoid CSV breaking on commas inside text
+              const safeSymptoms = a.symptoms.replace(/"/g, '""');
+              csvContent += `"${a.appointmentDate}","${a.appointmentTime}","${a.patient.fullName}","${a.consultationType}","${a.status}","${safeSymptoms}"\n`;
+            });
+          }
+
+          res.setHeader('Content-Type', 'text/csv');
+          res.setHeader('Content-Disposition', `attachment; filename=doctor_report_${startDate}_to_${endDate}.csv`);
+          return res.status(200).send(csvContent);
+        }
+        res.status(400).json({ error: "Invalid format requested" });
+      } catch (error) {
+        console.error("Export Error:", error);
+        res.status(500).json({ error: "Failed to generate report" });
+      }
+    }
+  );
   
   return httpServer;
 }

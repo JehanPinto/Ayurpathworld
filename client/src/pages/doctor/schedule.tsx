@@ -129,14 +129,9 @@ export default function DoctorSchedule() {
     if (selectedDateStr !== todayDateStr) {
       return timeSlots;
     }
-
-    const threeHoursFromNow = addHours(new Date(), 3);
-    return timeSlots.filter(time => {
-      const [hours, minutes] = time.split(':');
-      const slotDate = new Date();
-      slotDate.setHours(parseInt(hours, 10), parseInt(minutes, 10), 0, 0);
-      return !isBefore(slotDate, threeHoursFromNow);
-    });
+    // For today, only allow times strictly in the future
+    const nowTimeStr = getCurrentTimeStr();
+    return timeSlots.filter(time => time > nowTimeStr);
   };
 
   const currentAvailableStartTimes = getAvailableStartTimes(newSlot.date);
@@ -145,16 +140,13 @@ export default function DoctorSchedule() {
   const validEndTimes = timeSlots.filter((time) => time > newSlot.startTime);
 
   useEffect(() => {
-    const availableForDate = getAvailableStartTimes(newSlot.date);
-    if (!availableForDate.includes(newSlot.startTime)) {
-      const firstAvailable = availableForDate[0] || "";
+    if (profile?.slotDurationMinutes && newSlot.startTime) {
       setNewSlot(prev => ({
         ...prev,
-        startTime: firstAvailable,
-        endTime: firstAvailable ? timeSlots[timeSlots.indexOf(firstAvailable) + 1] || firstAvailable : ""
+        endTime: addMinutesToTime(prev.startTime, profile.slotDurationMinutes)
       }));
     }
-  }, [newSlot.date]);
+  }, [newSlot.startTime, profile?.slotDurationMinutes]);
 
   const {
     data: slots = [],
@@ -187,9 +179,14 @@ export default function DoctorSchedule() {
       queryClient.invalidateQueries({ queryKey: ["/api/doctor/slots"] });
       toast({ title: "Slot created successfully" });
       
+      // Easily set up the next continuous slot
+      const nextStart = newSlot.endTime;
+      const nextEnd = addMinutesToTime(nextStart, profile?.slotDurationMinutes || 30);
+
       setNewSlot((prev) => ({ 
         ...prev, 
-        startTime: prev.endTime
+        startTime: nextStart,
+        endTime: nextEnd
       })); 
       
       setIsModalOpen(false); 
@@ -237,24 +234,7 @@ export default function DoctorSchedule() {
       return;
     }
 
-    // Time Logic Validation
-    if (newSlot.date === todayDateStr) {
-      const [hours, minutes] = newSlot.startTime.split(':');
-      const slotDate = new Date();
-      slotDate.setHours(parseInt(hours, 10), parseInt(minutes, 10), 0, 0);
-      const threeHoursFromNow = addHours(new Date(), 3);
-      
-      if (isBefore(slotDate, threeHoursFromNow)) {
-        toast({ 
-          title: "Too early for today", 
-          description: "Appointments for today must be scheduled at least 3 hours in advance.", 
-          variant: "destructive" 
-        });
-        return;
-      }
-    }
-
-    // 1. PAST TIME CHECK: Ada dawase denata pahu wela thiyena time ekak nam danna ba
+    // PAST TIME CHECK
     if (newSlot.date === todayDateStr && newSlot.startTime < getCurrentTimeStr()) {
       toast({ 
         title: "Invalid Time", 
@@ -264,9 +244,8 @@ export default function DoctorSchedule() {
       return;
     }
 
-    // 2. OVERLAP CHECK: Normalize karapu time ekka check karanawa
+    // OVERLAP CHECK
     const existingSlotsOnDate = slots.filter((s) => s.date === newSlot.date && !s.isBlocked);
-    
     const overlappingSlot = existingSlotsOnDate.find((existingSlot) => {
        return isTimeOverlap(newSlot.startTime, newSlot.endTime, existingSlot.startTime, existingSlot.endTime);
     });
@@ -649,22 +628,56 @@ export default function DoctorSchedule() {
                     setNewSlot(prev => ({ 
                       ...prev, 
                       startTime: v,
-                      endTime: prev.endTime <= v ? timeSlots[timeSlots.indexOf(v) + 1] || v : prev.endTime 
+                      // End time is auto-handled by useEffect, but we update it here synchronously for zero-lag
+                      endTime: addMinutesToTime(v, profile?.slotDurationMinutes || 30)
                     }));
                   }}
                 >
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent className="max-h-[200px]">
-                    {timeSlots.map((time) => {
-                      // Ada dawase past time ekak nam option eka disable karanawa
+                    {currentAvailableStartTimes.map((time) => {
                       const isPastTime = newSlot.date === todayDateStr && time < getCurrentTimeStr();
-                      
                       return (
                         <SelectItem key={time} value={time} disabled={isPastTime}>
                           {formatTimeAMPM(time)}
                         </SelectItem>
                       );
                     })}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+              <Label>End Time</Label>
+              <Input 
+                value={formatTimeAMPM(newSlot.endTime)} 
+                disabled 
+                className="bg-muted cursor-not-allowed text-muted-foreground font-medium"
+              />
+              <p className="text-[11px] text-muted-foreground pt-1">
+                Auto-calculated ({profile?.slotDurationMinutes || 30} min duration)
+              </p>
+            </div>
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>Start Time</Label>
+                <Select 
+                  value={newSlot.startTime} 
+                  onValueChange={(v) => {
+                    setNewSlot(prev => ({ 
+                      ...prev, 
+                      startTime: v,
+                      endTime: prev.endTime <= v ? timeSlots[timeSlots.indexOf(v) + 1] || v : prev.endTime 
+                    }));
+                  }}
+                >
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent className="max-h-[200px]">
+                    {currentAvailableStartTimes.map((time) => (
+                      <SelectItem key={time} value={time}>{formatTimeAMPM(time)}</SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>
@@ -681,7 +694,7 @@ export default function DoctorSchedule() {
                 </Select>
               </div>
             </div>
-          ) : null}
+          )}
 
           {/* Mode Picker */}
           <div className="space-y-2">

@@ -1,5 +1,19 @@
 // test
 import { useState, useRef, useEffect, type FormEvent } from "react";
+
+// Cancellation window <-> hours mapping (UI label <-> stored hours).
+const WINDOW_OPTIONS: { label: string; hours: number }[] = [
+  { label: "7 days", hours: 168 },
+  { label: "6 days", hours: 144 },
+  { label: "5 days", hours: 120 },
+  { label: "4 days", hours: 96 },
+  { label: "36 Hours", hours: 36 },
+  { label: "24 Hours", hours: 24 },
+];
+const windowLabelToHours = (label: string): number =>
+  WINDOW_OPTIONS.find((o) => o.label === label)?.hours ?? 0;
+const hoursToWindowLabel = (hours?: number | null): string =>
+  WINDOW_OPTIONS.find((o) => o.hours === hours)?.label ?? "";
 import { useLocation } from "wouter";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -119,7 +133,7 @@ export default function DoctorSettings() {
   const [activeTab, setActiveTab] = useState("profile");
   const [isUploadingImage, setIsUploadingImage] = useState(false);
 
-  // Cancellation Policy (UI-only for now — not yet wired to the backend)
+  // Cancellation Policy
   const [cancellationFeeEnabled, setCancellationFeeEnabled] = useState(false);
   const [cancellationFeeType, setCancellationFeeType] = useState<"" | "amount" | "percentage">("");
   const [cancellationFeeAmount, setCancellationFeeAmount] = useState("");
@@ -219,6 +233,12 @@ export default function DoctorSettings() {
         slotDurationMinutes: doctorProfile.slotDurationMinutes || 30,
         bufferTimeMinutes: doctorProfile.bufferTimeMinutes || 10,
       });
+      // Load cancellation policy into local state.
+      const dp = doctorProfile as any;
+      setCancellationFeeEnabled(dp.cancellationFeeEnabled ?? false);
+      setCancellationFeeType((dp.cancellationFeeType as "amount" | "percentage") || "");
+      setCancellationFeeAmount(dp.cancellationFeeAmount ? String(dp.cancellationFeeAmount) : "");
+      setCancellationWindow(hoursToWindowLabel(dp.cancellationWindowHours));
     }
   }, [doctorProfile, doctorProfileForm]);
 
@@ -482,7 +502,38 @@ export default function DoctorSettings() {
   };
 
   const onDoctorProfileSubmit = (data: DoctorProfileFormData) => {
-    updateDoctorProfileMutation.mutate(data);
+    // Assemble + validate the cancellation policy.
+    let cancellationPayload: Record<string, any> = { cancellationFeeEnabled: false };
+    if (cancellationFeeEnabled) {
+      const amt = parseInt(cancellationFeeAmount) || 0;
+      if (!cancellationFeeType) {
+        toast({ title: "Select a fee type", description: "Choose Amount or Percentage.", variant: "destructive" });
+        return;
+      }
+      if (amt <= 0) {
+        toast({ title: "Enter a fee amount", description: "The cancellation fee must be greater than 0.", variant: "destructive" });
+        return;
+      }
+      if (cancellationFeeType === "percentage" && amt > 100) {
+        toast({ title: "Invalid percentage", description: "The cancellation fee cannot exceed 100%.", variant: "destructive" });
+        return;
+      }
+      if (cancellationFeeType === "amount" && amt > (Number(data.consultationFee) || 0)) {
+        toast({ title: "Fee too high", description: `The cancellation fee cannot exceed the consultation fee (Rs.${Number(data.consultationFee) || 0}).`, variant: "destructive" });
+        return;
+      }
+      if (!cancellationWindow) {
+        toast({ title: "Select a window", description: "Choose when the fee applies.", variant: "destructive" });
+        return;
+      }
+      cancellationPayload = {
+        cancellationFeeEnabled: true,
+        cancellationFeeType,
+        cancellationFeeAmount: amt,
+        cancellationWindowHours: windowLabelToHours(cancellationWindow),
+      };
+    }
+    updateDoctorProfileMutation.mutate({ ...data, ...cancellationPayload } as any);
   };
 
   const onPasswordSubmit = (data: PasswordFormData) => {
@@ -1066,10 +1117,13 @@ export default function DoctorSettings() {
                             </FormControl>
                             <SelectContent>
                               <SelectItem value="15">15 minutes</SelectItem>
-                              <SelectItem value="20">20 minutes</SelectItem>
                               <SelectItem value="30">30 minutes</SelectItem>
                               <SelectItem value="45">45 minutes</SelectItem>
-                              <SelectItem value="60">60 minutes</SelectItem>
+                              <SelectItem value="60">1 hour</SelectItem>
+                              <SelectItem value="75">1 hour 15 minutes</SelectItem>
+                              <SelectItem value="90">1 hour 30 minutes</SelectItem>
+                              <SelectItem value="105">1 hour 45 minutes</SelectItem>
+                              <SelectItem value="120">2 hours</SelectItem>
                             </SelectContent>
                           </Select>
                           <FormMessage />
@@ -1203,6 +1257,11 @@ export default function DoctorSettings() {
                             <span className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">%</span>
                           )}
                         </div>
+                        <p className="text-[11px] text-muted-foreground">
+                          {cancellationFeeType === "percentage"
+                            ? "Max 100% of the consultation fee."
+                            : "Cannot exceed the consultation fee."}
+                        </p>
                       </div>
                     </div>
 
