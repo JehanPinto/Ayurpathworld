@@ -218,7 +218,7 @@ const SRI_LANKAN_BANKS = [
 ];
 
 export default function DoctorRegisterPage() {
-  const [currentStep, setCurrentStep] = useState(4);
+  const [currentStep, setCurrentStep] = useState(1);
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [personalInfo, setPersonalInfo] = useState<PersonalInfo | null>(null);
@@ -274,7 +274,7 @@ export default function DoctorRegisterPage() {
     defaultValues: {
       fullName: "",
       email: "",
-      phone: "+94",
+      phone: "",
       password: "",
       confirmPassword: "",
       address: "",

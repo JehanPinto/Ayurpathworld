@@ -583,8 +583,8 @@ export const insertUserSchema = z.object({
   phone: z
   .string()
   .regex(
-    /^\+947[0-9]{8}$/,
-    "Please enter a valid Sri Lankan mobile number (+947XXXXXXXX)"
+    /^07[0-9]{8}$/,
+    "Please enter a valid Sri Lankan mobile number (07XXXXXXXX)"
   ),
   role: z.enum([UserRole.PATIENT, UserRole.DOCTOR]),
   nic: z.string().optional(),
