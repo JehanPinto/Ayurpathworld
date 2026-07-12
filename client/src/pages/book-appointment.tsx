@@ -17,6 +17,7 @@ import {
   BookOpen,
   AlertCircle,
   ChevronRight,
+  Timer,
 } from "lucide-react";
 import { format } from "date-fns";
 import { PublicLayout } from "@/components/layout/public-layout";
@@ -153,10 +154,65 @@ export default function BookAppointmentPage() {
   const [step, setStep] = useState<"details" | "payment" | "confirmation">("details");
   const [bookingComplete, setBookingComplete] = useState(false);
 
+  const [pendingAppointmentId, setPendingAppointmentId] = useState<string | null>(null);
+  const [timeLeft, setTimeLeft] = useState<number>(600);
+
   // Load PayHere script on mount
   useEffect(() => {
     loadPayHereScript();
   }, []);
+
+  useEffect(() => {
+    if (step !== "payment" || timeLeft <= 0) return;
+
+    const timerInterval = setInterval(() => {
+      setTimeLeft((prev) => prev - 1);
+    }, 1000);
+
+    return () => clearInterval(timerInterval);
+  }, [step, timeLeft]);
+
+  useEffect(() => {
+    if (step === "payment" && timeLeft === 0) {
+      const expireSession = async () => {
+        if (pendingAppointmentId) {
+          try {
+            await apiRequest("PATCH", `/api/appointments/${pendingAppointmentId}/payment-failed`, {});
+          } catch(e) {
+            console.error("Failed to release slot on expiration", e);
+          }
+        }
+
+        toast({
+          title: "Payment Timeout",
+          description: "Your 10-minute reservation window expired. The slot has been released.",
+          variant: "destructive",
+        });
+
+        // 2. Industry Standard: Instantly remove PayHere overlay from DOM
+        const payhereModal = document.getElementById('payhere-modal');
+        if (payhereModal) {
+          payhereModal.remove();
+        }
+
+        // 3. Reset UI state
+        setStep("details");
+        setTimeLeft(600);
+        setPendingAppointmentId(null);
+        queryClient.invalidateQueries({ queryKey: ["/api/slots", slotId] });
+        
+        // 4. Safety reload to flush any lingering PayHere event listeners attached to the window
+        setTimeout(() => {
+          window.location.reload();
+        }, 500);
+      };
+      expireSession();
+    }
+  }, [step, timeLeft, pendingAppointmentId, slotId, toast]);
+
+  const minutes = Math.floor(timeLeft / 60);
+  const seconds = timeLeft % 60;
+  const formattedTime = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
 
   const { data: bookingSettings } = useQuery<BookingSettings>({
     queryKey: ["/api/booking-settings"],
@@ -266,10 +322,13 @@ export default function BookAppointmentPage() {
       setStep("payment");
     } else if (step === "payment") {
       
-      // 1. First, create the appointment & payment record in our DB
+      // First, create the appointment & payment record in our DB
       bookingMutation.mutate(data, {
         onSuccess: async (appointmentData: any) => {
           
+          // CRITICAL FIX: Save the ID so the expiration timer can use it!
+          setPendingAppointmentId(appointmentData.id);
+
           if (data.paymentMethod === PaymentMethod.AT_CLINIC) {
              setBookingComplete(true);
              setStep("confirmation");
@@ -285,7 +344,7 @@ export default function BookAppointmentPage() {
 
             console.log("Hash Data received:", hashData);
 
-            // 3. Configure PayHere Object (DYNAMIC URLs applied here)
+            // Configure PayHere Object (DYNAMIC URLs applied here)
             const paymentObj = {
               sandbox: window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1', 
               merchant_id: hashData.merchant_id,
@@ -306,7 +365,7 @@ export default function BookAppointmentPage() {
               country: "Sri Lanka",
             };
 
-            // 4. Define PayHere Callbacks
+            // Define PayHere Callbacks
             (window as any).payhere.onCompleted = function onCompleted(orderId: string) {
               console.log("Payment completed at Gateway. Verifying with server...");
               toast({ 
@@ -356,6 +415,8 @@ export default function BookAppointmentPage() {
               });
               
               setStep("details");
+              setTimeLeft(600);
+              setPendingAppointmentId(null);
               queryClient.invalidateQueries({ queryKey: ["/api/slots", slotId] });
             };
 
@@ -375,10 +436,12 @@ export default function BookAppointmentPage() {
               });
               
               setStep("details");
+              setTimeLeft(600);
+              setPendingAppointmentId(null);
               queryClient.invalidateQueries({ queryKey: ["/api/slots", slotId] });
             };
 
-            // 5. Trigger the popup!
+            // Trigger the popup!
             (window as any).payhere.startPayment(paymentObj);
 
           } catch (error) {
@@ -829,6 +892,26 @@ export default function BookAppointmentPage() {
                 <div className="grid md:grid-cols-[1fr_400px] gap-6">
                   {/* LEFT — PayHere integration */}
                   <div className="bg-card border border-border rounded-2xl p-6 md:p-8 shadow-sm h-fit">
+
+                    <div className="fixed top-6 left-0 right-0 z-[999999] flex justify-center pointer-events-none px-4">
+                      <div className="bg-amber-100/95 backdrop-blur-md border border-amber-300 text-amber-900 shadow-2xl rounded-full px-5 py-2.5 flex items-center gap-3 md:gap-4 pointer-events-auto w-full max-w-sm animate-in slide-in-from-top-4">
+                        <div className="p-2 bg-amber-200 rounded-full animate-pulse shrink-0">
+                          <Timer className="h-5 w-5 text-amber-700" />
+                        </div>
+                        <div className="flex flex-col flex-1 leading-tight min-w-0">
+                          <span className="text-[10px] md:text-xs uppercase font-bold text-amber-600 tracking-wider">
+                            Reserved Time Left
+                          </span>
+                          <span className="text-xs md:text-sm font-semibold truncate">
+                            Complete your payment
+                          </span>
+                        </div>
+                        <span className="font-mono text-xl md:text-2xl font-black text-amber-700 tracking-tight shrink-0">
+                          {formattedTime}
+                        </span>
+                      </div>
+                    </div>
+
                     <div className="flex items-center gap-3 mb-8 pb-4 border-b border-border">
                       <div className="p-2.5 bg-blue-100 dark:bg-blue-900/30 rounded-xl text-blue-600 dark:text-blue-400">
                         <CreditCard className="h-6 w-6" />
@@ -850,7 +933,14 @@ export default function BookAppointmentPage() {
                     <div className="flex flex-col sm:flex-row items-center gap-4">
                       <button
                         type="button"
-                        onClick={() => setStep("details")}
+                        onClick={() => {
+                          setStep("details");
+                          if (pendingAppointmentId) {
+                            apiRequest("PATCH", `/api/appointments/${pendingAppointmentId}/payment-failed`, {}).catch(e => console.error(e));
+                            setPendingAppointmentId(null);
+                            queryClient.invalidateQueries({ queryKey: ["/api/slots", slotId] });
+                          }
+                        }}
                         className="w-full sm:w-auto flex items-center justify-center gap-2 border-2 border-border bg-background text-foreground text-sm font-bold px-6 py-3.5 rounded-xl hover:bg-muted transition-colors"
                       >
                         <ChevronLeft className="h-4 w-4" />
