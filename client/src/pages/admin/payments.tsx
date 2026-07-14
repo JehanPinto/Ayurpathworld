@@ -94,8 +94,24 @@ export default function AdminPaymentsPage() {
     }
   });
 
+  const { data: statsData } = useQuery({
+    queryKey: ["/api/admin/payment-stats"],
+    queryFn: async () => {
+      const res = await fetch(`/api/admin/payment-stats`);
+      if (!res.ok) throw new Error("Failed to load stats");
+      return res.json();
+    }
+  });
+
   const payments = response?.data || [];
   const totalPages = response?.totalPages || 1;
+
+  const stats = statsData || {
+    totalRevenue: 0,
+    platformEarnings: 0,
+    totalPayoutsOwed: 0,
+    refundedAmount: 0,
+  };
 
   console.log("Fetched payments:", payments);
   console.log("Current page:", currentPage, "Total pages:", totalPages);
@@ -132,21 +148,6 @@ export default function AdminPaymentsPage() {
       maximumFractionDigits: 0,
     }).format(fee);
   };
-
-  const getStats = () => {
-    const completed = payments.filter((p: any) => p.status === PaymentStatus.COMPLETED);
-    const pending = payments.filter((p: any) => p.status === PaymentStatus.PENDING);
-    const refunded = payments.filter((p: any) => p.status === PaymentStatus.REFUNDED);
-    
-    return {
-      totalRevenue: completed.reduce((sum: number, p: any) => sum + p.totalAmount, 0),
-      platformEarnings: completed.reduce((sum: number, p: any) => sum + (p.platformCommission || 0), 0),
-      totalPayoutsOwed: completed.reduce((sum: number, p: any) => sum + (p.doctorEarnings || 0), 0),
-      refundedAmount: refunded.reduce((sum: number, p: any) => sum + (p.refundAmount || 0), 0),
-    };
-  };
-
-  const stats = getStats();
 
   if (isLoading) {
     return <LoadingPage message="Loading payments..." />;
@@ -445,18 +446,18 @@ export default function AdminPaymentsPage() {
           <div className="flex-1 overflow-y-auto custom-scrollbar p-6">
             
             {/* Top IDs Banner */}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6 p-5 bg-muted/30 rounded-2xl border border-border shadow-sm">
-              <div className="space-y-1">
+            <div className="grid grid-cols-1 gap-4 mb-6 p-5 bg-muted/30 rounded-2xl border border-border shadow-sm">
+              <div className="space-y-1 sm:border-l sm:border-border sm:pl-4">
                 <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest">Payment ID</p>
                 <div className="flex items-center gap-2">
-                  <span className="font-mono text-sm font-bold text-foreground truncate">{selectedPayment.id.split('-')[0].toUpperCase()}</span>
+                  <span className="font-mono text-sm font-bold text-foreground truncate">{selectedPayment.id}</span>
                   <Copy className="w-3.5 h-3.5 cursor-pointer text-muted-foreground hover:text-primary transition-colors" onClick={() => { navigator.clipboard.writeText(selectedPayment.id); toast({title:"Copied", description:"Payment ID copied!"}) }} />
                 </div>
               </div>
               <div className="space-y-1 sm:border-l sm:border-border sm:pl-4">
                 <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest">Appointment ID</p>
                 <div className="flex items-center gap-2">
-                  <span className="font-mono text-sm font-bold text-foreground truncate">{selectedPayment.appointmentId.split('-')[0].toUpperCase()}</span>
+                  <span className="font-mono text-sm font-bold text-foreground truncate">{selectedPayment.appointmentId}</span>
                   <Copy className="w-3.5 h-3.5 cursor-pointer text-muted-foreground hover:text-primary transition-colors" onClick={() => { navigator.clipboard.writeText(selectedPayment.appointmentId); toast({title:"Copied", description:"Appointment ID copied!"}) }} />
                 </div>
               </div>

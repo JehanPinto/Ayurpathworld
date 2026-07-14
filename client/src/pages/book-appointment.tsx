@@ -277,47 +277,72 @@ export default function BookAppointmentPage() {
           }
 
           try {
-          const hashData = (await apiRequest("POST", "/api/payhere/hash", {
-            order_id: `booking-${appointmentData.id}`,
-            amount: totalAmount, // Pass the raw number, backend will format it
-            currency: "LKR",
-          })) as { merchant_id: string; hash: string; formattedAmount: string };
+            const hashData = (await apiRequest("POST", "/api/payhere/hash", {
+              order_id: `booking-${appointmentData.id}`,
+              amount: totalAmount, 
+              currency: "LKR",
+            })) as { merchant_id: string; hash: string; formattedAmount: string };
 
-          console.log("Hash Data received:", hashData);
+            console.log("Hash Data received:", hashData);
 
-          // 3. Configure PayHere Object
-          const paymentObj = {
-            sandbox: true,
-            merchant_id: hashData.merchant_id,
-            return_url: window.location.href,
-            cancel_url: window.location.href,
-            notify_url: "https://localhost:5000/api/payhere/notify",     //   <- meka local ekedi
-            // notify_url: "https://dev.ayurpath.world/api/payhere/notify",    //   <- meka host ekedi 
-            order_id: `booking-${appointmentData.id}`,
-            items: "AyurPath Consultation",
-            amount: hashData.formattedAmount,
-            currency: "LKR",
-            hash: hashData.hash,
-            first_name: user?.fullName?.split(" ")[0] || "Patient",
-            last_name: user?.fullName?.split(" ")[1] || "",
-            email: user?.email || "",
-            phone: user?.phone || "",
-            address: user?.address || "Sri Lanka",
-            city: user?.city || "Colombo",
-            country: "Sri Lanka",
-          };
+            // 3. Configure PayHere Object (DYNAMIC URLs applied here)
+            const paymentObj = {
+              sandbox: window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1', 
+              merchant_id: hashData.merchant_id,
+              return_url: `${window.location.origin}/patient/dashboard`, // Send to dashboard on success
+              cancel_url: `${window.location.origin}/book/${doctorId}?slot=${slotId}`, // Return here on cancel
+              notify_url: `${window.location.origin}/api/payhere/notify`, // Dynamic backend URL
+              order_id: `booking-${appointmentData.id}`,
+              items: "AyurPath Consultation",
+              amount: hashData.formattedAmount,
+              currency: "LKR",
+              hash: hashData.hash,
+              first_name: user?.fullName?.split(" ")[0] || "Patient",
+              last_name: user?.fullName?.split(" ")[1] || "",
+              email: user?.email || "",
+              phone: user?.phone || "",
+              address: user?.address || "Sri Lanka",
+              city: user?.city || "Colombo",
+              country: "Sri Lanka",
+            };
 
-            // 4. Define PayHere Callbacks (Moved OUTSIDE of onSubmit is better, but this works for now)
+            // 4. Define PayHere Callbacks
             (window as any).payhere.onCompleted = function onCompleted(orderId: string) {
-              console.log("Payment completed. OrderID:" + orderId);
-              setBookingComplete(true);
-              setStep("confirmation");
-              queryClient.invalidateQueries({ queryKey: ["/api/appointments"] });
-              queryClient.invalidateQueries({ queryKey: ["/api/patient/dashboard"] });
-              toast({ title: "Booking Confirmed!", description: "Payment was successful." });
+              console.log("Payment completed at Gateway. Verifying with server...");
+              toast({ 
+                title: "Processing Payment...", 
+                description: "Please wait while we securely verify your transaction." 
+              });
+
+              setTimeout(async () => {
+                try {
+                  const aptId = orderId.replace('booking-', '');
+                  const response = await apiRequest<any>("GET", `/api/appointments/${aptId}`);
+                  
+                  // Check if the backend payment record is ACTUALLY completed
+                  if (response && response.payment && response.payment.status === 'completed') {
+                     setBookingComplete(true);
+                     setStep("confirmation");
+                     queryClient.invalidateQueries({ queryKey: ["/api/appointments"] });
+                     queryClient.invalidateQueries({ queryKey: ["/api/patient/dashboard"] });
+                     toast({ title: "Booking Confirmed!", description: "Payment was successfully verified." });
+                  } else {
+                     // Webhook might be slightly delayed
+                     toast({ 
+                       title: "Payment is Verifying", 
+                       description: "Your payment is being processed by the bank. Please check your dashboard in a few minutes." 
+                     });
+                     window.location.href = "/patient/appointments";
+                  }
+                } catch(e) {
+                  console.error("Verification failed", e);
+                  window.location.href = "/patient/appointments";
+                }
+              }, 3000); // 3-second buffer
             };
 
             (window as any).payhere.onDismissed = async function onDismissed() {
+              // User clicked the close button on the PayHere popup
               try {
                 await apiRequest("PATCH", `/api/appointments/${appointmentData.id}/payment-failed`, {});
               } catch(e) {
@@ -335,6 +360,7 @@ export default function BookAppointmentPage() {
             };
 
             (window as any).payhere.onError = async function onError(error: any) {
+              // Payment failed (e.g. wrong card details, insufficient funds)
               console.error("PayHere Error:", error);
               try {
                 await apiRequest("PATCH", `/api/appointments/${appointmentData.id}/payment-failed`, {});
