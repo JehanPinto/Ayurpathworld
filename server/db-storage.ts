@@ -1593,21 +1593,24 @@ export class DbStorage implements IStorage {
   ): Promise<PatientDashboardStats> {
     const today = new Date().toISOString().split("T")[0];
 
-    const allAppointments = await db
-      .select()
+    const allAppointmentsRaw = await db
+      .select({
+        apt: appointments,
+        method: payments.method,
+      })
       .from(appointments)
+      .leftJoin(payments, eq(appointments.id, payments.appointmentId))
       .where(eq(appointments.patientId, patientId));
 
-    const upcomingCount = allAppointments.filter(
-      (a) =>
-        a.appointmentDate >= today &&
-        [AppointmentStatus.PENDING, AppointmentStatus.CONFIRMED].includes(
-          a.status as any,
-        ),
+    const upcomingCount = allAppointmentsRaw.filter(
+      (r) =>
+        r.apt.appointmentDate >= today &&
+        ['pending', 'confirmed'].includes(r.apt.status) &&
+        !(r.apt.status === 'pending' && r.method === 'online')
     ).length;
 
-    const completedCount = allAppointments.filter(
-      (a) => a.status === AppointmentStatus.COMPLETED,
+    const completedCount = allAppointmentsRaw.filter(
+      (r) => r.apt.status === 'completed',
     ).length;
 
     const patientPayments = await db
@@ -1642,29 +1645,35 @@ export class DbStorage implements IStorage {
   ): Promise<DoctorDashboardStats> {
     const today = new Date().toISOString().split("T")[0];
 
-    const allAppointments = await db
-      .select()
+    const allAppointmentsRaw = await db
+      .select({
+        apt: appointments,
+        method: payments.method,
+      })
       .from(appointments)
+      .leftJoin(payments, eq(appointments.id, payments.appointmentId))
       .where(eq(appointments.doctorId, doctorId));
 
-    const todayApts = allAppointments.filter(
-      (a) => a.appointmentDate === today,
+    const todayApts = allAppointmentsRaw.filter(
+      (r) => r.apt.appointmentDate === today && !(r.apt.status === 'pending' && r.method === 'online')
     ).length;
-    const upcomingCount = allAppointments.filter(
-      (a) =>
-        a.appointmentDate >= today &&
-        [AppointmentStatus.PENDING, AppointmentStatus.CONFIRMED].includes(
-          a.status as any,
-        ),
+    
+    const upcomingCount = allAppointmentsRaw.filter(
+      (r) =>
+        r.apt.appointmentDate >= today &&
+        ['pending', 'confirmed'].includes(r.apt.status) &&
+        !(r.apt.status === 'pending' && r.method === 'online')
     ).length;
-    const completedCount = allAppointments.filter(
-      (a) => a.status === AppointmentStatus.COMPLETED,
+    
+    const completedCount = allAppointmentsRaw.filter(
+      (r) => r.apt.status === 'completed',
     ).length;
 
     const doctorPayments = await db
       .select()
       .from(payments)
       .where(eq(payments.doctorId, doctorId));
+      
     const totalEarnings = doctorPayments
       .filter((p) => p.status === PaymentStatus.COMPLETED)
       .reduce((sum, p) => sum + p.doctorEarnings, 0);
@@ -1674,11 +1683,11 @@ export class DbStorage implements IStorage {
 
     const profile = await this.getDoctorProfile(doctorId);
 
-    const currentTodayApts = allAppointments.filter(
-      (a) =>
-        a.appointmentDate === today &&
-        a.status === AppointmentStatus.CONFIRMED &&
-        !a.isCalled,
+    const currentTodayApts = allAppointmentsRaw.filter(
+      (r) =>
+        r.apt.appointmentDate === today &&
+        r.apt.status === 'confirmed' &&
+        !r.apt.isCalled,
     ).length;
 
     return {

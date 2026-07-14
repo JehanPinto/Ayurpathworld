@@ -175,9 +175,12 @@ export default function PatientAppointmentsPage() {
 
   const upcomingAppointments = appointments.filter((apt) => {
     const aptDate = parseISO(apt.appointmentDate);
+    const isUnpaidOnline = apt.status === "pending" && apt.payment?.method === "online";
     return (
-      isAfter(aptDate, now) || apt.appointmentDate === today
-    ) && !["cancelled", "completed", "no_show"].includes(apt.status);
+      (isAfter(aptDate, now) || apt.appointmentDate === today) &&
+      !["cancelled", "completed", "no_show"].includes(apt.status) &&
+      !isUnpaidOnline
+    );
   });
 
   const pastAppointments = appointments.filter((apt) => {
