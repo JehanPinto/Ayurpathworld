@@ -1593,21 +1593,24 @@ export class DbStorage implements IStorage {
   ): Promise<PatientDashboardStats> {
     const today = new Date().toISOString().split("T")[0];
 
-    const allAppointments = await db
-      .select()
+    const allAppointmentsRaw = await db
+      .select({
+        apt: appointments,
+        method: payments.method,
+      })
       .from(appointments)
+      .leftJoin(payments, eq(appointments.id, payments.appointmentId))
       .where(eq(appointments.patientId, patientId));
 
-    const upcomingCount = allAppointments.filter(
-      (a) =>
-        a.appointmentDate >= today &&
-        [AppointmentStatus.PENDING, AppointmentStatus.CONFIRMED].includes(
-          a.status as any,
-        ),
+    const upcomingCount = allAppointmentsRaw.filter(
+      (r) =>
+        r.apt.appointmentDate >= today &&
+        ['pending', 'confirmed'].includes(r.apt.status) &&
+        !(r.apt.status === 'pending' && r.method === 'online')
     ).length;
 
-    const completedCount = allAppointments.filter(
-      (a) => a.status === AppointmentStatus.COMPLETED,
+    const completedCount = allAppointmentsRaw.filter(
+      (r) => r.apt.status === 'completed',
     ).length;
 
     const patientPayments = await db
@@ -1642,29 +1645,35 @@ export class DbStorage implements IStorage {
   ): Promise<DoctorDashboardStats> {
     const today = new Date().toISOString().split("T")[0];
 
-    const allAppointments = await db
-      .select()
+    const allAppointmentsRaw = await db
+      .select({
+        apt: appointments,
+        method: payments.method,
+      })
       .from(appointments)
+      .leftJoin(payments, eq(appointments.id, payments.appointmentId))
       .where(eq(appointments.doctorId, doctorId));
 
-    const todayApts = allAppointments.filter(
-      (a) => a.appointmentDate === today,
+    const todayApts = allAppointmentsRaw.filter(
+      (r) => r.apt.appointmentDate === today && !(r.apt.status === 'pending' && r.method === 'online')
     ).length;
-    const upcomingCount = allAppointments.filter(
-      (a) =>
-        a.appointmentDate >= today &&
-        [AppointmentStatus.PENDING, AppointmentStatus.CONFIRMED].includes(
-          a.status as any,
-        ),
+    
+    const upcomingCount = allAppointmentsRaw.filter(
+      (r) =>
+        r.apt.appointmentDate >= today &&
+        ['pending', 'confirmed'].includes(r.apt.status) &&
+        !(r.apt.status === 'pending' && r.method === 'online')
     ).length;
-    const completedCount = allAppointments.filter(
-      (a) => a.status === AppointmentStatus.COMPLETED,
+    
+    const completedCount = allAppointmentsRaw.filter(
+      (r) => r.apt.status === 'completed',
     ).length;
 
     const doctorPayments = await db
       .select()
       .from(payments)
       .where(eq(payments.doctorId, doctorId));
+      
     const totalEarnings = doctorPayments
       .filter((p) => p.status === PaymentStatus.COMPLETED)
       .reduce((sum, p) => sum + p.doctorEarnings, 0);
@@ -1674,11 +1683,11 @@ export class DbStorage implements IStorage {
 
     const profile = await this.getDoctorProfile(doctorId);
 
-    const currentTodayApts = allAppointments.filter(
-      (a) =>
-        a.appointmentDate === today &&
-        a.status === AppointmentStatus.CONFIRMED &&
-        !a.isCalled,
+    const currentTodayApts = allAppointmentsRaw.filter(
+      (r) =>
+        r.apt.appointmentDate === today &&
+        r.apt.status === 'confirmed' &&
+        !r.apt.isCalled,
     ).length;
 
     return {
@@ -3420,6 +3429,49 @@ appointment: InsertAppointment, paymentData: InsertPayment, slotId: string, audi
         updatedAt: toISOString(p.updatedAt),
       })) as Payment[], 
       appointments: detailedAppointments 
+    };
+  }
+
+  async getPaymentStats(): Promise<{
+    totalRevenue: number;
+    platformEarnings: number;
+    totalPayoutsOwed: number;
+    refundedAmount: number;
+  }> {
+    const statsRes = await pool.query(`
+      SELECT 
+        COALESCE(SUM(CASE WHEN status = 'completed' THEN total_amount ELSE 0 END), 0) as total_revenue,
+        COALESCE(SUM(CASE WHEN status = 'completed' THEN platform_commission ELSE 0 END), 0) as platform_earnings,
+        COALESCE(SUM(CASE WHEN status = 'completed' THEN doctor_earnings ELSE 0 END), 0) as total_payouts_owed,
+        COALESCE(SUM(CASE WHEN status = 'refunded' THEN refund_amount ELSE 0 END), 0) as refunded_amount
+      FROM payments
+    `);
+
+    const row = statsRes.rows[0];
+    return {
+      totalRevenue: Number(row.total_revenue),
+      platformEarnings: Number(row.platform_earnings),
+      totalPayoutsOwed: Number(row.total_payouts_owed),
+      refundedAmount: Number(row.refunded_amount),
+    };
+  }
+
+  async getRefundStats() {
+    const statsRes = await pool.query(`
+      SELECT 
+        COUNT(*) FILTER (WHERE status = 'pending') as pending_count,
+        COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '30 days') as requests_last_30_days,
+        COALESCE(SUM(amount) FILTER (WHERE status = 'completed' AND created_at >= NOW() - INTERVAL '30 days'), 0) as refunded_last_30_days,
+        COALESCE(SUM(amount) FILTER (WHERE status = 'pending'), 0) as refundable_total
+      FROM refunds
+    `);
+    
+    const row = statsRes.rows[0];
+    return { 
+      pendingCount: Number(row.pending_count), 
+      requestsLast30DaysCount: Number(row.requests_last_30_days), 
+      refundedLast30DaysAmount: Number(row.refunded_last_30_days), 
+      refundableTotalAmount: Number(row.refundable_total) 
     };
   }
 }

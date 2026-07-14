@@ -3355,7 +3355,7 @@ export async function registerRoutes(
           dependentGender: bookingData.dependentGender,
           dependentContact: bookingData.dependentContact,
           isCalled: false,
-          status: AppointmentStatus.CONFIRMED,
+          status: AppointmentStatus.PENDING,
         };
 
         const appointment = await storage.createAppointment(appointmentData);
@@ -3441,7 +3441,7 @@ export async function registerRoutes(
           totalAmount,
           status:
             bookingData.paymentMethod === PaymentMethod.ONLINE
-              ? PaymentStatus.COMPLETED
+              ? PaymentStatus.PENDING
               : PaymentStatus.UNPAID,
           method: bookingData.paymentMethod,
         };
@@ -3660,18 +3660,14 @@ export async function registerRoutes(
         res.json({
           stats,
           todayAppointments: todayAppointments.filter((a) =>
-            [AppointmentStatus.PENDING, AppointmentStatus.CONFIRMED].includes(
-              a.status as any,
-            ),
+            [AppointmentStatus.PENDING, AppointmentStatus.CONFIRMED].includes(a.status as any) &&
+            !(a.status === AppointmentStatus.PENDING && a.payment?.method === 'online')
           ),
           upcomingAppointments: upcomingAppointments
-            .filter(
-              (a) =>
-                a.appointmentDate >= today &&
-                [
-                  AppointmentStatus.PENDING,
-                  AppointmentStatus.CONFIRMED,
-                ].includes(a.status as any),
+            .filter((a) =>
+              a.appointmentDate >= today &&
+              [AppointmentStatus.PENDING, AppointmentStatus.CONFIRMED].includes(a.status as any) &&
+              !(a.status === AppointmentStatus.PENDING && a.payment?.method === 'online')
             )
             .slice(0, 10),
         });
@@ -4631,9 +4627,15 @@ export async function registerRoutes(
         const today = new Date().toISOString().split("T")[0];
 
         // --- Calculate Stats ---
-        const upcomingList = allAppointments.filter(a => a.appointmentDate >= today && [AppointmentStatus.PENDING, AppointmentStatus.CONFIRMED].includes(a.status as any));
+        const upcomingList = allAppointments.filter(a => {
+          const pmt = allPayments.find(p => p.appointmentId === a.id);
+          const isUnpaidOnline = a.status === AppointmentStatus.PENDING && pmt?.method === "online";
+          return a.appointmentDate >= today && 
+                 [AppointmentStatus.PENDING, AppointmentStatus.CONFIRMED].includes(a.status as any) &&
+                 !isUnpaidOnline;
+        });
         const pendingCount = upcomingList.filter(a => a.status === AppointmentStatus.PENDING).length;
-        
+
         const completedList = allAppointments.filter(a => a.status === AppointmentStatus.COMPLETED);
         const inPersonCompleted = completedList.filter(a => a.consultationType === "in_person").length;
         const onlineCompleted = completedList.filter(a => a.consultationType === "online").length;
@@ -7273,46 +7275,70 @@ export async function registerRoutes(
   // ==========================================
   // BACKGROUND CLEANUP JOB (INDUSTRY STANDARD)
   // ==========================================
-  // setInterval(async () => {
-  //   try {
-  //     const fifteenMinsAgo = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+  setInterval(async () => {
+    try {
+      // Clean up after 12 minutes to allow 10 min UI timer + 2 min buffer
+      const twelveMinsAgo = new Date(Date.now() - 12 * 60 * 1000);
       
-  //     const query = `
-  //       SELECT id, slot_id 
-  //       FROM appointments 
-  //       WHERE status = 'pending' AND created_at < $1
-  //     `;
-  //     const result = await pool.query(query, [fifteenMinsAgo]);
+      const query = `
+        SELECT a.id, a.slot_id, a.patient_id 
+        FROM appointments a
+        JOIN payments p ON a.id = p.appointment_id
+        WHERE a.status = 'pending' AND p.method = 'online' AND a.created_at < $1
+      `;
+      const result = await pool.query(query, [twelveMinsAgo]);
       
-  //     if (result.rows.length > 0) {
-  //       console.log(`[CLEANUP JOB] Found ${result.rows.length} abandoned appointments. Releasing slots...`);
+      if (result.rows.length > 0) {
+        console.log(`[CLEANUP JOB] Found ${result.rows.length} abandoned appointments (>12 mins). Releasing slots...`);
         
-  //       for (const row of result.rows) {
-  //         // 1. Appointment cancelled
-  //         await pool.query(
-  //           `UPDATE appointments SET status = 'cancelled', cancel_reason = 'Payment Timeout (Auto Cancelled)' WHERE id = $1`, 
-  //           [row.id]
-  //         );
+        for (const row of result.rows) {
+          await pool.query(
+            `UPDATE payments SET status = 'failed', updated_at = NOW() WHERE appointment_id = $1 AND status = 'pending'`, 
+            [row.id]
+          );
+
+          await pool.query(
+            `UPDATE appointments SET status = 'cancelled', cancel_reason = 'Payment Timeout (Auto Cancelled by System)', cancelled_by = 'system', updated_at = NOW() WHERE id = $1`, 
+            [row.id]
+          );
           
-  //         // 2. Payment faied
-  //         await pool.query(
-  //           `UPDATE payments SET status = 'failed' WHERE appointment_id = $1`, 
-  //           [row.id]
-  //         );
+          await pool.query(
+            `UPDATE appointment_slots SET is_booked = false WHERE id = $1`, 
+            [row.slot_id]
+          );
           
-  //         // 3. Slot free
-  //         await pool.query(
-  //           `UPDATE appointment_slots SET is_booked = false WHERE id = $1`, 
-  //           [row.slot_id]
-  //         );
-          
-  //         console.log(`[CLEANUP JOB] Successfully released appointment: ${row.id} and slot: ${row.slot_id}`);
-  //       }
-  //     }
-  //   } catch (err) {
-  //     console.error("[CLEANUP JOB ERROR]:", err);
-  //   }
-  // }, 5 * 60 * 1000); // 5 * 60 * 1000 = 5 minutes
+          console.log(`[CLEANUP JOB] Successfully released abandoned appointment: ${row.id} and slot: ${row.slot_id}`);
+
+          try {
+            await storage.createAuditLog({
+              actorId: row.patient_id || 'system',
+              actorRole: 'system',
+              action: 'AUTO_CANCEL_ABANDONED_BOOKING',
+              status: 'success',
+              entityType: 'appointment',
+              entityId: row.id,
+              ipAddress: '127.0.0.1',
+              device: 'System Background Job',
+              location: 'Server',
+              sessionId: 'SYS-AUTO',
+              metadata: {
+                reason: 'User did not complete payment within 12 minutes',
+                slotId: row.slot_id,
+                auditType: 'APPOINTMENT',
+                timeline: {
+                  completedAt: new Date().toISOString()
+                }
+              }
+            });
+          } catch (e) {
+             console.error("[CLEANUP JOB] Audit log failed:", e);
+          }
+        }
+      }
+    } catch (err) {
+      console.error("[CLEANUP JOB ERROR]:", err);
+    }
+  }, 60 * 1000);
 
   app.get(
     "/api/admin/audit-logs",
@@ -7829,6 +7855,21 @@ export async function registerRoutes(
         res.status(500).json({ error: "Failed to generate report" });
       }
     }
+  );
+
+  app.get(
+    "/api/admin/payment-stats",
+    authMiddleware,
+    roleMiddleware(UserRole.ADMIN),
+    async (req: Request, res: Response) => {
+      try {
+        const stats = await storage.getPaymentStats();
+        res.json(stats);
+      } catch (error) {
+        console.error("Failed to fetch payment stats:", error);
+        res.status(500).json({ error: "Failed to fetch payment stats" });
+      }
+    },
   );
   
   return httpServer;

@@ -334,6 +334,18 @@ export interface IStorage {
     startDate: string,
     endDate: string
   ): Promise<{ payments: Payment[]; appointments: AppointmentWithDetails[] }>;
+  getPaymentStats(): Promise<{
+    totalRevenue: number;
+    platformEarnings: number;
+    totalPayoutsOwed: number;
+    refundedAmount: number;
+  }>;
+  getRefundStats(): Promise<{
+    pendingCount: number;
+    requestsLast30DaysCount: number;
+    refundedLast30DaysAmount: number;
+    refundableTotalAmount: number;
+  }>;
 }
 
 export class MemStorage implements IStorage {
@@ -1933,6 +1945,10 @@ export class MemStorage implements IStorage {
       (a) => a.appointmentDate >= startDate && a.appointmentDate <= endDate
     );
     return { payments, appointments: filteredAppointments };
+  }
+
+  async getPaymentStats() {
+    return { totalRevenue: 0, platformEarnings: 0, totalPayoutsOwed: 0, refundedAmount: 0 };
   }
 }
 

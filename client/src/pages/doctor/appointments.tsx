@@ -204,10 +204,10 @@ export default function DoctorAppointments() {
   const filterAppointments = (status: string) => {
     let filtered = appointments;
     if (status === "today") {
-      filtered = appointments.filter(a => isToday(parseISO(a.appointmentDate)));
+      filtered = appointments.filter(a => isToday(parseISO(a.appointmentDate)) && !(a.status === "pending" && a.payment?.method === "online"));
     } else if (status === "upcoming") {
       filtered = appointments.filter(a =>
-        !isPast(parseISO(a.appointmentDate)) && ["pending", "confirmed"].includes(a.status)
+        !isPast(parseISO(a.appointmentDate)) && ["pending", "confirmed"].includes(a.status) && !(a.status === "pending" && a.payment?.method === "online")
       );
     } else if (status === "completed") {
       filtered = appointments.filter(a => a.status === "completed");
@@ -229,9 +229,9 @@ export default function DoctorAppointments() {
     return Object.entries(groups).sort(([a], [b]) => a.localeCompare(b));
   };
 
-  const todayCount = appointments.filter(a => isToday(parseISO(a.appointmentDate))).length;
+  const todayCount = appointments.filter(a => isToday(parseISO(a.appointmentDate)) && !(a.status === "pending" && a.payment?.method === "online")).length;
   const upcomingCount = appointments.filter(a =>
-    !isPast(parseISO(a.appointmentDate)) && ["pending", "confirmed"].includes(a.status)
+    !isPast(parseISO(a.appointmentDate)) && ["pending", "confirmed"].includes(a.status) && !(a.status === "pending" && a.payment?.method === "online")
   ).length;
   const completedCount = appointments.filter(a => a.status === "completed").length;
 
