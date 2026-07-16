@@ -42,7 +42,7 @@ import { z } from "zod";
 import { upload } from "../config/cloudinary";
 import jwt from "jsonwebtoken";
 import { createGoogleMeetEvent } from "./util/google-calendar";
-import { sendPatientBookingReceiptEmail, sendDoctorNewBookingEmail } from "./util/email";
+import { sendPatientBookingReceiptEmail, sendDoctorNewBookingEmail, sendRegistrationOtpEmail } from "./util/email";
 import { time } from "console";
 
 const getReqInfo = (req: Request, jti?: string) => {
@@ -809,6 +809,11 @@ export async function registerRoutes(
 
       try {
         const registrationToken = req.headers["x-registration-token"] as string;
+
+        if (!registrationToken) {
+          return res.status(400).json({ error: "Email verification required. Please verify your email first." });
+        }
+
         let sessionFiles: string[] = [];
 
         if (registrationToken) {
@@ -939,7 +944,11 @@ export async function registerRoutes(
 
         // 5. Create User & Profile
         const hashedPassword = await hashPassword(userData.password);
-        const user = await storage.createUser({ ...userData, password: hashedPassword });
+        const user = await storage.createUser({ 
+          ...userData, 
+          password: hashedPassword,
+          isEmailVerified: true
+        });
 
         try {
           await storage.createDoctorProfile({ ...doctorData, userId: user.id });
@@ -1077,7 +1086,7 @@ export async function registerRoutes(
       const { actorId, actorRole } = await getActorInfo(req);
 
       try {
-        const { email, password } = loginSchema.parse(req.body);
+        const { email, password, rememberMe } = loginSchema.parse(req.body);
 
         const user = await storage.getUserByEmail(email);
 
@@ -1337,12 +1346,14 @@ export async function registerRoutes(
             });
         }
 
+        const tokenTTL = rememberMe ? 30 * 24 * 60 * 60 * 1000 : 24 * 60 * 60 * 1000;
+
         const { token, jti } = generateToken({
           id: user.id,
           email: user.email,
           role: user.role,
           fullName: user.fullName,
-        });
+        }, tokenTTL);
 
         const tAccountRegistered = new Date().toISOString();
         const tSessionCreated = new Date().toISOString();
@@ -1373,7 +1384,13 @@ export async function registerRoutes(
         } catch (e) { console.error("Audit log failed:", e); }
 
         const { password: _, ...userWithoutPassword } = user;
-        res.cookie("token", token, cookieOptions).json({ user: userWithoutPassword, token });
+
+        const dynamicCookieOptions = {
+          ...cookieOptions,
+          maxAge: tokenTTL,
+        };
+        
+        res.cookie("token", token, dynamicCookieOptions).json({ user: userWithoutPassword, token });
 
       } catch (error) {
         const tFailed = new Date().toISOString();
@@ -6191,203 +6208,82 @@ export async function registerRoutes(
     },
   );
 
-  // Forgot Password: Send OTP to email (unauthenticated)
+  // 1. Send OTP to Email (Step 1)
   app.post("/api/auth/forgot-password", async (req: Request, res: Response) => {
     const tRequestReceived = new Date().toISOString();
     try {
       const { email } = req.body;
       if (!email || typeof email !== "string") {
-        const tFailed = new Date().toISOString();
-        try {
-          const { ipAddress, device, location, sessionId } = getReqInfo(req);
-          const { actorId, actorRole } = await getActorInfo(req);
-          const auditLogData = {
-            actorId, actorRole,
-            action: 'FORGOT_PASSWORD', status: 'failed',
-            entityType: 'user', entityId: 'N/A',
-            ipAddress, device, location, sessionId: sessionId || 'N/A',
-            metadata: {
-              auditType: 'AUTH',
-              reason: 'Invalid email format provided.',
-              timeline: {
-                requestReceivedAt: tRequestReceived,
-                emailValidationFailedAt: tFailed,
-                completedAt: tFailed,
-              }
-            }
-          };
-          await storage.createAuditLog(auditLogData);
-        } catch (e) {}
         return res.status(400).json({ error: "Email is required" });
       }
 
       const user = await storage.getUserByEmail(email.toLowerCase().trim());
       
-      if (user && user.provider && user.provider !== AuthProvider.LOCAL) {
-        const providerName = user.provider.charAt(0).toUpperCase() + user.provider.slice(1);
+      // USER GE REQUEST EKA: Email eka db eke naththam error ekak pennanna
+      if (!user) {
+        return res.status(404).json({ error: "No account found with this email address." });
+      }
 
-        const tFailed = new Date().toISOString();
-        try {
-          const { ipAddress, device, location, sessionId } = getReqInfo(req);
-          const { actorId, actorRole } = await getActorInfo(req);
-          const auditLogData = {
-            actorId, actorRole,
-            action: 'FORGOT_PASSWORD', status: 'failed',
-            entityType: 'user', entityId: user.id,
-            ipAddress, device, location, sessionId: sessionId || 'N/A',
-            metadata: {
-              auditType: 'AUTH',
-              reason: `Password reset attempted for ${providerName} account.`,
-              timeline: {
-                requestReceivedAt: tRequestReceived,
-                providerCheckFailedAt: tFailed,
-                completedAt: tFailed,
-              }
-            }
-          };
-          await storage.createAuditLog(auditLogData);
-        } catch (e) {}
+      if (user.provider && user.provider !== AuthProvider.LOCAL) {
+        const providerName = user.provider.charAt(0).toUpperCase() + user.provider.slice(1);
         return res.status(400).json({ 
-          error: `Your account is linked with ${providerName}. Please use "Continue with ${providerName}" to log in. Password reset is not required.` 
+          error: `Your account is linked with ${providerName}. Please use "Continue with ${providerName}" to log in.` 
         });
       }
 
-      if (!user) {
-        const tFailed = new Date().toISOString();
-        try {
-          const { ipAddress, device, location, sessionId } = getReqInfo(req);
-          const { actorId, actorRole } = await getActorInfo(req);
-          const auditLogData = {
-            actorId, actorRole,
-            action: 'FORGOT_PASSWORD', status: 'failed',
-            entityType: 'user', entityId: 'N/A',
-            ipAddress, device, location, sessionId: sessionId || 'N/A',
-            metadata: {
-              auditType: 'AUTH',
-              reason: 'Email not found for password reset.',
-              timeline: {
-                requestReceivedAt: tRequestReceived,
-                emailNotFoundAt: tFailed,
-                completedAt: tFailed,
-              }
-            }
-          };
-          await storage.createAuditLog(auditLogData);
-        } catch (e) {}
-        return res.json({ message: "If that email is registered, an OTP has been sent." });
-      }
-
       const otp = randomInt(100000, 999999).toString();
-      const expiry = new Date(Date.now() + 10 * 60 * 1000);
+      const expiry = new Date(Date.now() + 10 * 60 * 1000); // 10 mins
 
       await storage.setPasswordResetOtp(user.id, otp, expiry);
-      const tSetOtpAt = new Date().toISOString();
-      await sendPasswordResetOtpEmail(user.email, otp);
-      const tEmailSentAt = new Date().toISOString();
+      
+      // Email eka send wenawada kiyala balanawa
+      const emailResult = await sendPasswordResetOtpEmail(user.email, otp);
 
-      try {
-        const { ipAddress, device, location, sessionId } = getReqInfo(req);
-        const { actorId, actorRole } = await getActorInfo(req);
-        const auditLogData = {
-          actorId, actorRole,
-          action: 'FORGOT_PASSWORD', status: 'success',
-          entityType: 'user', entityId: user.id,
-          ipAddress, device, location, sessionId: sessionId || 'N/A',
-          metadata: {
-            auditType: 'AUTH',
-            reason: 'OTP sent for password reset.',
-            timeline: {
-              requestReceivedAt: tRequestReceived,
-              otpSetAt: tSetOtpAt,
-              emailSentAt: tEmailSentAt,
-              completedAt: tEmailSentAt,
-            }
-          }
-        };
-        await storage.createAuditLog(auditLogData);
-      } catch (e) {}
+      // Email eka send wune naththam (e.g. Resend Domain Verify nati error eka)
+      if (!emailResult.success) {
+        return res.status(500).json({ error: "Failed to send OTP email. Please check email service status or try again later." });
+      }
 
-      res.json({ message: "If that email is registered, an OTP has been sent." });
+      res.json({ message: "OTP sent successfully." });
     } catch (error) {
-      const tFailed = new Date().toISOString();
-      try {
-        const { ipAddress, device, location, sessionId } = getReqInfo(req);
-        const { actorId, actorRole } = await getActorInfo(req);
-        const auditLogData = {
-          actorId, actorRole,
-          action: 'FORGOT_PASSWORD', status: 'failed',
-          entityType: 'system', entityId: 'N/A',
-          ipAddress, device, location, sessionId: sessionId || 'N/A',
-          metadata: {
-            auditType: 'AUTH',
-            reason: 'Internal Server Error (500) when processing forgot password request.',
-            timeline: {
-              requestReceivedAt: tRequestReceived,
-              completedAt: tFailed,
-            }
-          }
-        };
-        await storage.createAuditLog(auditLogData);
-      } catch (e) {}
-      res.status(500).json({ error: "Failed to send OTP" });
+      res.status(500).json({ error: "Internal server error" });
     }
   });
 
-  // Add password strength validation to unauthenticated password reset route
-  app.post("/api/auth/reset-password", async (req: Request, res: Response) => {
-    
-    const tRequestReceived = new Date().toISOString();
+  // 2. ONLY Verify OTP (Step 2 - New Endpoint for UI step validation)
+  app.post("/api/auth/verify-otp", async (req: Request, res: Response) => {
+    try {
+      const { email, otp } = req.body;
+      if (!email || !otp) return res.status(400).json({ error: "Email and OTP required" });
 
+      const user = await storage.getUserByEmail(email.toLowerCase().trim());
+      if (!user) return res.status(404).json({ error: "User not found" });
+
+      // Read-only check (Meke OTP eka delete karanne na, eka karanne 3 weni step ekedi)
+      if (!user.resetPasswordOtp || user.resetPasswordOtp !== otp || !user.resetPasswordOtpExpiry) {
+        return res.status(400).json({ error: "Invalid verification code." });
+      }
+
+      if (new Date() > new Date(user.resetPasswordOtpExpiry)) {
+        return res.status(400).json({ error: "Verification code has expired." });
+      }
+
+      res.json({ success: true, message: "OTP verified successfully." });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to verify OTP" });
+    }
+  });
+
+  // 3. Reset Password (Step 3 - Final step)
+  app.post("/api/auth/reset-password", async (req: Request, res: Response) => {
     try {
       const { email, otp, newPassword } = req.body;
       if (!email || !otp || !newPassword) {
-        const tFailed = new Date().toISOString();
-        try {
-          const { ipAddress, device, location, sessionId } = getReqInfo(req);
-          const { actorId, actorRole } = await getActorInfo(req);
-          const auditLogData = {
-            actorId, actorRole,
-            action: 'RESET_PASSWORD_WITH_OTP', status: 'failure',
-            entityType: 'user', entityId: 'N/A',
-            ipAddress, device, location, sessionId: sessionId || 'N/A',
-            metadata: {
-              auditType: 'AUTH',
-              reason: 'Missing required fields for password reset with OTP.',
-              timeline: {
-                requestReceivedAt: tRequestReceived,
-                validationFailedAt: tFailed,
-                completedAt: tFailed,
-              }
-            }
-          };
-          await storage.createAuditLog(auditLogData);
-        } catch (e) {}
         return res.status(400).json({ error: "Email, OTP, and new password are required" });
       }
 
       const passwordValidation = validatePasswordStrength(newPassword);
       if (!passwordValidation.valid) {
-        const tFailed = new Date().toISOString();
-        try {
-          const { ipAddress, device, location, sessionId } = getReqInfo(req);
-          const { actorId, actorRole } = await getActorInfo(req);
-          const auditLogData = {
-            actorId, actorRole,
-            action: 'RESET_PASSWORD_WITH_OTP', status: 'failure',
-            entityType: 'user', entityId: 'N/A',
-            ipAddress, device, location, sessionId: sessionId || 'N/A',
-            metadata: {
-              auditType: 'AUTH',
-              reason: 'Password does not meet security requirements.',
-              timeline: {
-                requestReceivedAt: tRequestReceived,
-                validationPasswordAt: tFailed,
-                completedAt: tFailed,
-              }
-            }
-          };
-          await storage.createAuditLog(auditLogData);
-        } catch (e) {}
         return res.status(400).json({
           error: "Password does not meet security requirements",
           details: passwordValidation.errors,
@@ -6395,292 +6291,22 @@ export async function registerRoutes(
       }
 
       const user = await storage.getUserByEmail(email.toLowerCase().trim());
-      if (!user) {
-        const tFailed = new Date().toISOString();
-        try {
-          const { ipAddress, device, location, sessionId } = getReqInfo(req);
-          const { actorId, actorRole } = await getActorInfo(req);
-          const auditLogData = {
-            actorId, actorRole,
-            action: 'RESET_PASSWORD_WITH_OTP', status: 'failure',
-            entityType: 'user', entityId: 'N/A',
-            ipAddress, device, location, sessionId: sessionId || 'N/A',
-            metadata: {
-              auditType: 'AUTH',
-              reason: 'User not found for password reset.',
-              timeline: {
-                requestReceivedAt: tRequestReceived,
-                validationFailedAt: tFailed,
-                completedAt: tFailed,
-              }
-            }
-          };
-          await storage.createAuditLog(auditLogData);
-        } catch (e) {}
-        return res.status(400).json({ error: "Invalid OTP or email" });
-      }
+      if (!user) return res.status(404).json({ error: "User not found" });
 
+      // DB storage eke thiyena 'verifyPasswordResetOtp' function eken OTP eka check karala delete karala danawa (One time use)
       const isValid = await storage.verifyPasswordResetOtp(user.id, otp);
       if (!isValid) {
-        const tFailed = new Date().toISOString();
-        try {
-          const { ipAddress, device, location, sessionId } = getReqInfo(req);
-          const { actorId, actorRole } = await getActorInfo(req);
-          const auditLogData = {
-            actorId, actorRole,
-            action: 'RESET_PASSWORD_WITH_OTP', status: 'failure',
-            entityType: 'user', entityId: user.id,
-            ipAddress, device, location, sessionId: sessionId || 'N/A',
-            metadata: {
-              auditType: 'AUTH',
-              reason: 'Invalid or expired OTP provided for password reset.',
-              timeline: {
-                requestReceivedAt: tRequestReceived,
-                otpVerificationFailedAt: tFailed,
-                completedAt: tFailed,
-              }
-            }
-          };
-          await storage.createAuditLog(auditLogData);
-        } catch (e) {}
-        return res.status(400).json({ error: "Invalid or expired OTP" });
+        return res.status(400).json({ error: "Invalid or expired OTP." });
       }
 
       const hashedPassword = await hashPassword(newPassword);
       await storage.updateUser(user.id, { password: hashedPassword });
 
-      const tPasswordResetAt = new Date().toISOString();
-      try {
-        const { ipAddress, device, location, sessionId } = getReqInfo(req);
-        const { actorId, actorRole } = await getActorInfo(req);
-        const auditLogData = {
-          actorId, actorRole,
-          action: 'RESET_PASSWORD_WITH_OTP', status: 'success',
-          entityType: 'user', entityId: user.id,
-          ipAddress, device, location, sessionId: sessionId || 'N/A',
-          metadata: {
-            auditType: 'AUTH',
-            reason: 'Password reset successfully with OTP.',
-            timeline: {
-              requestReceivedAt: tRequestReceived,
-              passwordResetAt: tPasswordResetAt,
-              completedAt: tPasswordResetAt,
-            }
-          }
-        };
-        await storage.createAuditLog(auditLogData);
-      } catch (e) {}
-
       res.json({ message: "Password reset successfully" });
     } catch (error) {
-      const tFailed = new Date().toISOString();
-      try {
-        const { ipAddress, device, location, sessionId } = getReqInfo(req);
-        const { actorId, actorRole } = await getActorInfo(req);
-        const auditLogData = {
-          actorId, actorRole,
-          action: 'RESET_PASSWORD_WITH_OTP', status: 'failed',
-          entityType: 'system', entityId: 'N/A',
-          ipAddress, device, location, sessionId: sessionId || 'N/A',
-          metadata: {
-            auditType: 'AUTH',
-            reason: 'Failed to reset password.',
-            timeline: {
-              requestReceivedAt: tRequestReceived,
-              failedAt: tFailed,
-              completedAt: tFailed,
-            }
-          }
-        };
-        await storage.createAuditLog(auditLogData);
-      } catch (e) {}
       res.status(500).json({ error: "Failed to reset password" });
     }
   });
-
-  // 1. Send OTP to Email
-  app.post("/api/users/send-password-otp", authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
-    
-    const tRequestReceived = new Date().toISOString();
-
-    try {
-      const otp = randomInt(100000, 999999).toString();
-      const expiry = new Date(Date.now() + 10 * 60 * 1000); // 10 mins
-
-      await storage.setPasswordResetOtp(req.user!.id, otp, expiry);
-
-      const emailResult = await sendPasswordResetOtpEmail(req.user!.email, otp);
-
-      if (!emailResult.success) {
-        const tFailed = new Date().toISOString();
-        try {
-          const { ipAddress, device, location, sessionId } = getReqInfo(req);
-          const { actorId, actorRole } = await getActorInfo(req);
-          const auditLogData = {
-            actorId, actorRole,
-            action: 'SEND_PASSWORD_RESET_OTP', status: 'failure',
-            entityType: 'user', entityId: req.user!.id,
-            ipAddress, device, location, sessionId: sessionId || 'N/A',
-            metadata: {
-              auditType: 'AUTH',
-              reason: `Failed to send OTP email: ${emailResult.error}`,
-              timeline: {
-                requestReceivedAt: tRequestReceived,
-                emailSendFailedAt: tFailed,
-                completedAt: tFailed,
-              }
-            }
-          };
-          await storage.createAuditLog(auditLogData);
-        } catch (e) {}
-        throw new Error("Failed to send email via Nodemailer");
-      }
-
-      res.json({ message: "OTP sent successfully" });
-    } catch (error) {
-      const tFailed = new Date().toISOString();
-      try {
-        const { ipAddress, device, location, sessionId } = getReqInfo(req);
-        const { actorId, actorRole } = await getActorInfo(req);
-        const auditLogData = {
-          actorId, actorRole,
-          action: 'SEND_PASSWORD_RESET_OTP', status: 'failure',
-          entityType: 'user', entityId: req.user!.id,
-          ipAddress, device, location, sessionId: sessionId || 'N/A',
-          metadata: {
-            auditType: 'AUTH',
-            reason: `Failed to send OTP email: ${error instanceof Error ? error.message : String(error)}`,
-            timeline: {
-              requestReceivedAt: tRequestReceived,
-              emailSendFailedAt: tFailed,
-              completedAt: tFailed,
-            }
-          }
-        };
-        await storage.createAuditLog(auditLogData);
-      } catch (e) {}
-      res.status(500).json({ error: "Failed to send OTP email" });
-    }
-  });
-
-  // 2. Verify OTP and Reset Password
-  app.post(
-    "/api/users/reset-password-with-otp", 
-    authMiddleware, 
-    async (req: AuthenticatedRequest, res: Response) => {
-
-      const tRequestReceived = new Date().toISOString();
-
-      try {
-        const { otp, newPassword } = req.body;
-
-        const passwordValidation = validatePasswordStrength(newPassword);
-        if (!passwordValidation.valid) {
-          const tFailed = new Date().toISOString();
-          try {
-            const { ipAddress, device, location, sessionId } = getReqInfo(req);
-            const { actorId, actorRole } = await getActorInfo(req);
-            const auditLogData = {
-              actorId, actorRole,
-              action: 'RESET_PASSWORD_WITH_OTP', status: 'failure',
-              entityType: 'user', entityId: req.user!.id,
-              ipAddress, device, location, sessionId: sessionId || 'N/A',
-              metadata: {
-                auditType: 'AUTH',
-                reason: 'Password does not meet security requirements.',
-                timeline: {
-                  requestReceivedAt: tRequestReceived,
-                  validationFailedAt: tFailed,
-                  completedAt: tFailed,
-                }
-              }
-            };
-            await storage.createAuditLog(auditLogData);
-          } catch (e) {}
-          return res.status(400).json({
-            error: "Password does not meet security requirements",
-            details: passwordValidation.errors,
-          });
-        }
-
-        const isValid = await storage.verifyPasswordResetOtp(req.user!.id, otp);
-        if (!isValid) {
-          const tFailed = new Date().toISOString();
-          try {
-            const { ipAddress, device, location, sessionId } = getReqInfo(req);
-            const { actorId, actorRole } = await getActorInfo(req);
-            const auditLogData = {
-              actorId, actorRole,
-              action: 'RESET_PASSWORD_WITH_OTP', status: 'failure',
-              entityType: 'user', entityId: req.user!.id,
-              ipAddress, device, location, sessionId: sessionId || 'N/A',
-              metadata: {
-                auditType: 'AUTH',
-                reason: 'Invalid or expired OTP provided for password reset.',
-                timeline: {
-                  requestReceivedAt: tRequestReceived,
-                  validationFailedAt: tFailed,
-                  completedAt: tFailed,
-                }
-              }
-            };
-            await storage.createAuditLog(auditLogData);
-          } catch (e) {}
-          return res.status(400).json({ error: "Invalid or expired OTP." });
-        }
-
-        const hashedPassword = await hashPassword(newPassword);
-        await storage.updateUser(req.user!.id, { password: hashedPassword });
-
-        try {
-          const { ipAddress, device, location, sessionId } = getReqInfo(req);
-          const { actorId, actorRole } = await getActorInfo(req);
-          const tPasswordResetAt = new Date().toISOString();
-          const auditLogData = {
-            actorId, actorRole,
-            action: 'RESET_PASSWORD_WITH_OTP', status: 'success',
-            entityType: 'user', entityId: req.user!.id,
-            ipAddress, device, location, sessionId: sessionId || 'N/A',
-            metadata: {
-              auditType: 'AUTH',
-              reason: 'Password reset successfully with OTP.',
-              timeline: {
-                requestReceivedAt: tRequestReceived,
-                passwordResetAt: tPasswordResetAt,
-                completedAt: tPasswordResetAt,
-              }
-            }
-          };
-          await storage.createAuditLog(auditLogData);
-        } catch (e) {}
-
-        res.json({ message: "Password updated successfully" });
-      } catch (error) {
-        try {
-          const tFailed = new Date().toISOString();
-          const { ipAddress, device, location, sessionId } = getReqInfo(req);
-          const { actorId, actorRole } = await getActorInfo(req);
-          const auditLogData = {
-            actorId, actorRole,
-            action: 'RESET_PASSWORD_WITH_OTP', status: 'failure',
-            entityType: 'user', entityId: req.user!.id,
-            ipAddress, device, location, sessionId: sessionId || 'N/A',
-            metadata: {
-              auditType: 'AUTH',
-              reason: 'Failed to reset password.',
-              timeline: {
-                requestReceivedAt: tRequestReceived,
-                validationFailedAt: tFailed,
-                completedAt: new Date().toISOString(),
-              }
-            }
-          };
-          await storage.createAuditLog(auditLogData);
-        } catch (e) {}
-        res.status(500).json({ error: "Failed to reset password" });
-      }
-    }
-  );
 
   // =======================================
   // Reviews Management
@@ -7852,6 +7478,57 @@ export async function registerRoutes(
       }
     },
   );
+
+  app.post("/api/auth/send-registration-otp", registrationLimiter, async (req: Request, res: Response) => {
+    const tRequestReceived = new Date().toISOString();
+    try {
+      const { email } = req.body;
+      if (!email || typeof email !== "string" || !email.includes("@")) {
+        return res.status(400).json({ error: "Valid email address is required" });
+      }
+
+      const existingUser = await storage.getUserByEmail(email.toLowerCase().trim());
+      if (existingUser) {
+        return res.status(400).json({ error: "This email is already registered. Please login instead." });
+      }
+
+      const otp = randomInt(100000, 999999).toString();
+      const expiry = new Date(Date.now() + 10 * 60 * 1000); // 10 mins
+
+      await storage.setRegistrationOtp(email, otp, expiry);
+      const emailResult = await sendRegistrationOtpEmail(email, otp);
+
+      if (!emailResult.success) {
+        throw new Error("Failed to send OTP email via Resend");
+      }
+
+      res.json({ message: "Verification code sent successfully" });
+    } catch (error) {
+      console.error("Failed to send registration OTP:", error);
+      res.status(500).json({ error: "Failed to send verification code. Please check email service." });
+    }
+  });
+
+  app.post("/api/auth/verify-registration-otp", registrationLimiter, async (req: Request, res: Response) => {
+    try {
+      const { email, otp } = req.body;
+      if (!email || !otp) {
+        return res.status(400).json({ error: "Email and code are required" });
+      }
+
+      const isValid = await storage.verifyRegistrationOtp(email, otp);
+      if (!isValid) {
+        return res.status(400).json({ error: "Invalid or expired verification code." });
+      }
+
+      // Generate the upload/registration session token
+      const token = createRegistrationSession(email);
+      res.json({ success: true, token });
+    } catch (error) {
+      console.error("Failed to verify registration OTP:", error);
+      res.status(500).json({ error: "Failed to verify code" });
+    }
+  });
   
   return httpServer;
 }

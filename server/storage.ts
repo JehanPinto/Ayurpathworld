@@ -346,6 +346,8 @@ export interface IStorage {
     refundedLast30DaysAmount: number;
     refundableTotalAmount: number;
   }>;
+  setRegistrationOtp(email: string, otp: string, expiry: Date): Promise<void>;
+  verifyRegistrationOtp(email: string, otp: string): Promise<boolean>;
 }
 
 export class MemStorage implements IStorage {

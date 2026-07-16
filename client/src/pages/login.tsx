@@ -38,11 +38,11 @@ export default function LoginPage() {
   });
 
   const loginMutation = useMutation({
-    mutationFn: async (data: LoginInput) => {
+    mutationFn: async (data: LoginInput): Promise<{ user: any; token: string }> => {
       const response = await apiRequest("POST", "/api/auth/login", data, {
         skip401Redirect: true,
       });
-      return response;
+      return response as { user: any; token: string };
     },
     onSuccess: (data: { user: any; token: string }) => {
       login(data.user, data.token);
@@ -181,7 +181,7 @@ export default function LoginPage() {
                             data-testid="checkbox-remember"
                           />
                         </FormControl>
-                        <FormLabel className="font-normal cursor-pointer">
+                        <FormLabel className="font-normal cursor-pointer select-none">
                           Remember me
                         </FormLabel>
                       </FormItem>
@@ -189,7 +189,7 @@ export default function LoginPage() {
                   />
 
                   <Link href="/forgot-password">
-                    <Button type="button" variant="link" className="px-0 h-auto text-sm">
+                    <Button type="button" variant="ghost" className="px-0 h-auto text-sm">
                       Forgot password?
                     </Button>
                   </Link>
@@ -260,7 +260,7 @@ export default function LoginPage() {
             <p className="mt-6 text-center text-sm text-muted-foreground">
               Don't have an account?{" "}
               <Link href="/register">
-                <Button variant="link" className="px-0 h-auto">
+                <Button variant="ghost" className="px-0 h-auto">
                   Create account
                 </Button>
               </Link>
