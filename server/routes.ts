@@ -4761,7 +4761,15 @@ export async function registerRoutes(
     authMiddleware,
     async (req: AuthenticatedRequest, res: Response) => {
       try {
-        const notification = await storage.markNotificationRead(req.params.id);
+        const notification = await storage.markNotificationRead(
+          req.params.id,
+          req.user!.id,
+        );
+        // Not found and not-yours are answered identically so notification
+        // ids of other users cannot be probed.
+        if (!notification) {
+          return res.status(404).json({ error: "Notification not found" });
+        }
         res.json(notification);
       } catch (error) {
         res.status(500).json({ error: "Failed to mark notification as read" });

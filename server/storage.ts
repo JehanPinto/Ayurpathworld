@@ -202,7 +202,10 @@ export interface IStorage {
   getUserNotifications(userId: string): Promise<Notification[]>;
   getUnreadNotifications(userId: string): Promise<Notification[]>;
   createNotification(notification: InsertNotification): Promise<Notification>;
-  markNotificationRead(id: string): Promise<Notification | undefined>;
+  markNotificationRead(
+    id: string,
+    userId: string,
+  ): Promise<Notification | undefined>;
   markAllNotificationsRead(userId: string): Promise<void>;
   deleteNotificationsByRelatedId(
     userId: string,
@@ -1468,9 +1471,14 @@ export class MemStorage implements IStorage {
     return n;
   }
 
-  async markNotificationRead(id: string): Promise<Notification | undefined> {
+  async markNotificationRead(
+    id: string,
+    userId: string,
+  ): Promise<Notification | undefined> {
     const notification = this.notifications.get(id);
-    if (!notification) return undefined;
+    // Scope by owner: a notification belonging to another user must look
+    // like it does not exist, never be read or mutated.
+    if (!notification || notification.userId !== userId) return undefined;
     const updated = { ...notification, isRead: true };
     this.notifications.set(id, updated);
     return updated;
@@ -1479,7 +1487,7 @@ export class MemStorage implements IStorage {
   async markAllNotificationsRead(userId: string): Promise<void> {
     const userNotifications = await this.getUserNotifications(userId);
     for (const n of userNotifications) {
-      await this.markNotificationRead(n.id);
+      await this.markNotificationRead(n.id, userId);
     }
   }
 
