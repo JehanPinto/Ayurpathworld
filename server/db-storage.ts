@@ -1554,11 +1554,16 @@ export class DbStorage implements IStorage {
     } as Notification;
   }
 
-  async markNotificationRead(id: string): Promise<Notification | undefined> {
+  async markNotificationRead(
+    id: string,
+    userId: string,
+  ): Promise<Notification | undefined> {
     const result = await db
       .update(notifications)
       .set({ isRead: true })
-      .where(eq(notifications.id, id))
+      // Owner is part of the predicate: another user's notification simply
+      // does not match, so it is neither returned nor mutated.
+      .where(and(eq(notifications.id, id), eq(notifications.userId, userId)))
       .returning();
     if (!result[0]) return undefined;
     return {
