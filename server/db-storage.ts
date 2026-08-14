@@ -3479,6 +3479,26 @@ appointment: InsertAppointment, paymentData: InsertPayment, slotId: string, audi
       refundableTotalAmount: Number(row.refundable_total) 
     };
   }
+
+  private preRegOtps = new Map<string, { otp: string; expiresAt: Date }>();
+
+  async setRegistrationOtp(email: string, otp: string, expiry: Date): Promise<void> {
+    this.preRegOtps.set(email.toLowerCase().trim(), { otp, expiresAt: expiry });
+  }
+
+  async verifyRegistrationOtp(email: string, otp: string): Promise<boolean> {
+    const key = email.toLowerCase().trim();
+    const record = this.preRegOtps.get(key);
+
+    // Check validity
+    if (!record || record.otp !== otp || new Date() > record.expiresAt) {
+      return false;
+    }
+
+    // Verified successfully, remove the OTP
+    this.preRegOtps.delete(key);
+    return true;
+  }
 }
 
 export const dbStorage = new DbStorage();

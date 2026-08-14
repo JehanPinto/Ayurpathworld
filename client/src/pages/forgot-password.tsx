@@ -1,9 +1,9 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { Link, useLocation } from "wouter";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { Eye, EyeOff, Loader2, ArrowLeft, Mail, KeyRound } from "lucide-react";
+import { Eye, EyeOff, Loader2, ArrowLeft, Mail, KeyRound, Lock } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -46,10 +46,16 @@ type PasswordInput = z.infer<typeof passwordSchema>;
 export default function ForgotPasswordPage() {
   const [, setLocation] = useLocation();
   const { toast } = useToast();
-  const [step, setStep] = useState<"email" | "reset">("email");
+  
+  // Steps: 1. email -> 2. otp -> 3. password
+  const [step, setStep] = useState<"email" | "otp" | "password">("email");
   const [submittedEmail, setSubmittedEmail] = useState("");
-  const [otp, setOtp] = useState("");
+  
+  // OTP State handling for 6 separate boxes
+  const [otp, setOtp] = useState<string[]>(Array(6).fill(""));
+  const otpRefs = useRef<(HTMLInputElement | null)[]>(Array(6).fill(null));
   const [otpError, setOtpError] = useState("");
+  
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
 
@@ -64,15 +70,15 @@ export default function ForgotPasswordPage() {
     mode: "onChange",
   });
 
+  // MUTATION 1: Send OTP to Email
   const sendOtpMutation = useMutation({
     mutationFn: (data: EmailInput) =>
       apiRequest("POST", "/api/auth/forgot-password", data),
     onSuccess: () => {
       setSubmittedEmail(emailForm.getValues("email"));
-      setOtp("");
+      setOtp(Array(6).fill(""));
       setOtpError("");
-      passwordForm.reset();
-      setStep("reset");
+      setStep("otp");
       toast({
         title: "OTP Sent",
         description: "Check your inbox for the 6-digit code.",
@@ -87,16 +93,33 @@ export default function ForgotPasswordPage() {
     },
   });
 
-  const resetMutation = useMutation({
-    mutationFn: (data: { otp: string; newPassword: string }) =>
+  // MUTATION 2: Verify OTP
+  const verifyOtpMutation = useMutation({
+    mutationFn: (otpString: string) =>
+      apiRequest("POST", "/api/auth/verify-otp", {
+        email: submittedEmail,
+        otp: otpString,
+      }),
+    onSuccess: () => {
+      passwordForm.reset();
+      setStep("password");
+    },
+    onError: (error: Error) => {
+      setOtpError(error.message || "Invalid OTP code");
+    },
+  });
+
+  // MUTATION 3: Final Password Reset
+  const resetPasswordMutation = useMutation({
+    mutationFn: (data: PasswordInput) =>
       apiRequest("POST", "/api/auth/reset-password", {
         email: submittedEmail,
-        otp: data.otp,
+        otp: otp.join(""),
         newPassword: data.newPassword,
       }),
     onSuccess: () => {
       toast({
-        title: "Password Reset",
+        title: "Success",
         description: "Your password has been updated. Please sign in.",
       });
       setLocation("/login");
@@ -104,19 +127,57 @@ export default function ForgotPasswordPage() {
     onError: (error: Error) => {
       toast({
         title: "Error",
-        description: error.message || "Invalid or expired OTP",
+        description: error.message || "Failed to reset password",
         variant: "destructive",
       });
     },
   });
 
-  const handleReset = (data: PasswordInput) => {
-    if (otp.length !== 6) {
-      setOtpError("Enter the 6-digit code from your email");
+  // Handle individual OTP box changes
+  const handleOtpChange = (index: number, value: string) => {
+    if (!/^\d*$/.test(value)) return;
+
+    const newOtp = [...otp];
+    newOtp[index] = value.substring(value.length - 1); 
+    setOtp(newOtp);
+    setOtpError("");
+
+    if (value && index < 5) {
+      otpRefs.current[index + 1]?.focus();
+    }
+  };
+
+  const handleOtpKeyDown = (index: number, e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Backspace" && !otp[index] && index > 0) {
+      otpRefs.current[index - 1]?.focus();
+    }
+  };
+
+  const handleOtpPaste = (e: React.ClipboardEvent<HTMLInputElement>) => {
+    e.preventDefault();
+    const pastedData = e.clipboardData.getData("text").replace(/\D/g, "").slice(0, 6);
+    
+    if (pastedData) {
+      const newOtp = [...otp];
+      for (let i = 0; i < pastedData.length; i++) {
+        newOtp[i] = pastedData[i];
+      }
+      setOtp(newOtp);
+      setOtpError("");
+      
+      const focusIndex = Math.min(pastedData.length, 5);
+      otpRefs.current[focusIndex]?.focus();
+    }
+  };
+
+  const handleVerifyOtp = (e: React.FormEvent) => {
+    e.preventDefault();
+    const otpString = otp.join("");
+    if (otpString.length !== 6) {
+      setOtpError("Please enter all 6 digits.");
       return;
     }
-    setOtpError("");
-    resetMutation.mutate({ otp, newPassword: data.newPassword });
+    verifyOtpMutation.mutate(otpString);
   };
 
   return (
@@ -131,7 +192,8 @@ export default function ForgotPasswordPage() {
           </Link>
         </div>
 
-        {step === "email" ? (
+        {/* STEP 1: ENTER EMAIL */}
+        {step === "email" && (
           <Card>
             <CardHeader>
               <div className="flex items-center gap-2 mb-1">
@@ -159,7 +221,6 @@ export default function ForgotPasswordPage() {
                             type="email"
                             placeholder="you@example.com"
                             autoComplete="email"
-                            data-testid="input-forgot-email"
                             {...field}
                           />
                         </FormControl>
@@ -172,13 +233,9 @@ export default function ForgotPasswordPage() {
                     type="submit"
                     className="w-full"
                     disabled={sendOtpMutation.isPending}
-                    data-testid="button-send-otp"
                   >
                     {sendOtpMutation.isPending ? (
-                      <>
-                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                        Sending...
-                      </>
+                      <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Checking...</>
                     ) : (
                       "Send Verification Code"
                     )}
@@ -186,56 +243,108 @@ export default function ForgotPasswordPage() {
                 </form>
               </Form>
 
-              <p className="mt-4 text-center text-sm text-muted-foreground">
+              <div className="mt-4 text-center">
                 <Link href="/login">
                   <button className="inline-flex items-center gap-1 text-sm text-primary hover:underline">
-                    <ArrowLeft className="h-3 w-3" />
-                    Back to Sign In
+                    <ArrowLeft className="h-3 w-3" /> Back to Sign In
                   </button>
                 </Link>
-              </p>
+              </div>
             </CardContent>
           </Card>
-        ) : (
+        )}
+
+        {/* STEP 2: ENTER OTP */}
+        {step === "otp" && (
           <Card>
             <CardHeader>
               <div className="flex items-center gap-2 mb-1">
                 <KeyRound className="h-5 w-5 text-primary" />
-                <CardTitle>Reset Password</CardTitle>
+                <CardTitle>Verify Code</CardTitle>
               </div>
               <CardDescription>
-                Enter the 6-digit code sent to <strong>{submittedEmail}</strong> and choose a new password.
+                Enter the 6-digit code sent to <strong>{submittedEmail}</strong>.
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <form
-                onSubmit={passwordForm.handleSubmit(handleReset)}
-                className="space-y-4"
-              >
-                {/* OTP field — plain useState, NOT react-hook-form controlled */}
+              <form onSubmit={handleVerifyOtp} className="space-y-6">
                 <div className="space-y-2">
-                  <Label htmlFor="otp-input">Verification Code</Label>
-                  <input
-                    id="otp-input"
-                    type="text"
-                    inputMode="numeric"
-                    autoComplete="off"
-                    placeholder="Enter 6-digit code"
-                    value={otp}
-                    data-testid="input-otp"
-                    onChange={(e) => {
-                      const digits = e.target.value.replace(/\D/g, "").slice(0, 6);
-                      setOtp(digits);
-                      if (digits.length > 0) setOtpError("");
-                    }}
-                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 tracking-widest font-mono"
-                  />
+                  <Label>Verification Code</Label>
+                  <div className="flex justify-between gap-2" onPaste={handleOtpPaste}>
+                    {otp.map((digit, index) => (
+                      <Input
+                        key={index}
+                        ref={(el) => (otpRefs.current[index] = el)}
+                        type="text"
+                        inputMode="numeric"
+                        autoComplete="one-time-code"
+                        maxLength={1}
+                        value={digit}
+                        onChange={(e) => handleOtpChange(index, e.target.value)}
+                        onKeyDown={(e) => handleOtpKeyDown(index, e)}
+                        className={`h-12 w-12 text-center text-lg font-bold ${
+                          otpError ? "border-destructive focus-visible:ring-destructive" : ""
+                        }`}
+                      />
+                    ))}
+                  </div>
                   {otpError && (
-                    <p className="text-sm text-destructive">{otpError}</p>
+                    <p className="text-sm font-medium text-destructive mt-1">{otpError}</p>
                   )}
                 </div>
 
-                <Form {...passwordForm}>
+                <Button
+                  type="submit"
+                  className="w-full"
+                  disabled={verifyOtpMutation.isPending}
+                >
+                  {verifyOtpMutation.isPending ? (
+                    <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Verifying...</>
+                  ) : (
+                    "Verify Code"
+                  )}
+                </Button>
+              </form>
+
+              <div className="mt-6 flex flex-col gap-3 text-center text-sm">
+                <button
+                  type="button"
+                  className="text-primary hover:underline font-medium"
+                  onClick={() => sendOtpMutation.mutate({ email: submittedEmail })}
+                  disabled={sendOtpMutation.isPending}
+                >
+                  Resend Code
+                </button>
+                <button
+                  type="button"
+                  className="text-muted-foreground hover:text-primary transition-colors"
+                  onClick={() => setStep("email")}
+                >
+                  Change Email Address
+                </button>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* STEP 3: CREATE NEW PASSWORD */}
+        {step === "password" && (
+          <Card>
+            <CardHeader>
+              <div className="flex items-center gap-2 mb-1">
+                <Lock className="h-5 w-5 text-primary" />
+                <CardTitle>Create New Password</CardTitle>
+              </div>
+              <CardDescription>
+                Your identity has been verified. Please create a strong new password.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Form {...passwordForm}>
+                <form
+                  onSubmit={passwordForm.handleSubmit((d) => resetPasswordMutation.mutate(d))}
+                  className="space-y-4"
+                >
                   <FormField
                     control={passwordForm.control}
                     name="newPassword"
@@ -249,7 +358,6 @@ export default function ForgotPasswordPage() {
                               placeholder="Create a strong password"
                               className="pr-10"
                               autoComplete="new-password"
-                              data-testid="input-new-password"
                               {...field}
                             />
                             <button
@@ -279,7 +387,6 @@ export default function ForgotPasswordPage() {
                               placeholder="Repeat your password"
                               className="pr-10"
                               autoComplete="new-password"
-                              data-testid="input-confirm-password"
                               {...field}
                             />
                             <button
@@ -295,34 +402,20 @@ export default function ForgotPasswordPage() {
                       </FormItem>
                     )}
                   />
-                </Form>
 
-                <Button
-                  type="submit"
-                  className="w-full"
-                  disabled={resetMutation.isPending}
-                  data-testid="button-reset-password"
-                >
-                  {resetMutation.isPending ? (
-                    <>
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      Resetting...
-                    </>
-                  ) : (
-                    "Reset Password"
-                  )}
-                </Button>
-              </form>
-
-              <p className="mt-4 text-center text-sm text-muted-foreground">
-                Didn't receive the code?{" "}
-                <button
-                  className="text-primary hover:underline text-sm"
-                  onClick={() => { setStep("email"); setOtp(""); setOtpError(""); }}
-                >
-                  Try again
-                </button>
-              </p>
+                  <Button
+                    type="submit"
+                    className="w-full mt-6"
+                    disabled={resetPasswordMutation.isPending}
+                  >
+                    {resetPasswordMutation.isPending ? (
+                      <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Saving...</>
+                    ) : (
+                      "Save New Password"
+                    )}
+                  </Button>
+                </form>
+              </Form>
             </CardContent>
           </Card>
         )}

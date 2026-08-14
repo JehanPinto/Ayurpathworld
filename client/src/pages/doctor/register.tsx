@@ -52,7 +52,7 @@ import {
   CloudUpload,
   Info,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { Link, useLocation } from "wouter";
 import { z } from "zod";
@@ -60,6 +60,7 @@ import { HospitalModal } from "@/components/ui/hospital-modal";
 import type { InsertHospital } from "@shared/schema";
 import { HospitalViewModal } from "@/components/ui/hospital-view-modal";
 import { SRI_LANKAN_BANKS } from "@/lib/banks";
+import { apiRequest } from "@/lib/queryClient";
 
 const buildPersonalInfoSchema = (requirePassword: boolean) =>
   z
@@ -232,6 +233,14 @@ export default function DoctorRegisterPage() {
   const isAnyFileUploading = fileDetails.some((f) => f.isUploading);
   const isStep3Valid = hasMedCouncil && hasDegree && !isAnyFileUploading;
 
+  // Email verification state variables
+  const [emailVerified, setEmailVerified] = useState(false);
+  const [otpSent, setOtpSent] = useState(false);
+  const [otp, setOtp] = useState<string[]>(Array(6).fill(""));
+  const otpRefs = useRef<(HTMLInputElement | null)[]>(Array(6).fill(null));
+  const [otpError, setOtpError] = useState("");
+  const [resendTimer, setResendTimer] = useState(0);
+  
   const { data: specializations = [] } = useQuery<Specialization[]>({
     queryKey: ["/api/specializations"],
   });
@@ -279,11 +288,23 @@ export default function DoctorRegisterPage() {
   });
 
   useEffect(() => {
+    let interval: NodeJS.Timeout;
+    if (resendTimer > 0) {
+      interval = setInterval(() => {
+        setResendTimer((prev) => prev - 1);
+      }, 1000);
+    }
+    return () => clearInterval(interval);
+  }, [resendTimer]);
+
+  useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const token = params.get("registrationToken");
     if (token) {
       setIsSocialFlow(true);
       setAuthRegistrationToken(token);
+      setEmailVerified(true);
+      setUploadToken(token);
       const storedUser = sessionStorage.getItem("registrationUser");
       if (storedUser) {
         try {
@@ -311,6 +332,59 @@ export default function DoctorRegisterPage() {
         URL.revokeObjectURL(bankStatementFile.previewUrl);
     };
   }, [fileDetails, bankStatementFile]);
+
+  const sendRegOtpMutation = useMutation({
+    mutationFn: (email: string) => apiRequest("POST", "/api/auth/send-registration-otp", { email }),
+    onSuccess: () => {
+      setOtpSent(true);
+      setOtpError("");
+      setResendTimer(60);
+      toast({ title: "Verification Code Sent", description: "Please check your inbox." });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to send code", description: error.message, variant: "destructive" });
+    }
+  });
+
+  const verifyRegOtpMutation = useMutation({
+    mutationFn: (data: { email: string, otp: string }) => apiRequest("POST", "/api/auth/verify-registration-otp", data),
+    onSuccess: (data: any) => { 
+      setEmailVerified(true);
+      setUploadToken(data.token);
+      toast({ title: "Email Verified", description: "You can now complete your personal details." });
+    },
+    onError: (error: Error) => {
+      setOtpError(error.message || "Invalid verification code");
+    }
+  });
+
+  const handleOtpChange = (index: number, value: string) => {
+    if (!/^\d*$/.test(value)) return;
+    const newOtp = [...otp];
+    newOtp[index] = value.substring(value.length - 1);
+    setOtp(newOtp);
+    setOtpError("");
+    if (value && index < 5) otpRefs.current[index + 1]?.focus();
+  };
+
+  const handleOtpKeyDown = (index: number, e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Backspace" && !otp[index] && index > 0) {
+      otpRefs.current[index - 1]?.focus();
+    }
+  };
+
+  const handleOtpPaste = (e: React.ClipboardEvent<HTMLInputElement>) => {
+    e.preventDefault();
+    const pastedData = e.clipboardData.getData("text").replace(/\D/g, "").slice(0, 6);
+    if (pastedData) {
+      const newOtp = [...otp];
+      for (let i = 0; i < pastedData.length; i++) newOtp[i] = pastedData[i];
+      setOtp(newOtp);
+      setOtpError("");
+      const focusIndex = Math.min(pastedData.length, 5);
+      otpRefs.current[focusIndex]?.focus();
+    }
+  };
 
   const registerMutation = useMutation({
     mutationFn: async (data: any) => {
@@ -772,39 +846,149 @@ export default function DoctorRegisterPage() {
                   onSubmit={personalForm.handleSubmit(handlePersonalSubmit)}
                   className="space-y-4"
                 >
+
                   <FormField
                     control={personalForm.control}
-                    name="fullName"
+                    name="email"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>Full Name *</FormLabel>
-                        <FormControl>
-                          <Input
-                            placeholder="Dr. John Doe"
-                            data-testid="input-fullname"
-                            {...field}
-                          />
-                        </FormControl>
+                        <FormLabel>Email Address *</FormLabel>
+                        <div className="flex gap-2">
+                          <FormControl>
+                            <Input
+                              type="email"
+                              placeholder="doctor@example.com"
+                              disabled={isSocialFlow || emailVerified || otpSent}
+                              {...field}
+                            />
+                          </FormControl>
+                          {!isSocialFlow && !emailVerified && !otpSent && (
+                            <Button 
+                              type="button" 
+                              onClick={async () => {
+                                 const isValid = await personalForm.trigger("email");
+                                 if (isValid) sendRegOtpMutation.mutate(field.value);
+                              }}
+                              disabled={sendRegOtpMutation.isPending || !field.value}
+                            >
+                              {sendRegOtpMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : "Verify"}
+                            </Button>
+                          )}
+                          {(isSocialFlow || emailVerified) && (
+                            <div className="flex items-center text-green-600 bg-green-50 dark:bg-green-900/20 px-3 rounded-md border border-green-200 dark:border-green-800">
+                              <CheckCircle className="w-5 h-5 mr-1" />
+                              <span className="text-sm font-medium">Verified</span>
+                            </div>
+                          )}
+                        </div>
                         <FormMessage />
                       </FormItem>
                     )}
                   />
 
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {!emailVerified && otpSent && (
+                    <div className="p-4 border border-primary/20 rounded-lg bg-primary/5 mt-4 space-y-4 animate-in fade-in zoom-in duration-300">
+                      <div className="space-y-2">
+                        <FormLabel className="font-bold text-primary">Enter Verification Code</FormLabel>
+                        <p className="text-xs text-muted-foreground">Code sent to {personalForm.getValues("email")}</p>
+                        
+                        <div className="flex justify-center gap-2 sm:gap-3 pt-4 pb-2" onPaste={handleOtpPaste}>
+                          {otp.map((digit, index) => (
+                            <Input
+                              key={index}
+                              ref={(el) => (otpRefs.current[index] = el)}
+                              type="text"
+                              inputMode="numeric"
+                              maxLength={1}
+                              value={digit}
+                              onChange={(e) => handleOtpChange(index, e.target.value)}
+                              onKeyDown={(e) => handleOtpKeyDown(index, e)}
+                              className={`
+                                h-12 w-12 sm:h-14 sm:w-14 
+                                text-center text-xl sm:text-2xl font-bold 
+                                rounded-xl border-2 
+                                transition-all duration-200 ease-in-out
+                                focus-visible:ring-4 focus-visible:ring-primary/20 focus-visible:border-primary
+                                ${
+                                  digit 
+                                    ? "border-primary/50 bg-primary/5 text-primary shadow-sm" 
+                                    : "border-border/60 bg-muted/20 text-foreground"
+                                }
+                                ${
+                                  otpError 
+                                    ? "border-destructive focus-visible:ring-destructive/20 text-destructive bg-destructive/5" 
+                                    : ""
+                                }
+                              `}
+                            />
+                          ))}
+                        </div>
+                        {otpError && <p className="text-sm text-destructive mt-1">{otpError}</p>}
+                      </div>
+                      
+                      <div className="flex flex-col gap-3 pt-2">
+                        <div className="flex gap-2">
+                          <Button 
+                            type="button" 
+                            variant="outline" 
+                            className="flex-1"
+                            onClick={() => {
+                              setOtpSent(false);
+                              setOtp(Array(6).fill(""));
+                              setOtpError("");
+                              setResendTimer(0);
+                            }}
+                          >
+                            Change Email
+                          </Button>
+                          <Button 
+                            type="button" 
+                            className="flex-1"
+                            disabled={verifyRegOtpMutation.isPending}
+                            onClick={() => {
+                              const code = otp.join("");
+                              if(code.length !== 6) {
+                                 setOtpError("Enter all 6 digits");
+                                 return;
+                              }
+                              verifyRegOtpMutation.mutate({ email: personalForm.getValues("email"), otp: code });
+                            }}
+                          >
+                            {verifyRegOtpMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : "Confirm Code"}
+                          </Button>
+                        </div>
+                        
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          disabled={resendTimer > 0 || sendRegOtpMutation.isPending}
+                          onClick={() => {
+                            sendRegOtpMutation.mutate(personalForm.getValues("email"));
+                          }}
+                          className="w-full text-sm text-muted-foreground hover:text-primary transition-colors"
+                        >
+                          {sendRegOtpMutation.isPending ? (
+                            <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                          ) : null}
+                          {resendTimer > 0 
+                            ? `Resend Code in ${resendTimer}s` 
+                            : "Didn't receive the code? Resend"}
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Rest of the fields - Faded and disabled until email is verified */}
+                  <div className={`space-y-4 transition-all duration-300 ${!emailVerified ? 'opacity-40 pointer-events-none grayscale-[0.3]' : ''}`}>
+
                     <FormField
                       control={personalForm.control}
-                      name="email"
+                      name="fullName"
                       render={({ field }) => (
                         <FormItem>
-                          <FormLabel>Email *</FormLabel>
+                          <FormLabel>Full Name *</FormLabel>
                           <FormControl>
-                            <Input
-                              type="email"
-                              placeholder="doctor@example.com"
-                              data-testid="input-email"
-                              disabled={isSocialFlow}
-                              {...field}
-                            />
+                            <Input placeholder="Dr. John Doe" {...field} />
                           </FormControl>
                           <FormMessage />
                         </FormItem>
@@ -818,164 +1002,114 @@ export default function DoctorRegisterPage() {
                         <FormItem>
                           <FormLabel>Phone *</FormLabel>
                           <FormControl>
-                            <Input
-                              placeholder="0771234567"
-                              data-testid="input-phone"
-                              maxLength={10}
-                              {...field}
-                            />
+                            <Input placeholder="0771234567" maxLength={10} {...field} />
                           </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+
+                    {!isSocialFlow && (
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <FormField
+                          control={personalForm.control}
+                          name="password"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>Password *</FormLabel>
+                              <FormControl>
+                                <div className="relative">
+                                  <Input type={showPassword ? "text" : "password"} placeholder="Create password" {...field} />
+                                  <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground focus:outline-none">
+                                    {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                                  </button>
+                                </div>
+                              </FormControl>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+
+                        <FormField
+                          control={personalForm.control}
+                          name="confirmPassword"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>Confirm Password *</FormLabel>
+                              <FormControl>
+                                <div className="relative">
+                                  <Input type={showConfirmPassword ? "text" : "password"} placeholder="Confirm password" {...field} />
+                                  <button type="button" className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground focus:outline-none" onClick={() => setShowConfirmPassword(!showConfirmPassword)}>
+                                    {showConfirmPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                                  </button>
+                                </div>
+                              </FormControl>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                      </div>
+                    )}
+
+                    <FormField
+                      control={personalForm.control}
+                      name="address"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Address</FormLabel>
+                          <FormControl>
+                            <Input placeholder="Your address" {...field} />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+
+                    <FormField
+                      control={personalForm.control}
+                      name="city"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>City</FormLabel>
+                          <FormControl>
+                            <Input placeholder="Colombo" {...field} />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+
+                    <FormField
+                      control={personalForm.control}
+                      name="gender"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Gender</FormLabel>
+                          <Select onValueChange={field.onChange} defaultValue={field.value}>
+                            <FormControl>
+                              <SelectTrigger>
+                                <SelectValue placeholder="Select gender" />
+                              </SelectTrigger>
+                            </FormControl>
+                            <SelectContent>
+                              <SelectItem value={Gender.MALE}>Male</SelectItem>
+                              <SelectItem value={Gender.FEMALE}>Female</SelectItem>
+                            </SelectContent>
+                          </Select>
                           <FormMessage />
                         </FormItem>
                       )}
                     />
                   </div>
 
-                  {!isSocialFlow && (
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <FormField
-                        control={personalForm.control}
-                        name="password"
-                        render={({ field }) => (
-                          <FormItem>
-                            <FormLabel>Password *</FormLabel>
-                            <FormControl>
-                              <div className="relative">
-                                <Input
-                                  type={showPassword ? "text" : "password"}
-                                  placeholder="Create password"
-                                  data-testid="input-password"
-                                  {...field}
-                                />
-                                <button
-                                  type="button"
-                                  onClick={() => setShowPassword(!showPassword)}
-                                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground focus:outline-none"
-                                >
-                                  {showPassword ? (
-                                    <EyeOff className="h-4 w-4 text-muted-foreground" />
-                                  ) : (
-                                    <Eye className="h-4 w-4 text-muted-foreground" />
-                                  )}
-                                </button>
-                              </div>
-                            </FormControl>
-                            <FormMessage />
-                          </FormItem>
-                        )}
-                      />
-
-                      <FormField
-                        control={personalForm.control}
-                        name="confirmPassword"
-                        render={({ field }) => (
-                          <FormItem>
-                            <FormLabel>Confirm Password *</FormLabel>
-                            <FormControl>
-                              <div className="relative">
-                                <Input
-                                  type={
-                                    showConfirmPassword ? "text" : "password"
-                                  }
-                                  placeholder="Confirm password"
-                                  data-testid="input-confirm-password"
-                                  {...field}
-                                />
-                                <button
-                                  type="button"
-                                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground focus:outline-none"
-                                  onClick={() =>
-                                    setShowConfirmPassword(!showConfirmPassword)
-                                  }
-                                >
-                                  {showConfirmPassword ? (
-                                    <EyeOff className="h-4 w-4 text-muted-foreground" />
-                                  ) : (
-                                    <Eye className="h-4 w-4 text-muted-foreground" />
-                                  )}
-                                </button>
-                              </div>
-                            </FormControl>
-                            <FormMessage />
-                          </FormItem>
-                        )}
-                      />
-                    </div>
-                  )}
-
-                  <FormField
-                    control={personalForm.control}
-                    name="address"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Address</FormLabel>
-                        <FormControl>
-                          <Input
-                            placeholder="Your address"
-                            data-testid="input-address"
-                            {...field}
-                          />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-
-                  <FormField
-                    control={personalForm.control}
-                    name="city"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>City</FormLabel>
-                        <FormControl>
-                          <Input
-                            placeholder="Colombo"
-                            data-testid="input-city"
-                            {...field}
-                          />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-
-                  <FormField
-                    control={personalForm.control}
-                    name="gender"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Gender</FormLabel>
-                        <Select
-                          onValueChange={field.onChange}
-                          defaultValue={field.value}
-                        >
-                          <FormControl>
-                            <SelectTrigger data-testid="select-gender">
-                              <SelectValue placeholder="Select gender" />
-                            </SelectTrigger>
-                          </FormControl>
-                          <SelectContent>
-                            <SelectItem value={Gender.MALE}>Male</SelectItem>
-                            <SelectItem value={Gender.FEMALE}>
-                              Female
-                            </SelectItem>
-                          </SelectContent>
-                        </Select>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-
-                  <div className="flex justify-between pt-4">
+                  <div className="flex justify-between pt-4 mt-6">
                     <Link href="/register">
                       <Button variant="ghost" type="button">
-                        <ArrowLeft className="h-4 w-4 mr-2" />
-                        Back
+                        <ArrowLeft className="h-4 w-4 mr-2" /> Back
                       </Button>
                     </Link>
-                    <Button type="submit" data-testid="button-next-step1">
-                      Next
-                      <ArrowRight className="h-4 w-4 ml-2" />
+                    <Button type="submit" disabled={!emailVerified}>
+                      Next <ArrowRight className="h-4 w-4 ml-2" />
                     </Button>
                   </div>
                 </form>

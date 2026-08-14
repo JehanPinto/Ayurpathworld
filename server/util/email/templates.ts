@@ -213,3 +213,28 @@ export const getDoctorVerifiedEmailHtml = (doctorName: string) => {
     </div>
   `;
 };
+
+export const getRegistrationOtpEmailHtml = (otp: string) => {
+  const safeOtp = sanitizeHTML(otp); 
+  return `
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #e0e0e0; border-radius: 10px; overflow: hidden;">
+        <div style="background-color: #2563EB; padding: 20px; text-align: center;">
+            <h1 style="color: white; margin: 0;">Email Verification</h1>
+        </div>
+        <div style="padding: 30px; background-color: #ffffff; text-align: center;">
+            <p style="font-size: 16px; color: #333;">Hello,</p>
+            <p style="font-size: 16px; color: #333; line-height: 1.5;">
+                Please use the verification code below to verify your email address and continue your doctor registration on AyurPath:
+            </p>
+            <div style="margin: 30px 0;">
+                <span style="font-size: 32px; font-weight: bold; letter-spacing: 5px; color: #2563EB; background-color: #eff6ff; padding: 15px 25px; border-radius: 8px; border: 2px dashed #93c5fd;">
+                    ${safeOtp}
+                </span>
+            </div>
+            <p style="font-size: 14px; color: #666; margin-top: 20px;">
+                This code will expire in <strong>10 minutes</strong>. If you did not request this, please ignore this email.
+            </p>
+        </div>
+    </div>
+  `;
+};

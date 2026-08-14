@@ -1,5 +1,11 @@
 import { resend, defaultFromEmail } from "./config"; 
-import { getPasswordResetOtpEmailHtml, getPatientBookingReceiptEmailHtml, getDoctorNewBookingEmailHtml, getDoctorVerifiedEmailHtml } from "./templates";
+import { 
+  getPasswordResetOtpEmailHtml, 
+  getPatientBookingReceiptEmailHtml, 
+  getDoctorNewBookingEmailHtml, 
+  getDoctorVerifiedEmailHtml,
+  getRegistrationOtpEmailHtml
+ } from "./templates";
 
 export async function sendPasswordResetOtpEmail(toEmail: string, otp: string) {
   try {
@@ -107,5 +113,26 @@ export async function sendDoctorVerifiedEmail(toEmail: string, doctorName: strin
   } catch (err) {
     console.error("🔴 Failed to send verification email:", err);
     return { success: false, error: "Failed to send email" };
+  }
+}
+
+export async function sendRegistrationOtpEmail(toEmail: string, otp: string) {
+  try {
+    const { data, error } = await resend.emails.send({
+      from: defaultFromEmail,
+      to: toEmail,
+      subject: 'Verify your email address - AyurPath',
+      html: getRegistrationOtpEmailHtml(otp)
+    });
+
+    if (error) {
+      console.error("🔴 Resend Error (Reg OTP):", error);
+      return { success: false, error: "Failed to send verification email" };
+    }
+    return { success: true };
+    
+  } catch (err) {
+    console.error("🔴 Server Error (Reg OTP):", err);
+    return { success: false, error: "Server Error" };
   }
 }
