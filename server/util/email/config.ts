@@ -6,5 +6,4 @@ if (!process.env.RESEND_API_KEY) {
 
 export const resend = new Resend(process.env.RESEND_API_KEY);
 
-// Standardise the "from" email address across all emails
-export const defaultFromEmail = "AyurPath Admin <onboarding@resend.dev>";
+export const defaultFromEmail = "AyurPath Admin <no-reply@dev.ayurpath.world>";
