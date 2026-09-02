@@ -60,8 +60,8 @@ const FAQS = [
     a: "Yes, we use industry-standard encryption protocols. Your medical records and personal data are strictly confidential and only shared with your treating physician.",
   },
   {
-    q: "How do I become a doctor on this platform?",
-    a: "Click on 'Register as a Doctor' on the homepage. You will need to complete a 4-step registration process, including uploading your SLAMC registration and other credentials for verification.",
+    q: "How do I join the AyurPath practitioner panel?",
+    a: "AyurPath does not offer practitioner self-registration. Contact our team through the Contact page with your SLAMC registration and qualification details. Once we have verified your credentials, our team creates and activates the account for you.",
   },
 ];
 
