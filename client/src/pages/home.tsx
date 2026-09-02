@@ -411,13 +411,13 @@ export default function HomePage() {
             Are You an Ayurvedic Practitioner?
           </h2>
           <p className="text-white/80 max-w-2xl mx-auto mb-6 md:mb-8 text-sm md:text-base px-2">
-            Join our platform to reach thousands of patients, manage your practice efficiently,
-            and grow your Ayurvedic practice online.
+            AyurPath works with a selected panel of qualified Ayurvedic practitioners.
+            Talk to our team if you would like to be considered for the panel.
           </p>
           <div className="flex flex-col sm:flex-row gap-4 justify-center">
-            <Link href="/doctor/register">
+            <Link href="/contact">
               <Button size="lg" className="bg-sidebar dark:text-white text-black border-none w-full sm:w-auto">
-                Register as a Doctor
+                Contact Our Team
                 <ArrowRight className="ml-2 h-4 w-4" />
               </Button>
             </Link>

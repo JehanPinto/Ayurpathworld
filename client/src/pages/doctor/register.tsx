@@ -86,6 +86,12 @@ const buildPersonalInfoSchema = (requirePassword: boolean) =>
               "Password must contain at least one lowercase letter",
             )
             .regex(/[0-9]/, "Password must contain at least one number")
+            // The server rejects passwords without a special character; catch
+            // it here rather than at the end of the four-step form.
+            .regex(
+              /[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/,
+              "Password must contain at least one special character",
+            )
         : z.string().optional(),
       confirmPassword: requirePassword ? z.string() : z.string().optional(),
       address: z.string().optional(),
@@ -190,7 +196,17 @@ const DOCUMENT_CATEGORIES = [
   },
 ];
 
-export default function DoctorRegisterPage() {
+interface DoctorRegisterPageProps {
+  /**
+   * Rendered inside the admin dashboard, where a staff member fills in the
+   * practitioner's details on their behalf. There is no public doctor sign-up:
+   * the form is the same, but the email OTP step (which only the doctor could
+   * complete) is replaced by the administrator's own session.
+   */
+  adminMode?: boolean;
+}
+
+export default function DoctorRegisterPage({ adminMode = false }: DoctorRegisterPageProps) {
   const [currentStep, setCurrentStep] = useState(1);
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
@@ -234,7 +250,8 @@ export default function DoctorRegisterPage() {
   const isStep3Valid = hasMedCouncil && hasDegree && !isAnyFileUploading;
 
   // Email verification state variables
-  const [emailVerified, setEmailVerified] = useState(false);
+  // An administrator is already authenticated, so no OTP round-trip is needed.
+  const [emailVerified, setEmailVerified] = useState(adminMode);
   const [otpSent, setOtpSent] = useState(false);
   const [otp, setOtp] = useState<string[]>(Array(6).fill(""));
   const otpRefs = useRef<(HTMLInputElement | null)[]>(Array(6).fill(null));
@@ -427,6 +444,8 @@ export default function DoctorRegisterPage() {
 
       const response = await fetch("/api/auth/register-doctor", {
         method: "POST",
+        // Admin-only endpoint — send the staff member's session cookie.
+        credentials: "include",
         headers: {
           "Content-Type": "application/json",
           ...(uploadToken ? { "X-Registration-Token": uploadToken } : {}),
@@ -442,7 +461,16 @@ export default function DoctorRegisterPage() {
       }
       return response.json();
     },
-    onSuccess: (data: { user: any; token: string }) => {
+    onSuccess: (data: { user: any; token?: string }) => {
+      if (adminMode) {
+        toast({
+          title: "Doctor account created",
+          description:
+            "The practitioner is listed as pending. Verify the profile to activate it, and share the sign-in password with them.",
+        });
+        setLocation("/admin/doctors");
+        return;
+      }
       toast({
         title: "Registration Submitted!",
         description:
@@ -517,6 +545,7 @@ export default function DoctorRegisterPage() {
 
         const response = await fetch("/api/upload", {
           method: "POST",
+          credentials: "include",
           headers: {
             "X-Registration-Token": uploadToken,
             "X-Registration-Email": personalInfo.email,
@@ -537,6 +566,7 @@ export default function DoctorRegisterPage() {
             f.id === fileId ? { ...f, url: result.url, isUploading: false } : f,
           ),
         );
+        setUploadedFiles((prev) => [...prev, result.url]);
       }
     } catch (error: any) {
       // Remove failed uploads from state
@@ -553,20 +583,21 @@ export default function DoctorRegisterPage() {
   };
 
   const removeFile = (fileId: string) => {
-    setUploadedFiles((prev) => prev.filter((_, i) => i !== Number(fileId)));
-    setFileDetails((prev) => {
-      const targetFile = prev.find((file) => file.id === fileId);
-      if (targetFile) {
-        URL.revokeObjectURL(targetFile.previewUrl);
+    const targetFile = fileDetails.find((file) => file.id === fileId);
+    if (targetFile) {
+      URL.revokeObjectURL(targetFile.previewUrl);
+      if (targetFile.url) {
+        setUploadedFiles((prev) => prev.filter((url) => url !== targetFile.url));
       }
-      return prev.filter((file) => file.id !== fileId);
-    });
+    }
+    setFileDetails((prev) => prev.filter((file) => file.id !== fileId));
   };
 
   const handlePersonalSubmit = async (data: PersonalInfo) => {
     try {
       const response = await fetch("/api/registration/session", {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: data.email }),
       });
@@ -728,6 +759,7 @@ export default function DoctorRegisterPage() {
 
       const response = await fetch("/api/upload", {
         method: "POST",
+        credentials: "include",
         headers: {
           "X-Registration-Token": uploadToken,
           "X-Registration-Email": personalInfo.email,
@@ -760,24 +792,42 @@ export default function DoctorRegisterPage() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-primary/5 to-background py-8 px-4">
+    <div
+      className={
+        adminMode
+          ? ""
+          : "min-h-screen bg-gradient-to-b from-primary/5 to-background py-8 px-4"
+      }
+    >
       <div className="max-w-2xl mx-auto">
-        <div className="text-center mb-8">
-          <Link href="/">
-            <div className="flex items-center justify-center cursor-pointer">
-              <img
-                src="/logo-light.png"
-                alt="AyurPath"
-                className="h-10 w-auto dark:hidden"
-              />
-              <img
-                src="/logo-dark.png"
-                alt="AyurPath"
-                className="h-10 w-auto hidden dark:block"
-              />
-            </div>
-          </Link>
-        </div>
+        {adminMode ? (
+          <div className="mb-8">
+            <h1 className="text-2xl md:text-3xl font-heading font-bold">
+              Register Doctor
+            </h1>
+            <p className="text-muted-foreground">
+              Add a practitioner to the AyurPath medical panel. Enter their
+              details from the documents they provided.
+            </p>
+          </div>
+        ) : (
+          <div className="text-center mb-8">
+            <Link href="/">
+              <div className="flex items-center justify-center cursor-pointer">
+                <img
+                  src="/logo-light.png"
+                  alt="AyurPath"
+                  className="h-10 w-auto dark:hidden"
+                />
+                <img
+                  src="/logo-dark.png"
+                  alt="AyurPath"
+                  className="h-10 w-auto hidden dark:block"
+                />
+              </div>
+            </Link>
+          </div>
+        )}
 
         <div className="flex justify-between items-center mb-8 w-full ps-5 pe-5">
           {STEPS.map((step, index) => (
@@ -833,10 +883,21 @@ export default function DoctorRegisterPage() {
               Doctor Registration <br /> Step {currentStep} of 4
             </CardTitle>
             <CardDescription>
-              {currentStep === 1 && "Enter your personal information"}
-              {currentStep === 2 && "Enter your professional credentials"}
-              {currentStep === 3 && "Upload verification documents"}
-              {currentStep === 4 && "Bank details for payouts (optional)"}
+              {adminMode ? (
+                <>
+                  {currentStep === 1 && "Doctor's personal information"}
+                  {currentStep === 2 && "Doctor's professional credentials"}
+                  {currentStep === 3 && "Upload the verification documents"}
+                  {currentStep === 4 && "Bank details for payouts (optional)"}
+                </>
+              ) : (
+                <>
+                  {currentStep === 1 && "Enter your personal information"}
+                  {currentStep === 2 && "Enter your professional credentials"}
+                  {currentStep === 3 && "Upload verification documents"}
+                  {currentStep === 4 && "Bank details for payouts (optional)"}
+                </>
+              )}
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -858,11 +919,11 @@ export default function DoctorRegisterPage() {
                             <Input
                               type="email"
                               placeholder="doctor@example.com"
-                              disabled={isSocialFlow || emailVerified || otpSent}
+                              disabled={!adminMode && (isSocialFlow || emailVerified || otpSent)}
                               {...field}
                             />
                           </FormControl>
-                          {!isSocialFlow && !emailVerified && !otpSent && (
+                          {!adminMode && !isSocialFlow && !emailVerified && !otpSent && (
                             <Button 
                               type="button" 
                               onClick={async () => {
@@ -874,13 +935,18 @@ export default function DoctorRegisterPage() {
                               {sendRegOtpMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : "Verify"}
                             </Button>
                           )}
-                          {(isSocialFlow || emailVerified) && (
+                          {!adminMode && (isSocialFlow || emailVerified) && (
                             <div className="flex items-center text-green-600 bg-green-50 dark:bg-green-900/20 px-3 rounded-md border border-green-200 dark:border-green-800">
                               <CheckCircle className="w-5 h-5 mr-1" />
                               <span className="text-sm font-medium">Verified</span>
                             </div>
                           )}
                         </div>
+                        {adminMode && (
+                          <FormDescription>
+                            The practitioner will use this address to sign in.
+                          </FormDescription>
+                        )}
                         <FormMessage />
                       </FormItem>
                     )}
@@ -1025,6 +1091,12 @@ export default function DoctorRegisterPage() {
                                   </button>
                                 </div>
                               </FormControl>
+                              {adminMode && (
+                                <FormDescription>
+                                  Temporary password — share it with the doctor and
+                                  ask them to change it after first sign-in.
+                                </FormDescription>
+                              )}
                               <FormMessage />
                             </FormItem>
                           )}
@@ -1103,7 +1175,7 @@ export default function DoctorRegisterPage() {
                   </div>
 
                   <div className="flex justify-between pt-4 mt-6">
-                    <Link href="/register">
+                    <Link href={adminMode ? "/admin/doctors" : "/register"}>
                       <Button variant="ghost" type="button">
                         <ArrowLeft className="h-4 w-4 mr-2" /> Back
                       </Button>
@@ -1867,22 +1939,45 @@ export default function DoctorRegisterPage() {
                         </FormControl>
                         <div className="space-y-1 leading-none">
                           <FormLabel className="font-normal cursor-pointer">
-                            I agree to the{" "}
-                            <Link
-                              href="/terms"
-                              className="text-primary underline"
-                            >
-                              Terms of Service
-                            </Link>{" "}
-                            and{" "}
-                            <Link
-                              href="/privacy"
-                              className="text-primary underline"
-                            >
-                              Privacy Policy
-                            </Link>
-                            . I confirm that all information provided is
-                            accurate and my credentials are valid.
+                            {adminMode ? (
+                              <>
+                                I confirm the practitioner has accepted the{" "}
+                                <Link
+                                  href="/terms"
+                                  className="text-primary underline"
+                                >
+                                  Terms of Service
+                                </Link>{" "}
+                                and{" "}
+                                <Link
+                                  href="/privacy"
+                                  className="text-primary underline"
+                                >
+                                  Privacy Policy
+                                </Link>
+                                , and that the details and credentials entered
+                                above have been checked against their documents.
+                              </>
+                            ) : (
+                              <>
+                                I agree to the{" "}
+                                <Link
+                                  href="/terms"
+                                  className="text-primary underline"
+                                >
+                                  Terms of Service
+                                </Link>{" "}
+                                and{" "}
+                                <Link
+                                  href="/privacy"
+                                  className="text-primary underline"
+                                >
+                                  Privacy Policy
+                                </Link>
+                                . I confirm that all information provided is
+                                accurate and my credentials are valid.
+                              </>
+                            )}
                           </FormLabel>
                           <FormMessage />
                         </div>
@@ -1921,14 +2016,16 @@ export default function DoctorRegisterPage() {
               </Form>
             )}
 
-            <p className="mt-6 text-center text-sm text-muted-foreground">
-              Already have an account?{" "}
-              <Link href="/login">
-                <Button variant="ghost" className="px-0 h-auto underline">
-                  Sign in
-                </Button>
-              </Link>
-            </p>
+            {!adminMode && (
+              <p className="mt-6 text-center text-sm text-muted-foreground">
+                Already have an account?{" "}
+                <Link href="/login">
+                  <Button variant="ghost" className="px-0 h-auto underline">
+                    Sign in
+                  </Button>
+                </Link>
+              </p>
+            )}
           </CardContent>
         </Card>
       </div>

@@ -14,6 +14,7 @@ import {
   FileText,
   Settings,
   Users,
+  UserPlus,
   Stethoscope,
   DollarSign,
   Star,
@@ -90,6 +91,7 @@ const doctorManagementNavItems = [
 const adminMainNavItems = [
   { icon: LayoutDashboard, label: "Dashboard", href: "/admin" },
   { icon: Stethoscope, label: "Doctors", href: "/admin/doctors" },
+  { icon: UserPlus, label: "Register Doctor", href: "/admin/doctors/register" },
   { icon: Users, label: "Patients", href: "/admin/patients" },
 ];
 

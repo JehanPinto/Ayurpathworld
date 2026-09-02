@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { Eye, EyeOff, Loader2, User, Stethoscope } from "lucide-react";
+import { Eye, EyeOff, Loader2 } from "lucide-react";
 import { z } from "zod";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -57,10 +57,11 @@ const buildRegisterSchema = (requirePassword: boolean) => z.object({
 
 type RegisterInput = z.infer<ReturnType<typeof buildRegisterSchema>>;
 
+// Public sign-up is for patients only. Practitioners are onboarded by the
+// AyurPath team from the admin dashboard (/admin/doctors/register).
 export default function RegisterPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
-  const [registerType, setRegisterType] = useState<"patient" | "doctor">("patient");
   const [isSocialFlow, setIsSocialFlow] = useState(false);
   const [registrationToken, setRegistrationToken] = useState<string | null>(null);
   const [, setLocation] = useLocation();
@@ -68,9 +69,6 @@ export default function RegisterPage() {
   const { toast } = useToast();
 
   const schema = useMemo(() => buildRegisterSchema(!isSocialFlow), [isSocialFlow]);
-  const doctorRegisterHref = registrationToken 
-    ? `/doctor/register?registrationToken=${encodeURIComponent(registrationToken)}`
-    : "/doctor/register";
 
   const form = useForm<RegisterInput>({
     resolver: zodResolver(schema),
@@ -116,26 +114,18 @@ export default function RegisterPage() {
       const { agreeTerms, confirmPassword, preferredLanguage, ...rest } = data;
       const response = await apiRequest("POST", "/api/auth/register", {
         ...rest,
-        role: registerType === "doctor" ? UserRole.DOCTOR : UserRole.PATIENT,
+        role: UserRole.PATIENT,
         preferredLanguages: [preferredLanguage],
       });
       return response;
     },
     onSuccess: (data: { user: any; token: string }) => {
-      if (registerType === "patient") {
-        login(data.user, data.token);
-        toast({
-          title: "Account created!",
-          description: "Welcome to AyurvedicDoctor.",
-        });
-        setLocation("/patient");
-      } else {
-        toast({
-          title: "Registration submitted!",
-          description: "Your account is pending verification. We'll notify you once approved.",
-        });
-        setLocation("/login");
-      }
+      login(data.user, data.token);
+      toast({
+        title: "Account created!",
+        description: "Welcome to AyurvedicDoctor.",
+      });
+      setLocation("/patient");
     },
     onError: (error: Error) => {
       toast({
@@ -183,60 +173,6 @@ export default function RegisterPage() {
     registerMutation.mutate(data);
   };
 
-  if (registerType === "doctor") {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-gradient-to-b from-primary/5 to-background p-4">
-        <div className="w-full max-w-md">
-          <div className="text-center mb-8">
-            <Link href="/">
-              <div className="flex items-center justify-center
-               cursor-pointer">
-                <img src="/logo-light.png" alt="AyurPath" className="h-10 w-auto dark:hidden" />
-                <img src="/logo-dark.png" alt="AyurPath" className="h-10 w-auto hidden dark:block" />
-              </div>
-            </Link>
-          </div>
-
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Stethoscope className="h-5 w-5" />
-                Doctor Registration
-              </CardTitle>
-              <CardDescription>
-                Join our platform as an Ayurvedic practitioner
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <p className="text-sm text-muted-foreground">
-                Doctor registration requires verification of your credentials. Please complete the full registration process which includes:
-              </p>
-              <ul className="text-sm text-muted-foreground space-y-2 list-disc list-inside">
-                <li>Personal information</li>
-                <li>Professional qualifications</li>
-                <li>Registration number with Ayurvedic regulatory body</li>
-                <li>Upload of verification documents</li>
-                <li>Bank details for payouts</li>
-              </ul>
-              <Link href={doctorRegisterHref}>
-                <Button className="w-full mt-4">
-                  Continue to Doctor Registration
-                </Button>
-              </Link>
-              <Button
-                variant="ghost"
-                className="w-full"
-                onClick={() => setRegisterType("patient")}
-              >
-                Register as a Patient instead
-              </Button>
-            </CardContent>
-          </Card>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-b from-primary/5 to-background p-4 py-12">
       <div className="w-full max-w-md">
@@ -250,27 +186,6 @@ export default function RegisterPage() {
           <p className="text-muted-foreground">
             Create your account to get started
           </p>
-        </div>
-
-        <div className="grid grid-cols-2 gap-4 mb-6">
-          <Button
-            variant={registerType === "patient" ? "default" : "outline"}
-            className="h-auto py-4 flex flex-col gap-2"
-            onClick={() => setRegisterType("patient")}
-            data-testid="button-register-patient"
-          >
-            <User className="h-6 w-6" />
-            <span>Patient</span>
-          </Button>
-          <Button
-            variant={registerType === "doctor" ? "default" : "outline"}
-            className="h-auto py-4 flex flex-col gap-2"
-            onClick={() => setRegisterType("doctor")}
-            data-testid="button-register-doctor"
-          >
-            <Stethoscope className="h-6 w-6" />
-            <span>Doctor</span>
-          </Button>
         </div>
 
         <Card>

@@ -30,7 +30,7 @@ import PatientReviewsPage from "@/pages/patient/reviews";
 import PatientSettingsPage from "@/pages/patient/settings";
 import VerifyPhonePage from "@/pages/patient/verify-phone";
 import DoctorDashboard from "@/pages/doctor/dashboard";
-import DoctorRegisterPage from "@/pages/doctor/register";
+import AdminDoctorRegisterPage from "@/pages/admin/doctor-register";
 import DoctorAppointmentsPage from "@/pages/doctor/appointments";
 import DoctorSchedulePage from "@/pages/doctor/schedule";
 import DoctorReviewsPage from "@/pages/doctor/reviews";
@@ -149,7 +149,7 @@ function Router() {
       <Route path="/forgot-password" component={ForgotPasswordPage} />
       <Route path="/register" component={RegisterPage} />
       <Route path="/auth/callback" component={AuthCallbackPage} />
-      <Route path="/doctor/register" component={DoctorRegisterPage} />
+      {/* Doctor registration is staff-operated — see /admin/doctors/register */}
       <Route path="/doctors" component={DoctorsPage} />
       <Route path="/doctors/:id" component={DoctorProfilePage} />
       <Route path="/email-verification" component={EmailVerificationPage} />
@@ -232,6 +232,7 @@ function Router() {
         <ProtectedRoute allowedRoles={[UserRole.ADMIN]}>
           <DashboardLayout>
             <Switch>
+              <Route path="/admin/doctors/register" component={AdminDoctorRegisterPage} />
               <Route path="/admin/doctors" component={AdminDoctorsPage} />
               <Route path="/admin/patients" component={AdminPatientsPage} />
               <Route path="/admin/appointments" component={AdminAppointmentsPage} />

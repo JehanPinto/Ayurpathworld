@@ -65,7 +65,7 @@ export default function RefundPolicyPage() {
             
             <PolicyCard number="01" title="Introduction & Eligibility" defaultOpen={true}>
               <p>
-                CÕRA LABS provides a range of services, including custom software development, SaaS platforms, API integrations, technical consultancy, and managed digital products such as the AyurPath multi-vendor digital health platform.
+                CÕRA LABS provides a range of services, including custom software development, SaaS platforms, API integrations, technical consultancy, and managed digital products such as the AyurPath digital health platform, which CÕRA LABS owns and operates.
               </p>
               <p>Each request is reviewed based on:</p>
               <ul className="list-disc pl-5 space-y-2">
@@ -88,7 +88,7 @@ export default function RefundPolicyPage() {
             </PolicyCard>
 
             <PolicyCard number="03" title="AyurPath Platform — Appointment Cancellations & Refunds">
-              <p>The AyurPath platform facilitates appointments between patients and registered medical practitioners. Refunds for appointment bookings are governed by the following rules:</p>
+              <p>The AyurPath platform provides consultation appointments with the registered medical practitioners on its panel. Refunds for appointment bookings are governed by the following rules:</p>
               <div className="space-y-4 mt-4">
                 <div>
                   <h4 className="font-bold text-foreground mb-1">3.1 Doctor-Initiated Cancellations</h4>
