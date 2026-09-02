@@ -20,7 +20,6 @@ const footerLinks = {
     { label: "Find Doctors", href: "/doctors", key: "find-doctors" },
     { label: "Specializations", href: "/specializations", key: "specializations" },
     { label: "Book Appointment", href: "/doctors", key: "book-appointment" },
-    { label: "For Doctors", href: "/doctor/register", key: "for-doctors" },
   ],
   company: [
     { label: "About Us", href: "/about" },

@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { Link } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { 
   Search, 
@@ -27,6 +28,7 @@ import {
   Map,
   CalendarOff,
   ExternalLink,
+  UserPlus,
 } from "lucide-react";
 import { format } from "date-fns";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -240,6 +242,12 @@ export default function AdminDoctorsPage() {
           <h1 className="text-2xl md:text-3xl font-heading font-bold">Doctors Management</h1>
           <p className="text-muted-foreground">Manage and verify doctor registrations</p>
         </div>
+        <Link href="/admin/doctors/register">
+          <Button className="w-full sm:w-auto" data-testid="button-register-doctor">
+            <UserPlus className="h-4 w-4 mr-2" />
+            Register Doctor
+          </Button>
+        </Link>
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3">

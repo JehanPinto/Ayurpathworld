@@ -178,12 +178,25 @@ const registrationLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+// Doctor onboarding is performed by administrators, so it runs from a single
+// office IP. The public per-IP registration limit would lock the admin out
+// after a few practitioners, hence a separate, higher allowance.
+const adminOnboardingLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: process.env.NODE_ENV === "production" ? 30 : 200,
+  message: { error: "Too many doctor onboarding attempts, try again later" },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 const uploadLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: process.env.NODE_ENV === "production" ? 10 : 1000,
   message: { error: "Too many upload attempts, try again later" },
   standardHeaders: true,
   legacyHeaders: false,
+  // Admins upload verification documents for every doctor they onboard.
+  skip: (req) => isAdminRequest(req),
 });
 
 const publicApiLimiter = rateLimit({
@@ -473,6 +486,18 @@ function roleMiddleware(...roles: string[]) {
   };
 }
 
+// Non-blocking admin check, for rate limiters that must not throttle staff.
+function isAdminRequest(req: Request): boolean {
+  const cookieToken = (req as any).cookies?.token;
+  const authHeader = req.headers.authorization;
+  const bearerToken = authHeader?.startsWith("Bearer ")
+    ? authHeader.slice(7)
+    : undefined;
+  const token = cookieToken || bearerToken;
+  if (!token || tokenBlacklist.has(token)) return false;
+  return verifyToken(token)?.role === UserRole.ADMIN;
+}
+
 // Sanitize doctor profile for public viewing (guests and patients)
 function sanitizeForPublic(doctor: DoctorWithDetails): any {
   return {
@@ -594,6 +619,8 @@ export async function registerRoutes(
     }
   };
 
+  // Public sign-up creates patient accounts only. Doctor accounts are created
+  // by staff through the admin dashboard.
   app.post(
     "/api/auth/register",
     registrationLimiter,
@@ -602,7 +629,7 @@ export async function registerRoutes(
       const tRequestReceived = new Date().toISOString();
 
       try {
-        const data = insertUserSchema.parse(req.body);
+        const data = insertUserSchema.parse({ ...req.body, role: UserRole.PATIENT });
 
         // Validate password strength
         const passwordValidation = validatePasswordStrength(data.password);
@@ -801,25 +828,31 @@ export async function registerRoutes(
     },
   );
 
+  // Practitioners are onboarded by AyurPath staff only — there is no public
+  // doctor sign-up. An administrator fills in the practitioner's details on
+  // their behalf from the admin dashboard.
   app.post(
     "/api/auth/register-doctor",
-    registrationLimiter,
-    async (req: Request, res: Response) => {
+    adminOnboardingLimiter,
+    authMiddleware,
+    roleMiddleware(UserRole.ADMIN),
+    async (req: AuthenticatedRequest, res: Response) => {
       const tRequestReceived = new Date().toISOString();
 
       try {
         const registrationToken = req.headers["x-registration-token"] as string;
 
         if (!registrationToken) {
-          return res.status(400).json({ error: "Email verification required. Please verify your email first." });
+          return res.status(400).json({ error: "Missing onboarding session. Please restart the doctor registration." });
         }
 
-        let sessionFiles: string[] = [];
-
-        if (registrationToken) {
-          const files = consumeSession(registrationToken);
-          if (files) sessionFiles = files;
-        }
+        // Read the uploaded documents but keep the session alive until the
+        // account is actually created, so a rejected submission can be
+        // corrected and sent again without losing the uploads.
+        const uploadSession = validateRegistrationSession(registrationToken);
+        const sessionFiles: string[] = uploadSession
+          ? [...uploadSession.uploadedFiles]
+          : [];
 
         const { newHospitals, ...otherBodyData } = req.body;
         const userData = insertUserSchema.parse({ ...otherBodyData, role: UserRole.DOCTOR });
@@ -957,6 +990,9 @@ export async function registerRoutes(
           throw profileError;
         }
 
+        // Account created — the upload session has served its purpose.
+        consumeSession(registrationToken);
+
         // Notify all admins about the new doctor registration awaiting verification
         try {
           const regAdmins = await storage.getAllUsers("admin");
@@ -965,7 +1001,7 @@ export async function registerRoutes(
               storage.createNotification({
                 userId: a.id,
                 title: "New doctor registration",
-                message: `${user.fullName} has registered as a doctor and is awaiting verification.`,
+                message: `${user.fullName} was added by ${req.user?.fullName || "an administrator"} and is awaiting verification.`,
                 type: "system",
                 isRead: false,
                 relatedId: user.id,
@@ -976,36 +1012,34 @@ export async function registerRoutes(
           console.error("Failed to notify admins of doctor registration:", notifyError);
         }
 
-        const { token, jti } = generateToken({
-          id: user.id, email: user.email, role: user.role, fullName: user.fullName,
-        });
-
         const tCompleted = new Date().toISOString();
 
         // 6. SUCCESS LOG
         try {
-          const { ipAddress, device, location, sessionId } = getReqInfo(req, jti);
+          const { ipAddress, device, location, sessionId } = getReqInfo(req);
           const { actorId, actorRole } = await getActorInfo(req);
           await storage.createAuditLog({
             actorId, actorRole,
             action: 'DOCTOR_REGISTERED', status: 'success',
-            entityType: 'user', entityId: user.id, 
+            entityType: 'user', entityId: user.id,
             ipAddress, device, location, sessionId,
-            metadata: { 
+            metadata: {
               auditType: "AUTH",
-              registrationNumber: doctorData.registrationNumber, 
-              tokenIssued: true,
-              timeline: { 
-                requestReceivedAt: tRequestReceived, 
-                credentialsVerifiedAt: credentialsVerified, 
-                completedAt: tCompleted 
+              registrationNumber: doctorData.registrationNumber,
+              // The doctor is onboarded by staff; no session is issued here.
+              tokenIssued: false,
+              onboardedByAdminId: req.user?.id,
+              timeline: {
+                requestReceivedAt: tRequestReceived,
+                credentialsVerifiedAt: credentialsVerified,
+                completedAt: tCompleted
               }
             }
           });
         } catch (e) { console.error("Audit log failed:", e); }
 
         const { password: _, ...userWithoutPassword } = user;
-        res.status(201).json({ user: userWithoutPassword, token });
+        res.status(201).json({ user: userWithoutPassword });
 
       } catch (error) {
         console.error("Doctor registration failed:", error);
@@ -1627,18 +1661,13 @@ export async function registerRoutes(
             .json({ error: "Registration already completed" });
         }
 
+        // Social sign-in completes patient profiles only. Practitioners are
+        // onboarded by AyurPath staff from the admin dashboard.
         if (payload.role === UserRole.DOCTOR) {
-          // Validate Fees
-          const feeError = validateDoctorFees({
-            consultationFee: payload.consultationFee,
-            onlineConsultationFee: payload.onlineConsultationFee,
-            homeVisitFee: payload.homeVisitFee
+          return res.status(403).json({
+            error:
+              "Practitioner accounts are created by the AyurPath team. Please contact us if you would like to join our practitioner panel.",
           });
-          if (feeError) return res.status(400).json({ error: feeError });
-
-          // Validate Bank Details
-          const bankError = validateBankDetails(payload.bankAccountNumber, payload.bankBranch);
-          if (bankError) return res.status(400).json({ error: bankError });
         }
 
         const updates: any = {
@@ -1659,51 +1688,6 @@ export async function registerRoutes(
         let updatedUser = await storage.updateUser(user.id, updates);
         if (!updatedUser) {
           return res.status(500).json({ error: "Failed to update user" });
-        }
-
-        if (payload.role === UserRole.DOCTOR) {
-          const doctorData = insertDoctorProfileSchema.parse({
-            userId: updatedUser.id,
-            registrationNumber: payload.registrationNumber,
-            qualifications: payload.qualifications,
-            biography: req.body.biography,
-            specializationIds: payload.specializationIds || [],
-            languagesSpoken: payload.languagesSpoken || [Language.ENGLISH],
-            consultationTypes: payload.consultationTypes || [
-              ConsultationType.IN_PERSON,
-            ],
-            consultationFee: payload.consultationFee || 0,
-            onlineConsultationFee: payload.onlineConsultationFee,
-            homeVisitFee: payload.homeVisitFee,
-            verificationDocuments: req.body.verificationDocuments || [],
-            bankName: payload.bankName,
-            bankAccountNumber: payload.bankAccountNumber,
-            bankBranch: payload.bankBranch,
-            status: DoctorStatus.PENDING,
-          });
-
-          await storage.createDoctorProfile(doctorData);
-
-          // Notify all admins about the new doctor registration awaiting verification
-          try {
-            const newDoctorName = updatedUser.fullName;
-            const newDoctorId = updatedUser.id;
-            const regAdmins = await storage.getAllUsers("admin");
-            await Promise.all(
-              regAdmins.map((a) =>
-                storage.createNotification({
-                  userId: a.id,
-                  title: "New doctor registration",
-                  message: `${newDoctorName} has registered as a doctor and is awaiting verification.`,
-                  type: "system",
-                  isRead: false,
-                  relatedId: newDoctorId,
-                }),
-              ),
-            );
-          } catch (notifyError) {
-            console.error("Failed to notify admins of doctor registration:", notifyError);
-          }
         }
 
         updatedUser = (await storage.getUser(user.id)) || updatedUser;
@@ -2015,7 +1999,9 @@ export async function registerRoutes(
     },
   );
 
-  app.post("/api/registration/session", async (req: Request, res: Response) => {
+  // Opens the document-upload session used while an administrator onboards a
+  // practitioner. Staff-only — practitioners cannot start a registration.
+  app.post("/api/registration/session", authMiddleware, roleMiddleware(UserRole.ADMIN), async (req: AuthenticatedRequest, res: Response) => {
 
     const tRequestReceived = new Date().toISOString();
 
@@ -2030,7 +2016,9 @@ export async function registerRoutes(
 
       const clientIp = req.ip || req.socket.remoteAddress || "unknown";
 
-      if (!checkSessionCreationLimit(clientIp)) {
+      // Admins onboard many doctors from one office IP, so the per-IP cap
+      // that guarded the old public flow does not apply to them.
+      if (!isAdminRequest(req) && !checkSessionCreationLimit(clientIp)) {
 
         const tFailed = new Date().toISOString();
 
@@ -7487,7 +7475,9 @@ export async function registerRoutes(
     },
   );
 
-  app.post("/api/auth/send-registration-otp", registrationLimiter, async (req: Request, res: Response) => {
+  // Registration OTPs belong to the staff-run doctor onboarding flow, and the
+  // verify step mints a document-upload session — both stay behind admin auth.
+  app.post("/api/auth/send-registration-otp", adminOnboardingLimiter, authMiddleware, roleMiddleware(UserRole.ADMIN), async (req: Request, res: Response) => {
     const tRequestReceived = new Date().toISOString();
     try {
       const { email } = req.body;
@@ -7517,7 +7507,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/auth/verify-registration-otp", registrationLimiter, async (req: Request, res: Response) => {
+  app.post("/api/auth/verify-registration-otp", adminOnboardingLimiter, authMiddleware, roleMiddleware(UserRole.ADMIN), async (req: Request, res: Response) => {
     try {
       const { email, otp } = req.body;
       if (!email || !otp) {

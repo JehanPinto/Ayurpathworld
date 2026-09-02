@@ -55,7 +55,7 @@ const faqs = [
   },
   {
     question: "Are all doctors on the platform verified?",
-    answer: "Yes, all doctors on AyurvedicDoctor are thoroughly verified. We check their qualifications, certifications, and professional experience before they can join our platform. Look for the verified badge on doctor profiles.",
+    answer: "Yes, every practitioner on AyurvedicDoctor is onboarded by our own team. We check their qualifications, certifications, and professional experience before the account is created and activated. Look for the verified badge on doctor profiles.",
   },
   {
     question: "Can I get online consultations?",
@@ -78,8 +78,8 @@ const faqs = [
     answer: "Absolutely. We take data privacy seriously and use industry-standard encryption to protect your personal and medical information. We comply with all applicable data protection regulations.",
   },
   {
-    question: "How do I become a doctor on this platform?",
-    answer: "If you're a qualified Ayurvedic practitioner, you can register through our 'Register as Doctor' page. You'll need to submit your qualifications and certifications for verification. Our team will review your application and get back to you.",
+    question: "How do I join the AyurPath practitioner panel?",
+    answer: "AyurPath works with a selected panel of qualified Ayurvedic practitioners, and there is no self sign-up. If you are interested, contact our team using the form on this page with your qualifications and SLAMC registration details. We review each enquiry, verify credentials, and our team creates the account for approved practitioners.",
   },
 ];
 
